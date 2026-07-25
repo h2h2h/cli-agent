@@ -7,11 +7,25 @@ from dataclasses import dataclass
 from typing import Protocol, TypeAlias
 
 
+JSONValue: TypeAlias = (
+    None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
+)
+
+
 @dataclass(frozen=True, slots=True)
 class TextBlock:
     """A text block in a model message."""
 
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """A fully assembled model Tool Call with decoded arguments."""
+
+    call_id: str
+    name: str
+    arguments: dict[str, JSONValue]
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,16 +41,36 @@ class UserMessage:
 
 @dataclass(frozen=True, slots=True)
 class AssistantMessage:
-    """A model-authored message."""
+    """A model-authored message retaining ordered text and tool call content."""
 
-    content: tuple[TextBlock, ...]
+    content: tuple[TextBlock | ToolCall, ...]
 
     @classmethod
     def text(cls, text: str) -> AssistantMessage:
         return cls(content=(TextBlock(text=text),))
 
 
-ModelMessage: TypeAlias = UserMessage | AssistantMessage
+@dataclass(frozen=True, slots=True)
+class ToolResult:
+    """The result of a Tool Call, associated with its originating call_id.
+
+    Set ``output`` for a successful result; set ``error`` for a failed one.
+    The other field stays at its default ``None``.
+    """
+
+    call_id: str
+    output: JSONValue = None
+    error: JSONValue = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultMessage:
+    """A message carrying one or more Tool Results back to the model."""
+
+    content: tuple[ToolResult, ...]
+
+
+ModelMessage: TypeAlias = UserMessage | AssistantMessage | ToolResultMessage
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +88,13 @@ class TextDelta:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolCallReady:
+    """A fully assembled Tool Call yielded by a provider before completion."""
+
+    call: ToolCall
+
+
+@dataclass(frozen=True, slots=True)
 class ModelCompletion:
     """The terminal event for a successful text generation."""
 
@@ -61,7 +102,7 @@ class ModelCompletion:
     finish_reason: str
 
 
-ModelEvent: TypeAlias = TextDelta | ModelCompletion
+ModelEvent: TypeAlias = TextDelta | ToolCallReady | ModelCompletion
 
 
 class ModelProvider(Protocol):

@@ -9,6 +9,10 @@ from runtime import (
     ModelRequest,
     TextBlock,
     TextDelta,
+    ToolCall,
+    ToolCallReady,
+    ToolResult,
+    ToolResultMessage,
     UserMessage,
 )
 
@@ -49,6 +53,67 @@ def test_provider_exposes_an_asynchronous_model_event_stream() -> None:
             finish_reason="stop",
         ),
     )
+
+
+def test_represents_a_tool_call_with_decoded_arguments() -> None:
+    call = ToolCall(
+        call_id="call_1",
+        name="exec",
+        arguments={"cmd": "ls -la", "timeout_ms": 5000},
+    )
+
+    assert call == ToolCall(
+        call_id="call_1",
+        name="exec",
+        arguments={"cmd": "ls -la", "timeout_ms": 5000},
+    )
+    assert call.arguments["cmd"] == "ls -la"
+
+
+def test_assistant_message_retains_text_and_tool_call_order() -> None:
+    opening = TextBlock(text="Let me check.")
+    call = ToolCall(call_id="call_1", name="exec", arguments={"cmd": "ls"})
+    closing = TextBlock(text="Done.")
+
+    message = AssistantMessage(content=(opening, call, closing))
+
+    assert message.content == (opening, call, closing)
+
+
+def test_tool_result_round_trips_through_history() -> None:
+    user = UserMessage.text("list files")
+    call = ToolCall(call_id="call_1", name="exec", arguments={"cmd": "ls"})
+    assistant = AssistantMessage(content=(call,))
+    result = ToolResult(
+        call_id="call_1",
+        output={"exit_code": 0, "stdout": "file.txt"},
+    )
+    tool_message = ToolResultMessage(content=(result,))
+
+    request = ModelRequest(messages=(user, assistant, tool_message))
+
+    assert request.messages == (user, assistant, tool_message)
+    assert request.messages[1].content[0] is call
+    assert request.messages[2].content[0] is result
+    assert request.messages[2].content[0].call_id == "call_1"
+
+
+def test_tool_result_distinguishes_success_and_failure() -> None:
+    success = ToolResult(call_id="c1", output={"exit_code": 0})
+    failure = ToolResult(call_id="c2", error={"message": "command not found"})
+
+    assert success.output == {"exit_code": 0}
+    assert success.error is None
+    assert failure.error == {"message": "command not found"}
+    assert failure.output is None
+
+
+def test_tool_call_ready_event_carries_a_call() -> None:
+    call = ToolCall(call_id="call_1", name="exec", arguments={"cmd": "ls"})
+
+    event = ToolCallReady(call=call)
+
+    assert event.call == call
 
 
 class GreetingProvider:

@@ -14,6 +14,11 @@ def test_exposes_provider_neutral_model_types() -> None:
         "ModelCompletion",
         "ModelEvent",
         "ModelProvider",
+        "JSONValue",
+        "ToolCall",
+        "ToolCallReady",
+        "ToolResult",
+        "ToolResultMessage",
     }
     for name in public_model_names:
         assert name in runtime.__all__, f"{name} missing from runtime.__all__"

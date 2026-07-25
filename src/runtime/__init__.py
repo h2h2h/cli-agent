@@ -2,6 +2,7 @@
 
 from runtime.model import (
     AssistantMessage,
+    JSONValue,
     ModelCompletion,
     ModelEvent,
     ModelMessage,
@@ -9,12 +10,17 @@ from runtime.model import (
     ModelRequest,
     TextBlock,
     TextDelta,
+    ToolCall,
+    ToolCallReady,
+    ToolResult,
+    ToolResultMessage,
     UserMessage,
 )
 from runtime.providers import OpenAICompatibleModelProvider
 
 __all__ = (
     "AssistantMessage",
+    "JSONValue",
     "ModelCompletion",
     "ModelEvent",
     "ModelMessage",
@@ -23,5 +29,9 @@ __all__ = (
     "OpenAICompatibleModelProvider",
     "TextBlock",
     "TextDelta",
+    "ToolCall",
+    "ToolCallReady",
+    "ToolResult",
+    "ToolResultMessage",
     "UserMessage",
 )
