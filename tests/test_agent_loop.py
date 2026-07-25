@@ -1,8 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 
-from runtime._agent_loop import AgentLoop
-from runtime.model import (
+from runtime import (
     AssistantMessage,
     ModelCompletion,
     ModelEvent,
@@ -10,6 +9,7 @@ from runtime.model import (
     TextDelta,
     UserMessage,
 )
+from runtime._agent_loop import AgentLoop
 
 
 def test_completes_a_text_only_turn() -> None:

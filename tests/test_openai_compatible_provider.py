@@ -4,16 +4,16 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from runtime.model import (
+from runtime import (
     AssistantMessage,
     ModelCompletion,
     ModelEvent,
     ModelProvider,
     ModelRequest,
+    OpenAICompatibleModelProvider,
     TextDelta,
     UserMessage,
 )
-from runtime.providers import OpenAICompatibleModelProvider
 
 
 def test_streams_a_real_model_request_through_the_provider_neutral_seam() -> None:
