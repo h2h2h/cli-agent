@@ -4,6 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+import cli_agent.cli as cli_module
 import cli_agent.config as config_module
 from cli_agent.cli import main
 from cli_agent.config import (
@@ -202,17 +203,31 @@ def test_main_uses_validated_config_to_build_provider(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    captured: dict[str, object] = {}
+    provider_options: dict[str, object] = {}
+    run_call: dict[str, object] = {}
 
     class RecordingProvider:
         def __init__(self, **kwargs: object) -> None:
-            captured.update(kwargs)
+            provider_options.update(kwargs)
+
+    async def recording_run_agent(
+        config: CliConfig,
+        provider: object,
+        **streams: object,
+    ) -> int:
+        run_call.update(
+            config=config,
+            provider=provider,
+            **streams,
+        )
+        return 0
 
     monkeypatch.setattr(
         config_module,
         "OpenAICompatibleModelProvider",
         RecordingProvider,
     )
+    monkeypatch.setattr(cli_module, "run_agent", recording_run_agent)
     monkeypatch.setenv(DEFAULT_API_KEY_ENV, "secret")
 
     exit_code = main(
@@ -226,9 +241,47 @@ def test_main_uses_validated_config_to_build_provider(
     )
 
     assert exit_code == 0
-    assert captured == {
+    assert provider_options == {
         "model": "test-model",
         "api_key": "secret",
         "base_url": DEFAULT_BASE_URL,
         "transport": None,
     }
+    assert run_call["config"] == CliConfig(
+        task="Inspect",
+        workspace=tmp_path.resolve(),
+        base_url=DEFAULT_BASE_URL,
+        model="test-model",
+        api_key_env=DEFAULT_API_KEY_ENV,
+        api_key="secret",
+    )
+    assert isinstance(run_call["provider"], RecordingProvider)
+    assert run_call["stdout"] is cli_module.sys.stdout
+    assert run_call["stderr"] is cli_module.sys.stderr
+
+
+def test_main_reports_agent_failure(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    async def failing_run_agent(*args: object, **kwargs: object) -> int:
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(cli_module, "run_agent", failing_run_agent)
+    monkeypatch.setenv(DEFAULT_API_KEY_ENV, "secret")
+
+    exit_code = main(
+        [
+            "Inspect",
+            "--workspace",
+            str(tmp_path),
+            "--model",
+            "test-model",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "cli-agent: provider unavailable\n"
