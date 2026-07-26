@@ -36,7 +36,7 @@ class AgentLoop:
         return tuple(self._history)
 
     async def run(self, message: UserMessage) -> AsyncIterator[ModelEvent]:
-        """Run one model turn through at most one Tool Call per response."""
+        """Run one model turn, dispatching Tool Calls in message order."""
 
         self._history.append(message)
         while True:
@@ -58,15 +58,12 @@ class AgentLoop:
                 for block in completion.message.content
                 if isinstance(block, ToolCall)
             )
-            if len(tool_calls) > 1:
-                raise RuntimeError(
-                    "AgentLoop supports one Tool Call per model response"
-                )
-
             self._history.append(completion.message)
             if not tool_calls:
                 yield completion
                 return
 
-            result = await self._environment.dispatch(tool_calls[0])
-            self._history.append(ToolResultMessage(content=(result,)))
+            results = []
+            for tool_call in tool_calls:
+                results.append(await self._environment.dispatch(tool_call))
+            self._history.append(ToolResultMessage(content=tuple(results)))

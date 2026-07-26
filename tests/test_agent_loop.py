@@ -13,6 +13,7 @@ from runtime import (
     TextDelta,
     ToolCall,
     ToolCallReady,
+    ToolResult,
     ToolResultMessage,
     UserMessage,
 )
@@ -129,8 +130,145 @@ def test_continues_generation_after_exec_tool_result(tmp_path: Path) -> None:
     provider.assert_exhausted()
 
 
+def test_dispatches_tool_calls_serially_in_message_order(tmp_path: Path) -> None:
+    user_message = UserMessage.text("Create and inspect a marker")
+    write_call, read_call = _ordered_file_calls()
+    tool_message = AssistantMessage(content=(write_call, read_call))
+    final_message = AssistantMessage.text("Marker inspected.")
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                ToolCallReady(call=write_call),
+                ToolCallReady(call=read_call),
+                ModelCompletion(
+                    message=tool_message,
+                    finish_reason="tool_calls",
+                ),
+            ),
+            (
+                ModelCompletion(
+                    message=final_message,
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+    loop = AgentLoop(
+        provider,
+        EnvironmentKernel(tmp_path).create_binding(),
+    )
+
+    events = asyncio.run(_collect_events(loop, user_message))
+
+    assert events == (
+        ToolCallReady(call=write_call),
+        ToolCallReady(call=read_call),
+        ModelCompletion(message=final_message, finish_reason="stop"),
+    )
+    assert len(provider.requests) == 2
+    result_message = provider.requests[1].messages[-1]
+    assert isinstance(result_message, ToolResultMessage)
+    assert tuple(result.call_id for result in result_message.content) == (
+        write_call.call_id,
+        read_call.call_id,
+    )
+    assert _stdout(result_message.content[1]) == "written-first\n"
+    assert loop.history == (
+        user_message,
+        tool_message,
+        result_message,
+        final_message,
+    )
+    provider.assert_exhausted()
+
+
+def test_tool_call_ready_order_does_not_change_dispatch_order(
+    tmp_path: Path,
+) -> None:
+    user_message = UserMessage.text("Create and inspect a marker")
+    write_call, read_call = _ordered_file_calls()
+    tool_message = AssistantMessage(content=(write_call, read_call))
+    final_message = AssistantMessage.text("Marker inspected.")
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                ToolCallReady(call=read_call),
+                TextDelta(text="Calls became ready out of order."),
+                ToolCallReady(call=write_call),
+                ModelCompletion(
+                    message=tool_message,
+                    finish_reason="tool_calls",
+                ),
+            ),
+            (
+                ModelCompletion(
+                    message=final_message,
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+    loop = AgentLoop(
+        provider,
+        EnvironmentKernel(tmp_path).create_binding(),
+    )
+
+    events = asyncio.run(_collect_events(loop, user_message))
+
+    assert events == (
+        ToolCallReady(call=read_call),
+        TextDelta(text="Calls became ready out of order."),
+        ToolCallReady(call=write_call),
+        ModelCompletion(message=final_message, finish_reason="stop"),
+    )
+    assert len(provider.requests) == 2
+    result_message = provider.requests[1].messages[-1]
+    assert isinstance(result_message, ToolResultMessage)
+    assert tuple(result.call_id for result in result_message.content) == (
+        write_call.call_id,
+        read_call.call_id,
+    )
+    assert _stdout(result_message.content[1]) == "written-first\n"
+    provider.assert_exhausted()
+
+
 def _python_command(source: str) -> str:
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(source)}"
+
+
+def _ordered_file_calls() -> tuple[ToolCall, ToolCall]:
+    write_call = ToolCall(
+        call_id="write_marker",
+        name="exec",
+        arguments={
+            "command": _python_command(
+                "from pathlib import Path; "
+                "Path('order.txt').write_text('written-first')"
+            )
+        },
+    )
+    read_call = ToolCall(
+        call_id="read_marker",
+        name="exec",
+        arguments={
+            "command": _python_command(
+                "from pathlib import Path; print(Path('order.txt').read_text())"
+            )
+        },
+    )
+    return write_call, read_call
+
+
+def _stdout(result: ToolResult) -> str:
+    output = result.output
+    assert isinstance(output, dict)
+    chunks = output["chunks"]
+    assert isinstance(chunks, list)
+    return "".join(
+        str(chunk["text"])
+        for chunk in chunks
+        if isinstance(chunk, dict) and chunk.get("stream") == "stdout"
+    )
 
 
 async def _collect_events(
