@@ -1,5 +1,6 @@
 """Provider-neutral building blocks for an embeddable agent runtime."""
 
+from runtime._syscalls import SyscallSchema
 from runtime.model import (
     AssistantMessage,
     JSONValue,
@@ -27,6 +28,7 @@ __all__ = (
     "ModelProvider",
     "ModelRequest",
     "OpenAICompatibleModelProvider",
+    "SyscallSchema",
     "TextBlock",
     "TextDelta",
     "ToolCall",

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol, TypeAlias
+
+from runtime._syscalls import BUILDIN_TOOL_SCHEMA_DEFINITIONS, SyscallSchema
 
 
 JSONValue: TypeAlias = (
@@ -75,9 +77,13 @@ ModelMessage: TypeAlias = UserMessage | AssistantMessage | ToolResultMessage
 
 @dataclass(frozen=True, slots=True)
 class ModelRequest:
-    """The provider-neutral conversation submitted for generation."""
+    """The provider-neutral conversation and fixed environment protocol."""
 
     messages: tuple[ModelMessage, ...]
+    syscalls: tuple[SyscallSchema, ...] = field(
+        default=BUILDIN_TOOL_SCHEMA_DEFINITIONS,
+        init=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
