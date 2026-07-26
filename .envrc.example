@@ -1,0 +1,6 @@
+# Copy this file to .envrc and fill in the Provider configuration.
+PATH_add .venv/bin
+
+export CLI_AGENT_MODEL="your-model"
+export CLI_AGENT_BASE_URL="your-base-url"
+export CLI_AGENT_API_KEY="your-api-key"

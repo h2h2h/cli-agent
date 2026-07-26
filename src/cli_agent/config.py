@@ -13,8 +13,9 @@ import httpx
 
 from cli_agent.runtime import OpenAICompatibleModelProvider
 
-DEFAULT_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
+MODEL_ENV = "CLI_AGENT_MODEL"
+BASE_URL_ENV = "CLI_AGENT_BASE_URL"
+API_KEY_ENV = "CLI_AGENT_API_KEY"
 
 
 class CliConfigurationError(ValueError):
@@ -29,7 +30,6 @@ class CliConfig:
     workspace: Path
     base_url: str
     model: str
-    api_key_env: str
     api_key: str = field(repr=False)
 
 
@@ -47,34 +47,21 @@ def parse_cli_config(
     if not task:
         raise CliConfigurationError("task must not be empty")
 
-    model = args.model.strip()
-    if not model:
-        raise CliConfigurationError("model must not be empty")
-
     workspace = Path(args.workspace).expanduser().resolve()
     if not workspace.is_dir():
         raise CliConfigurationError(
             f"workspace must be an existing directory: {args.workspace}"
         )
 
-    base_url = _normalize_base_url(args.base_url)
-    api_key_env = args.api_key_env.strip()
-    if not api_key_env:
-        raise CliConfigurationError("API key environment variable name is empty")
-
-    api_key = environment.get(api_key_env)
-    if api_key is None or not api_key.strip():
-        raise CliConfigurationError(
-            f"API key environment variable {api_key_env} is not set; "
-            "load it with direnv before starting cli-agent"
-        )
+    model = _required_environment(environment, MODEL_ENV)
+    base_url = _normalize_base_url(_required_environment(environment, BASE_URL_ENV))
+    api_key = _required_environment(environment, API_KEY_ENV)
 
     return CliConfig(
         task=task,
         workspace=workspace,
         base_url=base_url,
         model=model,
-        api_key_env=api_key_env,
         api_key=api_key,
     )
 
@@ -105,25 +92,20 @@ def _argument_parser() -> argparse.ArgumentParser:
         default=".",
         help="Workspace directory (default: current directory).",
     )
-    parser.add_argument(
-        "--base-url",
-        default=DEFAULT_BASE_URL,
-        help=f"OpenAI-compatible API base URL (default: {DEFAULT_BASE_URL}).",
-    )
-    parser.add_argument(
-        "--model",
-        required=True,
-        help="Model name understood by the configured endpoint.",
-    )
-    parser.add_argument(
-        "--api-key-env",
-        default=DEFAULT_API_KEY_ENV,
-        help=(
-            "Environment variable containing the Provider API key "
-            f"(default: {DEFAULT_API_KEY_ENV}; normally loaded by direnv)."
-        ),
-    )
     return parser
+
+
+def _required_environment(
+    environment: Mapping[str, str],
+    name: str,
+) -> str:
+    value = environment.get(name)
+    if value is None or not value.strip():
+        raise CliConfigurationError(
+            f"environment variable {name} is not set; "
+            "export it from .envrc and run direnv allow"
+        )
+    return value.strip()
 
 
 def _normalize_base_url(value: str) -> str:

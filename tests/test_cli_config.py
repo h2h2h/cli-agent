@@ -8,8 +8,9 @@ import cli_agent.cli as cli_module
 import cli_agent.config as config_module
 from cli_agent.cli import main
 from cli_agent.config import (
-    DEFAULT_API_KEY_ENV,
-    DEFAULT_BASE_URL,
+    API_KEY_ENV,
+    BASE_URL_ENV,
+    MODEL_ENV,
     CliConfig,
     CliConfigurationError,
     build_provider,
@@ -18,29 +19,30 @@ from cli_agent.config import (
 from cli_agent.runtime import OpenAICompatibleModelProvider
 
 
-def test_parses_default_cli_configuration(
+def test_parses_direnv_configuration(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
     config = parse_cli_config(
-        ["Inspect the Workspace", "--model", "test-model"],
-        environ={DEFAULT_API_KEY_ENV: "default-secret"},
+        ["Inspect the Workspace"],
+        environ=_environment(),
     )
 
     assert config == CliConfig(
         task="Inspect the Workspace",
         workspace=tmp_path.resolve(),
-        base_url=DEFAULT_BASE_URL,
+        base_url="https://models.example/v1",
         model="test-model",
-        api_key_env=DEFAULT_API_KEY_ENV,
-        api_key="default-secret",
+        api_key="secret",
     )
-    assert "default-secret" not in repr(config)
+    assert "secret" not in repr(config)
 
 
-def test_parses_and_normalizes_cli_overrides(tmp_path: Path) -> None:
+def test_parses_workspace_override_and_normalizes_base_url(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
@@ -49,40 +51,38 @@ def test_parses_and_normalizes_cli_overrides(tmp_path: Path) -> None:
             "Run tests",
             "--workspace",
             str(workspace),
-            "--base-url",
-            "http://localhost:8080/v1/",
-            "--model",
-            "compatible-model",
-            "--api-key-env",
-            "COMPATIBLE_API_KEY",
         ],
-        environ={"COMPATIBLE_API_KEY": "compatible-secret"},
+        environ=_environment(base_url="http://localhost:8080/v1/"),
     )
 
     assert config == CliConfig(
         task="Run tests",
         workspace=workspace.resolve(),
         base_url="http://localhost:8080/v1",
-        model="compatible-model",
-        api_key_env="COMPATIBLE_API_KEY",
-        api_key="compatible-secret",
+        model="test-model",
+        api_key="secret",
     )
 
 
-def test_reports_missing_api_key_environment_variable(tmp_path: Path) -> None:
+@pytest.mark.parametrize("missing_name", (MODEL_ENV, BASE_URL_ENV, API_KEY_ENV))
+def test_reports_missing_required_environment_variable(
+    tmp_path: Path,
+    missing_name: str,
+) -> None:
+    environment = _environment()
+    environment.pop(missing_name)
+
     with pytest.raises(
         CliConfigurationError,
-        match=f"{DEFAULT_API_KEY_ENV} is not set",
+        match=f"{missing_name} is not set",
     ):
         parse_cli_config(
             [
                 "Inspect",
                 "--workspace",
                 str(tmp_path),
-                "--model",
-                "test-model",
             ],
-            environ={},
+            environ=environment,
         )
 
 
@@ -101,10 +101,8 @@ def test_rejects_invalid_workspace(
                 "Inspect",
                 "--workspace",
                 str(workspace),
-                "--model",
-                "test-model",
             ],
-            environ={DEFAULT_API_KEY_ENV: "secret"},
+            environ=_environment(),
         )
 
 
@@ -119,12 +117,11 @@ def test_rejects_invalid_base_url_without_exposing_secret(
                 "Inspect",
                 "--workspace",
                 str(tmp_path),
-                "--base-url",
-                "models.example/v1?key=visible",
-                "--model",
-                "test-model",
             ],
-            environ={DEFAULT_API_KEY_ENV: secret},
+            environ=_environment(
+                base_url="models.example/v1?key=visible",
+                api_key=secret,
+            ),
         )
 
     assert "base URL" in str(raised.value)
@@ -137,15 +134,13 @@ def test_main_prints_concise_configuration_error_without_secret(
     capsys,
 ) -> None:
     secret = "must-not-be-logged"
-    monkeypatch.setenv(DEFAULT_API_KEY_ENV, secret)
+    _set_environment(monkeypatch, api_key=secret)
 
     exit_code = main(
         [
             "Inspect",
             "--workspace",
             str(tmp_path / "missing"),
-            "--model",
-            "test-model",
         ]
     )
 
@@ -164,7 +159,6 @@ def test_builds_provider_separately_from_cli_parsing(
         workspace=tmp_path,
         base_url="https://models.example/v1",
         model="test-model",
-        api_key_env="MODEL_API_KEY",
         api_key="secret",
     )
     transport = httpx.MockTransport(
@@ -184,19 +178,16 @@ def test_declares_cli_agent_console_entry_point() -> None:
     assert project["project"]["scripts"]["cli-agent"] == "cli_agent.cli:main"
 
 
-def test_declares_direnv_local_credentials_convention() -> None:
+def test_declares_direnv_configuration_convention() -> None:
     project_root = Path(__file__).parents[1]
+    template = project_root.joinpath(".envrc.example").read_text()
+    ignored = project_root.joinpath(".gitignore").read_text().splitlines()
 
-    assert (
-        project_root.joinpath(".envrc").read_text()
-        == "# Use the uv-managed project environment and keep secrets "
-        "in the ignored file.\n"
-        "PATH_add .venv/bin\n"
-        "source_env_if_exists .envrc.local\n"
-    )
-    assert (
-        ".envrc.local" in project_root.joinpath(".gitignore").read_text().splitlines()
-    )
+    assert "PATH_add .venv/bin" in template
+    assert f"export {MODEL_ENV}=" in template
+    assert f"export {BASE_URL_ENV}=" in template
+    assert f"export {API_KEY_ENV}=" in template
+    assert ".envrc" in ignored
 
 
 def test_main_uses_validated_config_to_build_provider(
@@ -228,15 +219,13 @@ def test_main_uses_validated_config_to_build_provider(
         RecordingProvider,
     )
     monkeypatch.setattr(cli_module, "run_agent", recording_run_agent)
-    monkeypatch.setenv(DEFAULT_API_KEY_ENV, "secret")
+    _set_environment(monkeypatch)
 
     exit_code = main(
         [
             "Inspect",
             "--workspace",
             str(tmp_path),
-            "--model",
-            "test-model",
         ]
     )
 
@@ -244,15 +233,14 @@ def test_main_uses_validated_config_to_build_provider(
     assert provider_options == {
         "model": "test-model",
         "api_key": "secret",
-        "base_url": DEFAULT_BASE_URL,
+        "base_url": "https://models.example/v1",
         "transport": None,
     }
     assert run_call["config"] == CliConfig(
         task="Inspect",
         workspace=tmp_path.resolve(),
-        base_url=DEFAULT_BASE_URL,
+        base_url="https://models.example/v1",
         model="test-model",
-        api_key_env=DEFAULT_API_KEY_ENV,
         api_key="secret",
     )
     assert isinstance(run_call["provider"], RecordingProvider)
@@ -269,15 +257,13 @@ def test_main_reports_agent_failure(
         raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr(cli_module, "run_agent", failing_run_agent)
-    monkeypatch.setenv(DEFAULT_API_KEY_ENV, "secret")
+    _set_environment(monkeypatch)
 
     exit_code = main(
         [
             "Inspect",
             "--workspace",
             str(tmp_path),
-            "--model",
-            "test-model",
         ]
     )
 
@@ -285,3 +271,31 @@ def test_main_reports_agent_failure(
     assert exit_code == 1
     assert captured.out == ""
     assert captured.err == "cli-agent: provider unavailable\n"
+
+
+def _environment(
+    *,
+    model: str = "test-model",
+    base_url: str = "https://models.example/v1",
+    api_key: str = "secret",
+) -> dict[str, str]:
+    return {
+        MODEL_ENV: model,
+        BASE_URL_ENV: base_url,
+        API_KEY_ENV: api_key,
+    }
+
+
+def _set_environment(
+    monkeypatch,
+    *,
+    model: str = "test-model",
+    base_url: str = "https://models.example/v1",
+    api_key: str = "secret",
+) -> None:
+    for name, value in _environment(
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+    ).items():
+        monkeypatch.setenv(name, value)

@@ -178,7 +178,6 @@ def _config(tmp_path: Path, *, task: str = "Run the task") -> CliConfig:
         workspace=tmp_path,
         base_url="https://models.example/v1",
         model="test-model",
-        api_key_env="MODEL_API_KEY",
         api_key="secret",
     )
 
