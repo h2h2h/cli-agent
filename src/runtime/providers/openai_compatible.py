@@ -7,12 +7,17 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from runtime._builtin_tools import ToolSchema
 from runtime.model import (
     AssistantMessage,
     ModelCompletion,
     ModelEvent,
+    ModelMessage,
     ModelRequest,
+    SystemMessage,
+    TextBlock,
     TextDelta,
+    ToolCall,
     UserMessage,
 )
 
@@ -46,7 +51,12 @@ class OpenAICompatibleModelProvider:
                 },
                 json={
                     "model": self._model,
-                    "messages": [_message_payload(message) for message in request.messages],
+                    "messages": [
+                        payload
+                        for message in request.messages
+                        for payload in _message_payloads(message)
+                    ],
+                    "tools": [_tool_payload(tool) for tool in request.tools],
                     "stream": True,
                 },
             ) as response:
@@ -81,7 +91,59 @@ class OpenAICompatibleModelProvider:
                         return
 
 
-def _message_payload(message: UserMessage | AssistantMessage) -> dict[str, str]:
-    role = "user" if isinstance(message, UserMessage) else "assistant"
-    content = "".join(block.text for block in message.content)
-    return {"role": role, "content": content}
+def _message_payloads(message: ModelMessage) -> tuple[dict[str, object], ...]:
+    if isinstance(message, SystemMessage):
+        return ({"role": "system", "content": _text_content(message.content)},)
+
+    if isinstance(message, UserMessage):
+        return ({"role": "user", "content": _text_content(message.content)},)
+
+    if isinstance(message, AssistantMessage):
+        payload: dict[str, object] = {
+            "role": "assistant",
+            "content": _text_content(
+                tuple(
+                    block for block in message.content if isinstance(block, TextBlock)
+                )
+            ),
+        }
+        calls = tuple(block for block in message.content if isinstance(block, ToolCall))
+        if calls:
+            payload["tool_calls"] = [
+                {
+                    "id": call.call_id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments),
+                    },
+                }
+                for call in calls
+            ]
+        return (payload,)
+
+    return tuple(
+        {
+            "role": "tool",
+            "tool_call_id": result.call_id,
+            "content": json.dumps(
+                result.error if result.error is not None else result.output
+            ),
+        }
+        for result in message.content
+    )
+
+
+def _text_content(content: tuple[TextBlock, ...]) -> str:
+    return "".join(block.text for block in content)
+
+
+def _tool_payload(tool: ToolSchema) -> dict[str, object]:
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.input_schema,
+        },
+    }
