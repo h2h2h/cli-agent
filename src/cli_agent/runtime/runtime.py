@@ -8,10 +8,10 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-from runtime._agent_loop import AgentLoop
-from runtime._environment import EnvironmentBinding, EnvironmentKernel
-from runtime._system_message import assemble_system_message
-from runtime.model import ModelEvent, ModelProvider, UserMessage
+from cli_agent.runtime._agent_loop import AgentLoop
+from cli_agent.runtime._environment import EnvironmentBinding, EnvironmentKernel
+from cli_agent.runtime._system_message import assemble_system_message
+from cli_agent.runtime.model import ModelEvent, ModelProvider, UserMessage
 
 
 class RuntimeClosedError(RuntimeError):

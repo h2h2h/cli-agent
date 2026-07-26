@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from runtime import ToolCall, ToolResult
-from runtime._environment import EnvironmentKernel
+from cli_agent.runtime import ToolCall, ToolResult
+from cli_agent.runtime._environment import EnvironmentKernel
 
 
 def test_executes_short_command_and_retains_ordered_output(
@@ -193,7 +193,9 @@ def test_closes_binding_and_kernel_idempotently(tmp_path: Path) -> None:
         await binding.close()
         await binding.close()
         closed_session_result = await binding.dispatch(
-            ToolCall(call_id="closed_session", name="exec", arguments={"command": "pwd"})
+            ToolCall(
+                call_id="closed_session", name="exec", arguments={"command": "pwd"}
+            )
         )
         assert _error(closed_session_result)["code"] == "internal"
 

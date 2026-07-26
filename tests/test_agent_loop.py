@@ -3,7 +3,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from runtime import (
+from cli_agent.runtime import (
     AssistantMessage,
     ModelCompletion,
     ModelEvent,
@@ -18,9 +18,8 @@ from runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from runtime._agent_loop import AgentLoop
-from runtime._environment import EnvironmentKernel
-
+from cli_agent.runtime._agent_loop import AgentLoop
+from cli_agent.runtime._environment import EnvironmentKernel
 
 SYSTEM_MESSAGE = SystemMessage.text("Test Runtime instruction")
 

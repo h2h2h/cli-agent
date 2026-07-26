@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 
-from runtime import (
+from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
     ModelCompletion,

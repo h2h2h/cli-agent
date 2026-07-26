@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-import runtime.runtime as runtime_module
-from runtime import (
+import cli_agent.runtime.runtime as runtime_module
+from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
     ModelCompletion,

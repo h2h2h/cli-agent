@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from runtime._environment import EnvironmentBinding
-from runtime.model import (
+from cli_agent.runtime._environment import EnvironmentBinding
+from cli_agent.runtime.model import (
     ModelCompletion,
     ModelEvent,
     ModelMessage,

@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from runtime._builtin_tools import ToolSchema
-from runtime.model import (
+from cli_agent.runtime._builtin_tools import ToolSchema
+from cli_agent.runtime.model import (
     AssistantMessage,
     ModelCompletion,
     ModelEvent,

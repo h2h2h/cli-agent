@@ -1,0 +1,2 @@
+# Copy this file to .envrc.local and replace the placeholder.
+export OPENAI_API_KEY="replace-with-your-provider-api-key"

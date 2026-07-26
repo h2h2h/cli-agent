@@ -9,9 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from runtime.model import JSONValue, ToolCall, ToolResult
+from cli_agent.runtime.model import JSONValue, ToolCall, ToolResult
 
- 
 _BUILTIN_TOOL_NAMES = frozenset({"exec", "output", "kill"})
 
 

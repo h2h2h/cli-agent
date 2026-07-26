@@ -6,8 +6,10 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Protocol, TypeAlias
 
-from runtime._builtin_tools import BUILDIN_TOOL_SCHEMA_DEFINITIONS, ToolSchema
-
+from cli_agent.runtime._builtin_tools import (
+    BUILDIN_TOOL_SCHEMA_DEFINITIONS,
+    ToolSchema,
+)
 
 JSONValue: TypeAlias = (
     None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]

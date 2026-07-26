@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable
 
-from runtime.model import ModelEvent, ModelRequest
+from cli_agent.runtime.model import ModelEvent, ModelRequest
 
 
 class ScriptedModelProvider:

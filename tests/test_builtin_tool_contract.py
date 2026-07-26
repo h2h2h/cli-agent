@@ -4,8 +4,8 @@ from inspect import signature
 
 import pytest
 
-from runtime import ModelRequest, UserMessage
-from runtime._builtin_tools import BUILDIN_TOOL_SCHEMA_DEFINITIONS
+from cli_agent.runtime import ModelRequest, UserMessage
+from cli_agent.runtime._builtin_tools import BUILDIN_TOOL_SCHEMA_DEFINITIONS
 
 
 def test_model_request_exposes_the_exact_fixed_builtin_tools() -> None:

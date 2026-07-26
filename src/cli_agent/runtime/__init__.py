@@ -1,7 +1,7 @@
-"""Provider-neutral building blocks for an embeddable agent runtime."""
+"""Provider-neutral building blocks for the cli-agent Runtime."""
 
-from runtime._builtin_tools import ToolSchema
-from runtime.model import (
+from cli_agent.runtime._builtin_tools import ToolSchema
+from cli_agent.runtime.model import (
     AssistantMessage,
     JSONValue,
     ModelCompletion,
@@ -19,8 +19,11 @@ from runtime.model import (
     ToolResultMessage,
     UserMessage,
 )
-from runtime.providers import OpenAICompatibleModelProvider, ScriptedModelProvider
-from runtime.runtime import AgentRuntime, RuntimeClosedError
+from cli_agent.runtime.providers import (
+    OpenAICompatibleModelProvider,
+    ScriptedModelProvider,
+)
+from cli_agent.runtime.runtime import AgentRuntime, RuntimeClosedError
 
 __all__ = (
     "AgentRuntime",

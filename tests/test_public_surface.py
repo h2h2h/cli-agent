@@ -1,6 +1,6 @@
-"""Public-import contract for the `runtime` package."""
+"""Public-import contract for the `cli_agent.runtime` package."""
 
-import runtime
+from cli_agent import runtime
 
 
 def test_exposes_provider_neutral_model_types() -> None:
@@ -24,8 +24,10 @@ def test_exposes_provider_neutral_model_types() -> None:
         "ToolResultMessage",
     }
     for name in public_model_names:
-        assert name in runtime.__all__, f"{name} missing from runtime.__all__"
-        assert hasattr(runtime, name), f"runtime missing public attribute: {name}"
+        assert name in runtime.__all__, f"{name} missing from cli_agent.runtime.__all__"
+        assert hasattr(runtime, name), (
+            f"cli_agent.runtime missing public attribute: {name}"
+        )
 
 
 def test_exposes_official_provider_adapters() -> None:
@@ -51,4 +53,6 @@ def test_keeps_runtime_internals_private() -> None:
 
 def test_all_entries_are_importable() -> None:
     for name in runtime.__all__:
-        assert hasattr(runtime, name), f"runtime.__all__ entry not importable: {name}"
+        assert hasattr(runtime, name), (
+            f"cli_agent.runtime.__all__ entry not importable: {name}"
+        )

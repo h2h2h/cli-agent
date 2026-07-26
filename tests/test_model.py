@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from runtime import (
+from cli_agent.runtime import (
     AssistantMessage,
     ModelCompletion,
     ModelEvent,

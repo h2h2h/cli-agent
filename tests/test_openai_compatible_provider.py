@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 
-from runtime import (
+from cli_agent.runtime import (
     AssistantMessage,
     ModelCompletion,
     ModelEvent,

@@ -4,7 +4,7 @@ import socket
 import sys
 from pathlib import Path
 
-from runtime import (
+from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
     ModelCompletion,
