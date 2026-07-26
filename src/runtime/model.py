@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Protocol, TypeAlias
 
-from runtime._syscalls import BUILDIN_TOOL_SCHEMA_DEFINITIONS, SyscallSchema
+from runtime._builtin_tools import BUILDIN_TOOL_SCHEMA_DEFINITIONS, ToolSchema
 
 
 JSONValue: TypeAlias = (
@@ -80,7 +80,7 @@ class ModelRequest:
     """The provider-neutral conversation and fixed environment protocol."""
 
     messages: tuple[ModelMessage, ...]
-    syscalls: tuple[SyscallSchema, ...] = field(
+    tools: tuple[ToolSchema, ...] = field(
         default=BUILDIN_TOOL_SCHEMA_DEFINITIONS,
         init=False,
     )

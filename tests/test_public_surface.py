@@ -15,7 +15,7 @@ def test_exposes_provider_neutral_model_types() -> None:
         "ModelEvent",
         "ModelProvider",
         "JSONValue",
-        "SyscallSchema",
+        "ToolSchema",
         "ToolCall",
         "ToolCallReady",
         "ToolResult",
@@ -29,11 +29,15 @@ def test_exposes_provider_neutral_model_types() -> None:
 def test_exposes_official_provider_adapters() -> None:
     assert "OpenAICompatibleModelProvider" in runtime.__all__
     assert hasattr(runtime, "OpenAICompatibleModelProvider")
+    assert "ScriptedModelProvider" in runtime.__all__
+    assert hasattr(runtime, "ScriptedModelProvider")
 
 
-def test_keeps_agent_loop_private() -> None:
-    assert "AgentLoop" not in runtime.__all__
-    assert not hasattr(runtime, "AgentLoop")
+def test_keeps_runtime_internals_private() -> None:
+    private_names = {"AgentLoop", "EnvironmentBinding", "EnvironmentKernel"}
+    for name in private_names:
+        assert name not in runtime.__all__
+        assert not hasattr(runtime, name)
 
 
 def test_all_entries_are_importable() -> None:

@@ -1,11 +1,11 @@
 import asyncio
-from collections.abc import AsyncIterator
 
 from runtime import (
     AssistantMessage,
     ModelCompletion,
     ModelEvent,
     ModelRequest,
+    ScriptedModelProvider,
     TextDelta,
     UserMessage,
 )
@@ -13,16 +13,25 @@ from runtime._agent_loop import AgentLoop
 
 
 def test_completes_a_text_only_turn() -> None:
-    provider = GreetingProvider()
-    loop = AgentLoop(provider)
     user_message = UserMessage.text("Hello")
     assistant_message = AssistantMessage.text("Hi")
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                TextDelta(text="H"),
+                TextDelta(text="i"),
+                ModelCompletion(
+                    message=assistant_message,
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+    loop = AgentLoop(provider)
 
     events = asyncio.run(_collect_events(loop, user_message))
 
-    assert provider.requests == [
-        ModelRequest(messages=(user_message,)),
-    ]
+    assert provider.requests == (ModelRequest(messages=(user_message,)),)
     assert events == (
         TextDelta(text="H"),
         TextDelta(text="i"),
@@ -32,20 +41,7 @@ def test_completes_a_text_only_turn() -> None:
         ),
     )
     assert loop.history == (user_message, assistant_message)
-
-
-class GreetingProvider:
-    def __init__(self) -> None:
-        self.requests: list[ModelRequest] = []
-
-    async def generate(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
-        self.requests.append(request)
-        yield TextDelta(text="H")
-        yield TextDelta(text="i")
-        yield ModelCompletion(
-            message=AssistantMessage.text("Hi"),
-            finish_reason="stop",
-        )
+    provider.assert_exhausted()
 
 
 async def _collect_events(

@@ -1,4 +1,4 @@
-"""Fixed provider-neutral AEP Syscall contracts."""
+"""Fixed provider-neutral built-in tool contracts."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
-class SyscallSchema:
-    """A provider-neutral definition of one fixed AEP Syscall."""
+class ToolSchema:
+    """A provider-neutral definition of one built-in tool."""
 
     name: str
     description: str
@@ -100,7 +100,7 @@ _EXECUTION_OUTPUT_SCHEMA: dict[str, object] = {
 }
 
 BUILDIN_TOOL_SCHEMA_DEFINITIONS = (
-    SyscallSchema(
+    ToolSchema(
         name="exec",
         description=(
             "Start one command in the current bound environment session and return "
@@ -135,7 +135,7 @@ BUILDIN_TOOL_SCHEMA_DEFINITIONS = (
         },
         output_schema=_EXECUTION_OUTPUT_SCHEMA,
     ),
-    SyscallSchema(
+    ToolSchema(
         name="output",
         description=(
             "Read retained incremental output for an execution in the current bound "
@@ -173,7 +173,7 @@ BUILDIN_TOOL_SCHEMA_DEFINITIONS = (
         },
         output_schema=_EXECUTION_OUTPUT_SCHEMA,
     ),
-    SyscallSchema(
+    ToolSchema(
         name="kill",
         description=(
             "Terminate a queued or running execution in the current bound environment "

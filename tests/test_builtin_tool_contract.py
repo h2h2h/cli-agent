@@ -5,33 +5,33 @@ from inspect import signature
 import pytest
 
 from runtime import ModelRequest, UserMessage
-from runtime._syscalls import BUILDIN_TOOL_SCHEMA_DEFINITIONS
+from runtime._builtin_tools import BUILDIN_TOOL_SCHEMA_DEFINITIONS
 
 
-def test_model_request_exposes_the_exact_fixed_aep_syscall_surface() -> None:
+def test_model_request_exposes_the_exact_fixed_builtin_tools() -> None:
     request = ModelRequest(messages=(UserMessage.text("inspect the workspace"),))
 
-    assert request.syscalls is BUILDIN_TOOL_SCHEMA_DEFINITIONS
-    assert len(request.syscalls) == 3
-    assert tuple(schema.name for schema in request.syscalls) == (
+    assert request.tools is BUILDIN_TOOL_SCHEMA_DEFINITIONS
+    assert len(request.tools) == 3
+    assert tuple(schema.name for schema in request.tools) == (
         "exec",
         "output",
         "kill",
     )
-    assert [schema.to_json() for schema in request.syscalls] == _expected_schemas()
+    assert [schema.to_json() for schema in request.tools] == _expected_schemas()
 
 
-def test_fixed_syscall_shape_is_json_serializable_and_immutable() -> None:
+def test_builtin_tool_shape_is_json_serializable_and_immutable() -> None:
     request = ModelRequest(messages=())
-    serialized = json.dumps([schema.to_json() for schema in request.syscalls])
+    serialized = json.dumps([schema.to_json() for schema in request.tools])
 
     assert json.loads(serialized) == _expected_schemas()
 
     with pytest.raises(FrozenInstanceError):
-        request.syscalls[0].name = "dynamic_exec"  # type: ignore[misc]
+        request.tools[0].name = "dynamic_exec"  # type: ignore[misc]
 
 
-def test_runtime_capability_metadata_cannot_change_the_syscall_tuple() -> None:
+def test_runtime_capability_metadata_cannot_change_builtin_tools() -> None:
     capability_metadata = {
         "skills": ["deploy"],
         "tools": ["search"],
@@ -44,22 +44,22 @@ def test_runtime_capability_metadata_cannot_change_the_syscall_tuple() -> None:
     capability_metadata["mcp"].clear()
     second_request = ModelRequest(messages=())
 
-    assert first_request.syscalls is second_request.syscalls
-    assert tuple(schema.name for schema in second_request.syscalls) == (
+    assert first_request.tools is second_request.tools
+    assert tuple(schema.name for schema in second_request.tools) == (
         "exec",
         "output",
         "kill",
     )
     assert not set(capability_metadata["skills"] + capability_metadata["tools"]) & {
-        schema.name for schema in second_request.syscalls
+        schema.name for schema in second_request.tools
     }
 
 
-def test_callers_cannot_supply_a_different_syscall_set_to_model_request() -> None:
+def test_callers_cannot_supply_different_tools_to_model_request() -> None:
     assert tuple(signature(ModelRequest).parameters) == ("messages",)
 
     with pytest.raises(TypeError):
-        ModelRequest(messages=(), syscalls=())  # type: ignore[call-arg]
+        ModelRequest(messages=(), tools=())  # type: ignore[call-arg]
 
 
 def _expected_schemas() -> list[dict[str, object]]:
