@@ -4,7 +4,18 @@ from pathlib import Path
 import pytest
 
 import runtime.runtime as runtime_module
-from runtime import AgentRuntime, RuntimeClosedError, ScriptedModelProvider
+from runtime import (
+    AgentRuntime,
+    AssistantMessage,
+    ModelCompletion,
+    ModelEvent,
+    ModelProvider,
+    RuntimeClosedError,
+    ScriptedModelProvider,
+    ToolCall,
+    ToolResult,
+    UserMessage,
+)
 
 
 def test_opens_and_closes_runtime_explicitly(tmp_path: Path, monkeypatch) -> None:
@@ -90,6 +101,129 @@ def test_cleans_up_environment_when_open_fails(
     asyncio.run(scenario())
 
 
+def test_reuses_session_history_and_bound_provider(tmp_path: Path) -> None:
+    first_user = UserMessage.text("First turn")
+    second_user = UserMessage.text("Second turn")
+    first_assistant = AssistantMessage.text("First response")
+    second_assistant = AssistantMessage.text("Second response")
+    default_provider = ScriptedModelProvider(script=())
+    session_provider = ScriptedModelProvider(
+        script=(
+            (_completion(first_assistant),),
+            (_completion(second_assistant),),
+        )
+    )
+
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=default_provider,
+        )
+
+        first_events = await _collect_turn(
+            runtime,
+            "session-a",
+            first_user,
+            provider=session_provider,
+        )
+        second_events = await _collect_turn(
+            runtime,
+            "session-a",
+            second_user,
+            provider=default_provider,
+        )
+
+        assert first_events == (_completion(first_assistant),)
+        assert second_events == (_completion(second_assistant),)
+        assert session_provider.requests[0].messages == (first_user,)
+        assert session_provider.requests[1].messages == (
+            first_user,
+            first_assistant,
+            second_user,
+        )
+        assert default_provider.requests == ()
+        session_provider.assert_exhausted()
+        default_provider.assert_exhausted()
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_reusing_closed_session_id_creates_fresh_state(tmp_path: Path) -> None:
+    first_user = UserMessage.text("Before close")
+    second_user = UserMessage.text("After close")
+    first_assistant = AssistantMessage.text("Old state")
+    second_assistant = AssistantMessage.text("Fresh state")
+    provider = ScriptedModelProvider(
+        script=(
+            (_completion(first_assistant),),
+            (_completion(second_assistant),),
+        )
+    )
+
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=provider,
+        )
+
+        await _collect_turn(runtime, "session-a", first_user)
+        await runtime.close_session("session-a")
+        await runtime.close_session("session-a")
+        await runtime.close_session("unknown")
+        await _collect_turn(runtime, "session-a", second_user)
+
+        assert provider.requests[0].messages == (first_user,)
+        assert provider.requests[1].messages == (second_user,)
+        provider.assert_exhausted()
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_runtime_closes_all_sessions_before_environment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _TrackingEnvironmentKernel.instances.clear()
+    monkeypatch.setattr(
+        runtime_module,
+        "EnvironmentKernel",
+        _TrackingEnvironmentKernel,
+    )
+    provider = ScriptedModelProvider(
+        script=(
+            (_completion(AssistantMessage.text("A")),),
+            (_completion(AssistantMessage.text("B")),),
+        )
+    )
+
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=provider,
+        )
+        await _collect_turn(runtime, "session-a", UserMessage.text("A"))
+        await _collect_turn(runtime, "session-b", UserMessage.text("B"))
+
+        await runtime.close()
+        await runtime.close()
+
+        kernel = _TrackingEnvironmentKernel.instances[0]
+        assert [binding.close_count for binding in kernel.bindings] == [1, 1]
+        assert kernel.close_count == 1
+        assert kernel.events == [
+            "binding.close",
+            "binding.close",
+            "kernel.close",
+        ]
+        await runtime.close_session("session-a")
+        with pytest.raises(RuntimeClosedError, match="AgentRuntime is closed"):
+            await _collect_turn(runtime, "session-a", UserMessage.text("closed"))
+
+    asyncio.run(scenario())
+
+
 class OpenFailure(Exception):
     pass
 
@@ -100,7 +234,51 @@ class _TrackingEnvironmentKernel:
     def __init__(self, workspace: str | Path) -> None:
         self.workspace = Path(workspace)
         self.close_count = 0
+        self.events: list[str] = []
+        self.bindings: list[_TrackingEnvironmentBinding] = []
         self.instances.append(self)
+
+    def create_binding(self) -> "_TrackingEnvironmentBinding":
+        binding = _TrackingEnvironmentBinding(self.events)
+        self.bindings.append(binding)
+        return binding
 
     async def close(self) -> None:
         self.close_count += 1
+        self.events.append("kernel.close")
+
+
+class _TrackingEnvironmentBinding:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+        self.close_count = 0
+
+    async def dispatch(self, call: ToolCall) -> ToolResult:
+        raise AssertionError(f"unexpected Tool Call: {call}")
+
+    async def close(self) -> None:
+        self.close_count += 1
+        self._events.append("binding.close")
+
+
+def _completion(message: AssistantMessage) -> ModelCompletion:
+    return ModelCompletion(message=message, finish_reason="stop")
+
+
+async def _collect_turn(
+    runtime: AgentRuntime,
+    session_id: str,
+    message: UserMessage,
+    *,
+    provider: ModelProvider | None = None,
+) -> tuple[ModelEvent, ...]:
+    return tuple(
+        [
+            event
+            async for event in runtime.run_turn(
+                session_id,
+                message,
+                provider=provider,
+            )
+        ]
+    )

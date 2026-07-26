@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-from runtime._environment import EnvironmentKernel
-from runtime.model import ModelProvider
+from runtime._agent_loop import AgentLoop
+from runtime._environment import EnvironmentBinding, EnvironmentKernel
+from runtime.model import ModelEvent, ModelProvider, UserMessage
 
 
 class RuntimeClosedError(RuntimeError):
     """Raised when work is requested from a closed Agent Runtime."""
+
+
+@dataclass(slots=True)
+class _Session:
+    provider: ModelProvider
+    environment: EnvironmentBinding
+    loop: AgentLoop
 
 
 class AgentRuntime:
@@ -26,6 +35,7 @@ class AgentRuntime:
     ) -> None:
         self._default_provider = default_provider
         self._environment = environment
+        self._sessions: dict[str, _Session] = {}
         self._closed = False
 
     @classmethod
@@ -67,7 +77,47 @@ class AgentRuntime:
         if self._closed:
             return
         self._closed = True
+        sessions = tuple(self._sessions.values())
+        self._sessions.clear()
+        for session in sessions:
+            await session.environment.close()
         await self._environment.close()
+
+    async def run_turn(
+        self,
+        session_id: str,
+        message: UserMessage,
+        *,
+        provider: ModelProvider | None = None,
+    ) -> AsyncIterator[ModelEvent]:
+        """Run one turn in a get-or-created Agent Session.
+
+        ``provider`` is used only when ``session_id`` is first seen.
+        """
+
+        self._ensure_open()
+        session = self._sessions.get(session_id)
+        if session is None:
+            session_provider = (
+                provider if provider is not None else self._default_provider
+            )
+            environment = self._environment.create_binding()
+            session = _Session(
+                provider=session_provider,
+                environment=environment,
+                loop=AgentLoop(session_provider, environment),
+            )
+            self._sessions[session_id] = session
+
+        async for event in session.loop.run(message):
+            yield event
+
+    async def close_session(self, session_id: str) -> None:
+        """Close and forget one Agent Session idempotently."""
+
+        session = self._sessions.pop(session_id, None)
+        if session is not None:
+            await session.environment.close()
 
     async def __aenter__(self) -> AgentRuntime:
         self._ensure_open()
