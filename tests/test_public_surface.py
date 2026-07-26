@@ -33,6 +33,13 @@ def test_exposes_official_provider_adapters() -> None:
     assert hasattr(runtime, "ScriptedModelProvider")
 
 
+def test_exposes_host_facing_runtime_lifecycle() -> None:
+    assert "AgentRuntime" in runtime.__all__
+    assert hasattr(runtime, "AgentRuntime")
+    assert "RuntimeClosedError" in runtime.__all__
+    assert hasattr(runtime, "RuntimeClosedError")
+
+
 def test_keeps_runtime_internals_private() -> None:
     private_names = {"AgentLoop", "EnvironmentBinding", "EnvironmentKernel"}
     for name in private_names:

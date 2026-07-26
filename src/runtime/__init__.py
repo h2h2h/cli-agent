@@ -18,8 +18,10 @@ from runtime.model import (
     UserMessage,
 )
 from runtime.providers import OpenAICompatibleModelProvider, ScriptedModelProvider
+from runtime.runtime import AgentRuntime, RuntimeClosedError
 
 __all__ = (
+    "AgentRuntime",
     "AssistantMessage",
     "JSONValue",
     "ModelCompletion",
@@ -28,6 +30,7 @@ __all__ = (
     "ModelProvider",
     "ModelRequest",
     "OpenAICompatibleModelProvider",
+    "RuntimeClosedError",
     "ScriptedModelProvider",
     "ToolSchema",
     "TextBlock",
