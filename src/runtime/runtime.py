@@ -10,6 +10,7 @@ from typing import Any
 
 from runtime._agent_loop import AgentLoop
 from runtime._environment import EnvironmentBinding, EnvironmentKernel
+from runtime._system_message import assemble_system_message
 from runtime.model import ModelEvent, ModelProvider, UserMessage
 
 
@@ -32,9 +33,13 @@ class AgentRuntime:
         *,
         default_provider: ModelProvider,
         environment: EnvironmentKernel,
+        workspace: Path,
+        system_instruction: str | None,
     ) -> None:
         self._default_provider = default_provider
         self._environment = environment
+        self._workspace = workspace
+        self._system_instruction = system_instruction
         self._sessions: dict[str, _Session] = {}
         self._closed = False
 
@@ -44,22 +49,35 @@ class AgentRuntime:
         *,
         workspace: str | Path,
         provider: ModelProvider,
+        system_instruction: str | None = None,
     ) -> _AgentRuntimeOpener:
-        """Prepare to asynchronously open a Workspace-bound Runtime."""
+        """Prepare to asynchronously open a Workspace-bound Runtime.
 
-        return _AgentRuntimeOpener(cls, workspace, provider)
+        ``system_instruction`` extends the canonical instruction assembled for
+        each new Agent Session.
+        """
+
+        return _AgentRuntimeOpener(
+            cls,
+            workspace,
+            provider,
+            system_instruction,
+        )
 
     @classmethod
     async def _open(
         cls,
         workspace: str | Path,
         provider: ModelProvider,
+        system_instruction: str | None,
     ) -> AgentRuntime:
         environment = EnvironmentKernel(workspace)
         try:
             return cls(
                 default_provider=provider,
                 environment=environment,
+                workspace=Path(workspace).resolve(),
+                system_instruction=system_instruction,
             )
         except BaseException:
             await environment.close()
@@ -105,7 +123,14 @@ class AgentRuntime:
             session = _Session(
                 provider=session_provider,
                 environment=environment,
-                loop=AgentLoop(session_provider, environment),
+                loop=AgentLoop(
+                    session_provider,
+                    environment,
+                    system_message=assemble_system_message(
+                        self._workspace,
+                        self._system_instruction,
+                    ),
+                ),
             )
             self._sessions[session_id] = session
 
@@ -144,10 +169,12 @@ class _AgentRuntimeOpener:
         runtime_type: type[AgentRuntime],
         workspace: str | Path,
         provider: ModelProvider,
+        system_instruction: str | None,
     ) -> None:
         self._runtime_type = runtime_type
         self._workspace = workspace
         self._provider = provider
+        self._system_instruction = system_instruction
         self._runtime: AgentRuntime | None = None
 
     def __await__(self) -> Generator[Any, None, AgentRuntime]:
@@ -175,6 +202,7 @@ class _AgentRuntimeOpener:
             self._runtime = await self._runtime_type._open(
                 self._workspace,
                 self._provider,
+                self._system_instruction,
             )
         else:
             self._runtime._ensure_open()

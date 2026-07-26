@@ -9,6 +9,7 @@ from runtime import (
     ModelEvent,
     ModelRequest,
     ScriptedModelProvider,
+    SystemMessage,
     TextBlock,
     TextDelta,
     ToolCall,
@@ -19,6 +20,9 @@ from runtime import (
 )
 from runtime._agent_loop import AgentLoop
 from runtime._environment import EnvironmentKernel
+
+
+SYSTEM_MESSAGE = SystemMessage.text("Test Runtime instruction")
 
 
 def test_completes_a_text_only_turn(tmp_path: Path) -> None:
@@ -36,11 +40,15 @@ def test_completes_a_text_only_turn(tmp_path: Path) -> None:
             ),
         )
     )
-    loop = AgentLoop(provider, EnvironmentKernel(tmp_path).create_binding())
+    loop = AgentLoop(
+        provider,
+        EnvironmentKernel(tmp_path).create_binding(),
+        system_message=SYSTEM_MESSAGE,
+    )
 
     events = asyncio.run(_collect_events(loop, user_message))
 
-    assert provider.requests == (ModelRequest(messages=(user_message,)),)
+    assert provider.requests == (ModelRequest(messages=(SYSTEM_MESSAGE, user_message)),)
     assert events == (
         TextDelta(text="H"),
         TextDelta(text="i"),
@@ -49,7 +57,7 @@ def test_completes_a_text_only_turn(tmp_path: Path) -> None:
             finish_reason="stop",
         ),
     )
-    assert loop.history == (user_message, assistant_message)
+    assert loop.history == (SYSTEM_MESSAGE, user_message, assistant_message)
     provider.assert_exhausted()
 
 
@@ -84,7 +92,11 @@ def test_continues_generation_after_exec_tool_result(tmp_path: Path) -> None:
         )
     )
     kernel = EnvironmentKernel(tmp_path)
-    loop = AgentLoop(provider, kernel.create_binding())
+    loop = AgentLoop(
+        provider,
+        kernel.create_binding(),
+        system_message=SYSTEM_MESSAGE,
+    )
 
     events = asyncio.run(_collect_events(loop, user_message))
 
@@ -96,7 +108,7 @@ def test_continues_generation_after_exec_tool_result(tmp_path: Path) -> None:
     )
     assert len(provider.requests) == 2
     first_request, second_request = provider.requests
-    assert first_request.messages == (user_message,)
+    assert first_request.messages == (SYSTEM_MESSAGE, user_message)
     for request in provider.requests:
         assert tuple(tool.name for tool in request.tools) == (
             "exec",
@@ -104,8 +116,12 @@ def test_continues_generation_after_exec_tool_result(tmp_path: Path) -> None:
             "kill",
         )
 
-    assert second_request.messages[:2] == (user_message, tool_message)
-    result_message = second_request.messages[2]
+    assert second_request.messages[:3] == (
+        SYSTEM_MESSAGE,
+        user_message,
+        tool_message,
+    )
+    result_message = second_request.messages[3]
     assert isinstance(result_message, ToolResultMessage)
     result = result_message.content[0]
     assert result.call_id == call.call_id
@@ -122,6 +138,7 @@ def test_continues_generation_after_exec_tool_result(tmp_path: Path) -> None:
         if isinstance(chunk, dict) and chunk.get("stream") == "stdout"
     )
     assert loop.history == (
+        SYSTEM_MESSAGE,
         user_message,
         tool_message,
         result_message,
@@ -156,6 +173,7 @@ def test_dispatches_tool_calls_serially_in_message_order(tmp_path: Path) -> None
     loop = AgentLoop(
         provider,
         EnvironmentKernel(tmp_path).create_binding(),
+        system_message=SYSTEM_MESSAGE,
     )
 
     events = asyncio.run(_collect_events(loop, user_message))
@@ -174,6 +192,7 @@ def test_dispatches_tool_calls_serially_in_message_order(tmp_path: Path) -> None
     )
     assert _stdout(result_message.content[1]) == "written-first\n"
     assert loop.history == (
+        SYSTEM_MESSAGE,
         user_message,
         tool_message,
         result_message,
@@ -211,6 +230,7 @@ def test_tool_call_ready_order_does_not_change_dispatch_order(
     loop = AgentLoop(
         provider,
         EnvironmentKernel(tmp_path).create_binding(),
+        system_message=SYSTEM_MESSAGE,
     )
 
     events = asyncio.run(_collect_events(loop, user_message))

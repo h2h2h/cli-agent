@@ -42,6 +42,17 @@ class UserMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class SystemMessage:
+    """A Runtime-authored model instruction."""
+
+    content: tuple[TextBlock, ...]
+
+    @classmethod
+    def text(cls, text: str) -> SystemMessage:
+        return cls(content=(TextBlock(text=text),))
+
+
+@dataclass(frozen=True, slots=True)
 class AssistantMessage:
     """A model-authored message retaining ordered text and tool call content."""
 
@@ -72,7 +83,9 @@ class ToolResultMessage:
     content: tuple[ToolResult, ...]
 
 
-ModelMessage: TypeAlias = UserMessage | AssistantMessage | ToolResultMessage
+ModelMessage: TypeAlias = (
+    SystemMessage | UserMessage | AssistantMessage | ToolResultMessage
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,11 +114,25 @@ class ToolCallReady:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelUsage:
+    """Provider-neutral token counts reported for one completion."""
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+    def __post_init__(self) -> None:
+        if min(self.input_tokens, self.output_tokens, self.total_tokens) < 0:
+            raise ValueError("model usage token counts must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
 class ModelCompletion:
     """The terminal event for a successful text generation."""
 
     message: AssistantMessage
     finish_reason: str
+    usage: ModelUsage | None = None
 
 
 ModelEvent: TypeAlias = TextDelta | ToolCallReady | ModelCompletion

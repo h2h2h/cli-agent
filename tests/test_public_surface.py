@@ -6,10 +6,12 @@ import runtime
 def test_exposes_provider_neutral_model_types() -> None:
     public_model_names = {
         "TextBlock",
+        "SystemMessage",
         "UserMessage",
         "AssistantMessage",
         "ModelMessage",
         "ModelRequest",
+        "ModelUsage",
         "TextDelta",
         "ModelCompletion",
         "ModelEvent",

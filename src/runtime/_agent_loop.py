@@ -11,6 +11,7 @@ from runtime.model import (
     ModelMessage,
     ModelProvider,
     ModelRequest,
+    SystemMessage,
     ToolCall,
     ToolResultMessage,
     UserMessage,
@@ -24,10 +25,12 @@ class AgentLoop:
         self,
         provider: ModelProvider,
         environment: EnvironmentBinding,
+        *,
+        system_message: SystemMessage,
     ) -> None:
         self._provider = provider
         self._environment = environment
-        self._history: list[ModelMessage] = []
+        self._history: list[ModelMessage] = [system_message]
 
     @property
     def history(self) -> tuple[ModelMessage, ...]:

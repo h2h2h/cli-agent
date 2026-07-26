@@ -1,12 +1,16 @@
 import asyncio
 from collections.abc import AsyncIterator
 
+import pytest
+
 from runtime import (
     AssistantMessage,
     ModelCompletion,
     ModelEvent,
     ModelProvider,
     ModelRequest,
+    ModelUsage,
+    SystemMessage,
     TextBlock,
     TextDelta,
     ToolCall,
@@ -18,14 +22,20 @@ from runtime import (
 
 
 def test_constructs_a_provider_neutral_text_conversation() -> None:
+    system_message = SystemMessage.text("Follow the Runtime instructions.")
     user_message = UserMessage.text("Hello")
     assistant_message = AssistantMessage.text("Hi")
 
-    request = ModelRequest(messages=(user_message, assistant_message))
+    request = ModelRequest(
+        messages=(system_message, user_message, assistant_message),
+    )
 
+    assert system_message == SystemMessage(
+        content=(TextBlock(text="Follow the Runtime instructions."),),
+    )
     assert user_message == UserMessage(content=(TextBlock(text="Hello"),))
     assert assistant_message == AssistantMessage(content=(TextBlock(text="Hi"),))
-    assert request.messages == (user_message, assistant_message)
+    assert request.messages == (system_message, user_message, assistant_message)
 
 
 def test_represents_streamed_text_and_terminal_completion() -> None:
@@ -39,6 +49,49 @@ def test_represents_streamed_text_and_terminal_completion() -> None:
 
     assert events[-1].message == assistant_message
     assert events[-1].finish_reason == "stop"
+    assert events[-1].usage is None
+
+
+def test_represents_provider_neutral_model_usage() -> None:
+    usage = ModelUsage(
+        input_tokens=12,
+        output_tokens=5,
+        total_tokens=17,
+    )
+
+    completion = ModelCompletion(
+        message=AssistantMessage.text("Done"),
+        finish_reason="stop",
+        usage=usage,
+    )
+
+    assert completion.usage == usage
+    assert completion == ModelCompletion(
+        message=AssistantMessage.text("Done"),
+        finish_reason="stop",
+        usage=ModelUsage(
+            input_tokens=12,
+            output_tokens=5,
+            total_tokens=17,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("input_tokens", "output_tokens", "total_tokens"),
+    ((-1, 0, 0), (0, -1, 0), (0, 0, -1)),
+)
+def test_rejects_negative_model_usage(
+    input_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+) -> None:
+    with pytest.raises(ValueError, match="must be non-negative"):
+        ModelUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+        )
 
 
 def test_provider_exposes_an_asynchronous_model_event_stream() -> None:

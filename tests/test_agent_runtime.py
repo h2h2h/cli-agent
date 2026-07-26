@@ -12,6 +12,7 @@ from runtime import (
     ModelProvider,
     RuntimeClosedError,
     ScriptedModelProvider,
+    SystemMessage,
     ToolCall,
     ToolResult,
     UserMessage,
@@ -135,12 +136,19 @@ def test_reuses_session_history_and_bound_provider(tmp_path: Path) -> None:
 
         assert first_events == (_completion(first_assistant),)
         assert second_events == (_completion(second_assistant),)
-        assert session_provider.requests[0].messages == (first_user,)
+        system_message = session_provider.requests[0].messages[0]
+        assert isinstance(system_message, SystemMessage)
+        assert session_provider.requests[0].messages == (
+            system_message,
+            first_user,
+        )
         assert session_provider.requests[1].messages == (
+            system_message,
             first_user,
             first_assistant,
             second_user,
         )
+        assert session_provider.requests[1].messages[0] is system_message
         assert default_provider.requests == ()
         session_provider.assert_exhausted()
         default_provider.assert_exhausted()
@@ -173,8 +181,43 @@ def test_reusing_closed_session_id_creates_fresh_state(tmp_path: Path) -> None:
         await runtime.close_session("unknown")
         await _collect_turn(runtime, "session-a", second_user)
 
-        assert provider.requests[0].messages == (first_user,)
-        assert provider.requests[1].messages == (second_user,)
+        first_system = provider.requests[0].messages[0]
+        second_system = provider.requests[1].messages[0]
+        assert isinstance(first_system, SystemMessage)
+        assert isinstance(second_system, SystemMessage)
+        assert provider.requests[0].messages == (first_system, first_user)
+        assert provider.requests[1].messages == (second_system, second_user)
+        assert second_system is not first_system
+        provider.assert_exhausted()
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_assembles_workspace_and_optional_host_instruction(
+    tmp_path: Path,
+) -> None:
+    provider = ScriptedModelProvider(
+        script=((_completion(AssistantMessage.text("Done")),),),
+    )
+
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=provider,
+            system_instruction="Prefer focused, reversible changes.",
+        )
+
+        await _collect_turn(runtime, "session-a", UserMessage.text("Work"))
+
+        system_message = provider.requests[0].messages[0]
+        assert isinstance(system_message, SystemMessage)
+        text = "".join(block.text for block in system_message.content)
+        assert "You are cli-agent" in text
+        assert f"The bound Workspace is {tmp_path.resolve()}." in text
+        assert "exec, output, and kill" in text
+        assert "not an operating-system security boundary" in text
+        assert text.endswith("Host instruction\nPrefer focused, reversible changes.")
         provider.assert_exhausted()
         await runtime.close()
 

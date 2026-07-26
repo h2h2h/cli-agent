@@ -10,6 +10,7 @@ from runtime import (
     ModelCompletion,
     ModelEvent,
     ScriptedModelProvider,
+    SystemMessage,
     TextBlock,
     TextDelta,
     ToolCall,
@@ -97,10 +98,13 @@ def test_runs_the_smallest_deterministic_agent_loop(
             assert (tmp_path / "proof.txt").read_text() == "written-first"
 
             first_request, result_request = provider.requests[:2]
-            assert first_request.messages == (first_user,)
-            result_message = result_request.messages[2]
+            system_message = first_request.messages[0]
+            assert isinstance(system_message, SystemMessage)
+            assert first_request.messages == (system_message, first_user)
+            result_message = result_request.messages[3]
             assert isinstance(result_message, ToolResultMessage)
             assert result_request.messages == (
+                system_message,
                 first_user,
                 tool_message,
                 result_message,
@@ -116,6 +120,7 @@ def test_runs_the_smallest_deterministic_agent_loop(
             await _collect_turn(runtime, "session-a", history_user)
 
             assert provider.requests[2].messages == (
+                system_message,
                 first_user,
                 tool_message,
                 result_message,
@@ -126,7 +131,13 @@ def test_runs_the_smallest_deterministic_agent_loop(
             await runtime.close_session("session-a")
             await _collect_turn(runtime, "session-a", fresh_user)
 
-            assert provider.requests[3].messages == (fresh_user,)
+            fresh_system_message = provider.requests[3].messages[0]
+            assert isinstance(fresh_system_message, SystemMessage)
+            assert fresh_system_message is not system_message
+            assert provider.requests[3].messages == (
+                fresh_system_message,
+                fresh_user,
+            )
             await runtime.close_session("session-a")
             await runtime.close_session("session-a")
             assert not runtime.closed
