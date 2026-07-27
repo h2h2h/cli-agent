@@ -19,7 +19,12 @@ Updated: 2026-07-27
 - Adopted uv for the virtual environment, dependency locking, tests, and Ruff.
 - Adopted direnv as the configuration path. `.envrc` must export
   `CLI_AGENT_MODEL`, `CLI_AGENT_BASE_URL`, and `CLI_AGENT_API_KEY`.
-- Kept `.envrc`, `AGENTS.md`, and `docs/` local and ignored by Git.
+- Preserved the final v1 code state on `main` and the annotated
+  `cli-agent-v1-baseline-2026-07-27` tag, both pushed to `origin`.
+- Created the `v2` development branch and began versioning `AGENTS.md` and
+  `docs/`; `.envrc` remains local and ignored.
+- Recorded the proposed unified dispatch and control-plane/execution-plane
+  architectures as non-normative discussions for the v2 reconciliation.
 
 ## Current state
 
@@ -31,7 +36,11 @@ Updated: 2026-07-27
   and Ruff format checks pass.
 - The interactive path is proven offline through the real Provider Adapter,
   including Conversation History carried into a second turn.
-- `main` is clean at commit `999f69c`.
+- `v2` is the active development branch. `main` is the frozen v1 maintenance
+  branch at tag `cli-agent-v1-baseline-2026-07-27`.
+- The v1 tag deliberately preserves the known diagnostic-label mismatch that
+  produced 77 passing and 7 failing tests. v2 restores the intended `[tool]`
+  and `[completion]` labels and the 84-test green baseline.
 
 ## Known limits
 
@@ -49,8 +58,10 @@ Updated: 2026-07-27
 
 ## Next
 
-Start milestone 03, `support-long-running-executions`, from
-`../.scratch/cli-agent-runtime/issues/03-support-long-running-executions.md`.
-Keep the model-visible `exec`, `output`, and `kill` schemas fixed while moving
-Execution ownership into the Environment Session so a timed-out command remains
-addressable by its handle, cursor, and process group.
+Reconcile the accepted direction in
+`docs/discussions/unified-execution-dispatch.md` and
+`docs/discussions/control-plane-and-execution-plane.md` into an explicit
+architecture amendment before starting milestone 03. Preserve the fixed
+model-visible `exec`, `output`, and `kill` surface while deciding the immutable
+Execution Plan, Host-owned execution policy, Shell-only first driver, and
+control-plane/execution-plane boundary.
