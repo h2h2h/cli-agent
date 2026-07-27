@@ -15,7 +15,7 @@ from cli_agent.runner import run_agent
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run one task through the cli-agent entry point."""
+    """Run cli-agent in one-shot or interactive mode."""
 
     try:
         config = parse_cli_config(argv)
@@ -29,6 +29,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_agent(
                 config,
                 provider,
+                stdin=sys.stdin,
                 stdout=sys.stdout,
                 stderr=sys.stderr,
             )

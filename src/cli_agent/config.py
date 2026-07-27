@@ -26,7 +26,7 @@ class CliConfigurationError(ValueError):
 class CliConfig:
     """Validated configuration needed to open cli-agent."""
 
-    task: str
+    task: str | None
     workspace: Path
     base_url: str
     model: str
@@ -43,8 +43,8 @@ def parse_cli_config(
     args = _argument_parser().parse_args(argv)
     environment = os.environ if environ is None else environ
 
-    task = args.task.strip()
-    if not task:
+    task = args.task.strip() if args.task is not None else None
+    if task == "":
         raise CliConfigurationError("task must not be empty")
 
     workspace = Path(args.workspace).expanduser().resolve()
@@ -84,9 +84,13 @@ def build_provider(
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cli-agent",
-        description="Run one task with cli-agent.",
+        description="Run a task or start an interactive cli-agent session.",
     )
-    parser.add_argument("task", help="Task to submit to the Agent Runtime.")
+    parser.add_argument(
+        "task",
+        nargs="?",
+        help="Task to run once; omit it to start an interactive session.",
+    )
     parser.add_argument(
         "--workspace",
         default=".",

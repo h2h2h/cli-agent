@@ -64,6 +64,36 @@ def test_parses_workspace_override_and_normalizes_base_url(
     )
 
 
+def test_parses_interactive_session_without_task(tmp_path: Path) -> None:
+    config = parse_cli_config(
+        [
+            "--workspace",
+            str(tmp_path),
+        ],
+        environ=_environment(),
+    )
+
+    assert config == CliConfig(
+        task=None,
+        workspace=tmp_path.resolve(),
+        base_url="https://models.example/v1",
+        model="test-model",
+        api_key="secret",
+    )
+
+
+def test_rejects_explicit_empty_task(tmp_path: Path) -> None:
+    with pytest.raises(CliConfigurationError, match="task must not be empty"):
+        parse_cli_config(
+            [
+                "  ",
+                "--workspace",
+                str(tmp_path),
+            ],
+            environ=_environment(),
+        )
+
+
 @pytest.mark.parametrize("missing_name", (MODEL_ENV, BASE_URL_ENV, API_KEY_ENV))
 def test_reports_missing_required_environment_variable(
     tmp_path: Path,
@@ -244,8 +274,33 @@ def test_main_uses_validated_config_to_build_provider(
         api_key="secret",
     )
     assert isinstance(run_call["provider"], RecordingProvider)
+    assert run_call["stdin"] is cli_module.sys.stdin
     assert run_call["stdout"] is cli_module.sys.stdout
     assert run_call["stderr"] is cli_module.sys.stderr
+
+
+def test_main_reports_keyboard_interrupt(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    async def interrupting_run_agent(*args: object, **kwargs: object) -> int:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_module, "run_agent", interrupting_run_agent)
+    _set_environment(monkeypatch)
+
+    exit_code = main(
+        [
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 130
+    assert captured.out == ""
+    assert captured.err == "cli-agent: interrupted\n"
 
 
 def test_main_reports_agent_failure(

@@ -3,6 +3,7 @@ import json
 import shlex
 import socket
 import sys
+from io import StringIO
 from pathlib import Path
 
 import httpx
@@ -236,6 +237,85 @@ def test_proves_cli_agent_offline_through_real_provider_adapter(
     assert tool_result["status"] == "exited"
     assert tool_result["exit_code"] == 0
     assert _stdout(tool_result) == "from-cli\n"
+
+
+def test_proves_interactive_history_offline_through_real_provider_adapter(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(socket, "create_connection", _deny_network)
+    monkeypatch.setattr(socket.socket, "connect", _deny_network)
+    monkeypatch.setattr(socket.socket, "connect_ex", _deny_network)
+
+    requests: list[httpx.Request] = []
+    responses = ("First response", "Second response")
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) > len(responses):
+            raise AssertionError("unexpected model request")
+        return _stream_response(
+            {
+                "choices": [
+                    {
+                        "delta": {"content": responses[len(requests) - 1]},
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(respond)
+
+    def build_offline_provider(config):
+        return build_provider(config, transport=transport)
+
+    monkeypatch.setattr(cli_module, "build_provider", build_offline_provider)
+    monkeypatch.setattr(
+        cli_module.sys,
+        "stdin",
+        StringIO("\nFirst turn\nSecond turn\n:q\n"),
+    )
+    monkeypatch.setenv(MODEL_ENV, "test-model")
+    monkeypatch.setenv(BASE_URL_ENV, "https://models.invalid/v1")
+    monkeypatch.setenv(API_KEY_ENV, "offline-placeholder-key")
+
+    exit_code = main(
+        [
+            "--workspace",
+            str(tmp_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "First response\nSecond response\n"
+    assert captured.err == ("[completion] reason=stop\n[completion] reason=stop\n")
+    assert len(requests) == 2
+
+    first_payload, second_payload = (
+        json.loads(request.content) for request in requests
+    )
+    system_message = first_payload["messages"][0]
+    assert first_payload["messages"] == [
+        system_message,
+        {"role": "user", "content": "First turn"},
+    ]
+    assert second_payload["messages"] == [
+        system_message,
+        {"role": "user", "content": "First turn"},
+        {"role": "assistant", "content": "First response"},
+        {"role": "user", "content": "Second turn"},
+    ]
 
 
 def test_cli_uses_only_the_public_runtime_and_owns_no_execution_code() -> None:

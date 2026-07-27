@@ -18,19 +18,30 @@ cp .envrc.example .envrc
 direnv allow
 ```
 
-Run tests or start cli-agent from the Workspace directory:
+Run tests or start an interactive cli-agent Session from the Workspace
+directory:
 
 ```bash
 pytest
+cli-agent
+```
+
+Each non-empty input is submitted as a new turn in the same Session, so the
+Agent retains the conversation and Tool interactions until the process exits.
+Enter `:q`, send EOF, or press `Ctrl+C` to exit.
+
+Pass a task to run one turn without entering the interactive Session:
+
+```bash
 cli-agent "Inspect the Workspace"
 ```
 
-The current directory is the default Workspace. When starting the CLI from
+The current directory is the default Workspace. When starting either mode from
 elsewhere, make the environment and Workspace selection explicit:
 
 ```bash
 direnv exec ./path/to/workspace \
-  cli-agent "Inspect the Workspace" \
+  cli-agent \
   --workspace ./path/to/workspace
 ```
 
