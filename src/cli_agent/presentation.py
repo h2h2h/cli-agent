@@ -41,7 +41,7 @@ def render_event(
 
     if isinstance(event, ToolCallReady):
         diagnostic = _styled(
-            f"-> {event.call.name}",
+            f"[tool] {event.call.name}",
             _TOOL_STYLE,
             stream=stderr,
         )
@@ -52,7 +52,7 @@ def render_event(
         return
 
     if isinstance(event, ModelCompletion):
-        diagnostic = f"reason={event.finish_reason}"
+        diagnostic = f"[completion] reason={event.finish_reason}"
         if event.usage is not None:
             diagnostic += (
                 f" usage=input:{event.usage.input_tokens}"
