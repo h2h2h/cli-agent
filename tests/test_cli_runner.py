@@ -97,7 +97,8 @@ def test_runs_and_presents_one_agent_turn(
     assert exit_code == 0
     assert stdout.getvalue() == "Inspecting. Inspection complete."
     assert stderr.getvalue() == (
-        "[tool] exec\n[completion] reason=stop usage=input:12,output:3,total:15\n"
+        f"[tool] exec: {call.arguments['command']}\n"
+        "[completion] reason=stop usage=input:12,output:3,total:15\n"
     )
     assert lifecycle == ["session", "runtime"]
 
@@ -222,7 +223,7 @@ def test_interactive_terminal_prompts_until_quit(tmp_path: Path) -> None:
 
     provider = ScriptedModelProvider(script=())
     stdout = StringIO()
-    stderr = StringIO()
+    stderr = _TerminalOutput()
 
     exit_code = asyncio.run(
         run_agent(
@@ -236,7 +237,9 @@ def test_interactive_terminal_prompts_until_quit(tmp_path: Path) -> None:
 
     assert exit_code == 0
     assert stdout.getvalue() == ""
-    assert stderr.getvalue() == "cli-agent> cli-agent> "
+    assert stderr.getvalue() == (
+        "\033[1;36mcli-agent> \033[0m\033[1;36mcli-agent> \033[0m"
+    )
     assert provider.requests == ()
     provider.assert_exhausted()
 
@@ -315,7 +318,59 @@ def test_renderer_does_not_duplicate_completed_assistant_text() -> None:
 
     assert results == (None, None, None)
     assert stdout.getvalue() == "Streamed answer"
-    assert stderr.getvalue() == "[tool] exec\n[completion] reason=stop\n"
+    assert stderr.getvalue() == "[tool] exec: pwd\n[completion] reason=stop\n"
+
+
+def test_renderer_keeps_non_exec_tool_diagnostic_concise() -> None:
+    stderr = StringIO()
+
+    render_event(
+        ToolCallReady(
+            call=ToolCall(
+                call_id="call_1",
+                name="output",
+                arguments={"exec_id": "execution_1"},
+            )
+        ),
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    assert stderr.getvalue() == "[tool] output\n"
+
+
+def test_renderer_colors_terminal_tool_and_completion_diagnostics() -> None:
+    stderr = _TerminalOutput()
+
+    render_event(
+        ToolCallReady(
+            call=ToolCall(
+                call_id="call_1",
+                name="exec",
+                arguments={"command": "pytest -q"},
+            )
+        ),
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+    render_event(
+        ModelCompletion(
+            message=AssistantMessage.text("Done"),
+            finish_reason="stop",
+        ),
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    assert stderr.getvalue() == (
+        "\033[1;35m[tool] exec\033[0m: \033[33mpytest -q\033[0m\n"
+        "\033[2;32m[completion] reason=stop\033[0m\n"
+    )
+
+
+class _TerminalOutput(StringIO):
+    def isatty(self) -> bool:
+        return True
 
 
 def _config(

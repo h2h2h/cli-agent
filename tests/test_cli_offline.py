@@ -183,7 +183,8 @@ def test_proves_cli_agent_offline_through_real_provider_adapter(
     assert exit_code == 0
     assert captured.out == "Running command. Command output: from-cli"
     assert captured.err == (
-        "[tool] exec\n[completion] reason=stop usage=input:35,output:7,total:42\n"
+        f"[tool] exec: {command}\n"
+        "[completion] reason=stop usage=input:35,output:7,total:42\n"
     )
     assert "offline-placeholder-key" not in captured.out
     assert "offline-placeholder-key" not in captured.err

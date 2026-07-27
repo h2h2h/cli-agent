@@ -6,7 +6,7 @@ from typing import TextIO
 from uuid import uuid4
 
 from cli_agent.config import CliConfig
-from cli_agent.presentation import render_event
+from cli_agent.presentation import render_event, render_prompt
 from cli_agent.runtime import (
     AgentRuntime,
     ModelCompletion,
@@ -106,8 +106,7 @@ def _read_interactive_task(*, stdin: TextIO, stderr: TextIO) -> str | None:
     while True:
         prompted = stdin.isatty()
         if prompted:
-            stderr.write("cli-agent> ")
-            stderr.flush()
+            render_prompt(stderr=stderr)
 
         line = stdin.readline()
         if line == "":
