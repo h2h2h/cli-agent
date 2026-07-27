@@ -7,3 +7,4 @@ __pycache__/
 .envrc.local
 docs/
 AGENTS.md
+.DS_Store
