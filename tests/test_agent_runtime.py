@@ -289,10 +289,13 @@ def test_reusing_closed_session_id_creates_fresh_state(tmp_path: Path) -> None:
         )
 
         await _collect_turn(runtime, "session-a", first_user)
+        first_session = runtime._sessions["session-a"]
+        first_environment = first_session.environment
         await runtime.close_session("session-a")
         await runtime.close_session("session-a")
         await runtime.close_session("unknown")
         await _collect_turn(runtime, "session-a", second_user)
+        second_session = runtime._sessions["session-a"]
 
         first_system = provider.requests[0].messages[0]
         second_system = provider.requests[1].messages[0]
@@ -301,6 +304,11 @@ def test_reusing_closed_session_id_creates_fresh_state(tmp_path: Path) -> None:
         assert provider.requests[0].messages == (first_system, first_user)
         assert provider.requests[1].messages == (second_system, second_user)
         assert second_system is not first_system
+        assert first_environment._closed is True
+        assert second_session is not first_session
+        assert second_session.loop is not first_session.loop
+        assert second_session.environment is not first_environment
+        assert second_session.environment._session_id != first_environment._session_id
         provider.assert_exhausted()
         await runtime.close()
 

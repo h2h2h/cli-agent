@@ -50,6 +50,7 @@ class _ExecutionRecord:
     completion_task: asyncio.Task[None] | None = None
     process_ready: asyncio.Event = field(default_factory=asyncio.Event)
     changed: asyncio.Condition = field(default_factory=asyncio.Condition)
+    termination_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def is_terminal(self) -> bool:
@@ -157,6 +158,7 @@ class _ExecutionScheduler:
 class _EnvironmentSession:
     scheduler: _ExecutionScheduler
     executions: dict[str, _ExecutionRecord] = field(default_factory=dict)
+    closing: bool = False
 
 
 class EnvironmentBinding:
@@ -242,19 +244,38 @@ class EnvironmentKernel:
         self._closed = True
         sessions = tuple(self._sessions.values())
         self._sessions.clear()
-        for session in sessions:
-            await self._release_session(session)
+        pending_by_session = tuple(
+            (session, self._begin_session_close(session)) for session in sessions
+        )
+        for session, pending in pending_by_session:
+            await self._release_session(session, pending)
 
     async def _close_session(self, session_id: str) -> None:
         session = self._sessions.pop(session_id, None)
         if session is not None:
-            await self._release_session(session)
+            pending = self._begin_session_close(session)
+            await self._release_session(session, pending)
 
-    async def _release_session(self, session: _EnvironmentSession) -> None:
-        for record in session.scheduler.close():
+    def _begin_session_close(
+        self,
+        session: _EnvironmentSession,
+    ) -> tuple[_ExecutionRecord, ...]:
+        if session.closing:
+            return ()
+        session.closing = True
+        pending = session.scheduler.close()
+        for record in pending:
             record.kill_requested = True
             record.status = "killed"
             record.process_ready.set()
+        return pending
+
+    async def _release_session(
+        self,
+        session: _EnvironmentSession,
+        pending: tuple[_ExecutionRecord, ...],
+    ) -> None:
+        for record in pending:
             await _notify_changed(record)
         for record in tuple(session.executions.values()):
             await self._terminate_execution(session, record)
@@ -262,7 +283,7 @@ class EnvironmentKernel:
 
     async def _dispatch(self, session_id: str, call: ToolCall) -> ToolResult:
         session = self._sessions.get(session_id)
-        if self._closed or session is None:
+        if self._closed or session is None or session.closing:
             return _protocol_error(
                 call.call_id,
                 code="internal",
@@ -336,6 +357,12 @@ class EnvironmentKernel:
                 call.call_id,
                 code="policy_denied",
                 message=decision.reason or "execution denied by policy",
+            )
+        if session.closing:
+            return _protocol_error(
+                call.call_id,
+                code="internal",
+                message="environment session is closed",
             )
 
         try:
@@ -554,31 +581,32 @@ class EnvironmentKernel:
         session: _EnvironmentSession,
         record: _ExecutionRecord,
     ) -> None:
-        if record.is_terminal:
-            return
+        async with record.termination_lock:
+            if record.is_terminal:
+                return
 
-        if record.status == "queued" and session.scheduler.cancel_pending(record):
-            record.process_ready.set()
-            await _notify_changed(record)
-            return
+            if record.status == "queued" and session.scheduler.cancel_pending(record):
+                record.process_ready.set()
+                await _notify_changed(record)
+                return
 
-        record.kill_requested = True
-        await record.process_ready.wait()
-        process = record.process
-        if process is not None and process.returncode is None:
-            _signal_process(process, force=False)
-            try:
-                await _wait_until_terminal(
-                    record,
-                    timeout=_TERMINATE_GRACE_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                _signal_process(process, force=True)
+            record.kill_requested = True
+            await record.process_ready.wait()
+            process = record.process
+            if process is not None and process.returncode is None:
+                _signal_process(process, force=False)
+                try:
+                    await _wait_until_terminal(
+                        record,
+                        timeout=_TERMINATE_GRACE_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    _signal_process(process, force=True)
 
-        task = record.completion_task
-        if task is not None:
-            with suppress(Exception):
-                await task
+            task = record.completion_task
+            if task is not None:
+                with suppress(Exception):
+                    await task
 
 
 class _InvalidArguments(ValueError):
