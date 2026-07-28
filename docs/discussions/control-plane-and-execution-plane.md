@@ -32,10 +32,11 @@ Introduce two logical planes inside `EnvironmentKernel`:
 
 - the **control plane** validates, routes, inspects, authorizes, plans, and
   admits requested work without executing it;
-- the **execution plane** consumes an immutable `ExecutionPlan`, performs the
-  work through a private driver, and owns the observable Execution lifecycle.
+- the **execution plane** consumes an allowed immutable `ExecutionDecision`,
+  performs the work through a private driver, and owns the observable Execution
+  lifecycle.
 
-The boundary between the planes is an immutable `ExecutionPlan`.
+The boundary between the planes is an allowed immutable `ExecutionDecision`.
 
 The first implementation has only a Shell driver and a small host-owned
 `ExecutionPolicy`. That policy supports immediate `ALLOW` or `DENY` decisions
@@ -83,19 +84,17 @@ EnvironmentBinding
 |                                                      |
 |  Control plane                                       |
 |                                                      |
-|  validate request                                    |
-|      -> route and inspect                            |
-|      -> build ExecutionPlanCandidate                 |
-|      -> ExecutionPolicy                              |
+|  parse command                                       |
+|      -> CommandParseResult                           |
+|      -> ExecutionPolicy.decide                       |
 |           |                                          |
 |           +-- DENY -> policy_denied                  |
 |           |            no exec_id, no queue entry    |
 |           |                                          |
 |           +-- ALLOW                                  |
-|                 -> freeze ExecutionPlan              |
 |                 -> Session admission                 |
 |                              |                       |
-|                    immutable ExecutionPlan           |
+|                  immutable ExecutionDecision        |
 |                              v                       |
 |  Execution plane                                     |
 |                                                      |
@@ -123,50 +122,27 @@ execution plane. Execution is the shared lifecycle across both.
 
 ## Domain objects
 
-### ExecutionRequest
+### CommandParseResult
 
-`ExecutionRequest` is the validated, Session-scoped request derived from one
-model `exec` call. It contains the original requested values:
+`CommandParseResult` is the immutable result of validating, routing, and
+inspecting one Session-scoped model `exec` call. It records both the exact
+request and the facts the control plane can establish without performing it:
 
-- raw command;
-- requested wait duration;
-- requested output limit;
-- bound Session and Workspace context.
-
-It is not yet accepted work and has no `exec_id`.
-
-### CommandAnalysis
-
-`CommandAnalysis` records the facts the control plane can establish without
-performing the operation:
-
-- selected route or candidate driver;
+- raw command and requested wait/output settings;
+- bound working directory and effective environment reference;
+- selected route or private driver;
 - recognized executable names or Kernel operation;
 - normalized arguments available at that layer;
 - Shell constructs or wrappers the inspector recognizes;
 - managed paths, Tool name, and Capability Provenance when applicable;
 - uncertainty or unsupported syntax relevant to policy.
 
-Analysis is not proof of all eventual side effects. In particular, arbitrary
-Shell commands and executable Tools can compute behavior dynamically.
+It is not yet accepted work and has no `exec_id`. Parsing is not proof of all
+eventual side effects: arbitrary Shell commands and executable Tools can
+compute behavior dynamically. Parsing must not start a process, mutate the
+Workspace, import and execute a Tool, or allocate an Execution Handle.
 
-### ExecutionPlanCandidate
-
-The candidate combines the requested operation with the proposed execution
-configuration before authorization:
-
-- exact command or structured Kernel operation;
-- selected private driver;
-- effective working directory;
-- effective filtered environment reference;
-- wait and output policies;
-- facts available for policy evaluation;
-- future optional sandbox and resource profiles.
-
-Building a candidate must not start a process, mutate the Workspace, import and
-execute a Tool, or allocate an Execution Handle.
-
-### PolicyDecision
+### ExecutionDecision
 
 The first version has two decisions:
 
@@ -179,35 +155,21 @@ A denial contains a stable rule identifier and a safe reason suitable for the
 model-visible `policy_denied` error. Detailed Host diagnostics may contain more
 context but must not expose secrets.
 
+An allowed `ExecutionDecision` contains the exact `CommandParseResult`, policy
+rule identifier, and any execution constraints selected by policy. It is the
+immutable authorization boundary: the execution plane must perform that exact
+decision and must not re-parse, substitute, or silently rewrite its command.
+A Decision for command A cannot be reused to execute command B.
+
 `ASK` is deferred until the Host callback, cancellation, timeout, and approval
 record semantics are designed. Adding `ASK` later must not add another
 model-visible syscall.
 
-### ExecutionPlan
-
-An allowed candidate is frozen as an immutable `ExecutionPlan`. The execution
-plane must execute that exact plan; it must not regenerate or rewrite the
-command after authorization. The selected driver may interpret the exact
-payload only according to the execution mechanism recorded in the Plan.
-
-The Plan records at least:
-
-- the exact operation to execute;
-- the selected driver;
-- cwd and filtered environment reference;
-- output and wait configuration;
-- the policy decision or decision identifier;
-- any execution constraint selected by the control plane.
-
-Immutability prevents a future approval or authorization decision for command
-A from being reused to execute command B. It does not make dynamic Shell
-expansion statically knowable.
-
 ### Execution
 
 Reuse the existing `Execution` domain object rather than introducing a
-duplicate `Task` abstraction. An Execution begins only after an allowed Plan is
-admitted and assigned an `exec_id`.
+duplicate `Task` abstraction. An Execution begins only after an allowed
+Decision is admitted and assigned an `exec_id`.
 
 Execution continues to own the backend-neutral lifecycle:
 
@@ -224,17 +186,14 @@ long-lived process to terminate.
 ## Control plane
 
 The control plane is read-only with respect to the requested operation until
-authorization succeeds. Its initial pipeline is:
+authorization succeeds. Its three-stage pipeline is:
 
 ```text
-validate
-    -> route
-    -> inspect
-    -> build candidate
-    -> authorize
-    -> freeze plan
-    -> admit
+parse -> decide -> execute
 ```
+
+`parse` produces `CommandParseResult`; `decide` produces an immutable
+`ExecutionDecision`; only an allowed Decision may cross into `execute`.
 
 ### Command routing
 
@@ -245,7 +204,7 @@ Routing selects an internal command category:
 - reserved `tools` commands later use a Tool driver.
 
 Milestone 03 does not require a general routing registry. With only the Shell
-driver present, routing may be trivial while retaining the Plan boundary.
+driver present, routing may be trivial while retaining the Decision boundary.
 
 Drivers are a closed, private Kernel seam. Workspaces and capabilities cannot
 register new drivers or bypass policy.
@@ -266,11 +225,11 @@ Conceptually:
 
 ```python
 class ExecutionPolicy(Protocol):
-    async def authorize(
+    async def decide(
         self,
-        candidate: ExecutionPlanCandidate,
+        command: CommandParseResult,
         context: AuthorizationContext,
-    ) -> PolicyDecision: ...
+    ) -> ExecutionDecision: ...
 ```
 
 The interface may be asynchronous from the beginning so a later Host approval
@@ -298,7 +257,7 @@ Managed Path, network profile, or other planned capabilities.
 2. `DENY` returns `policy_denied` without an `exec_id` or queue entry.
 3. A policy error fails closed and emits a safe internal diagnostic.
 4. Policy allows or denies; it never silently rewrites the requested command.
-5. The admitted Plan is the same Plan passed to the execution plane.
+5. The admitted Decision is the same Decision passed to the execution plane.
 6. Every driver is reachable only after the common policy gate.
 7. Session close, Runtime close, cancellation, and forced cleanup never require
    policy approval.
@@ -307,7 +266,7 @@ Managed Path, network profile, or other planned capabilities.
 
 ## Execution plane
 
-The execution plane accepts only admitted immutable Plans.
+The execution plane accepts only allowed, admitted, immutable Decisions.
 
 ### Execution Supervisor
 
@@ -330,7 +289,8 @@ not rerun command policy:
 
 ### Drivers
 
-Drivers execute Plans but do not decide whether Plans are allowed:
+Drivers execute allowed Decisions but do not decide whether commands are
+allowed:
 
 | Driver | Mechanism | Owned execution resource |
 |---|---|---|
@@ -403,10 +363,10 @@ Authorization and sandboxing are separate:
 
 ```text
 Execution Policy
-    -> decides whether a Plan may start
+    -> decides whether a parsed command may start
 
 Sandbox
-    -> limits what an allowed Plan can affect at runtime
+    -> limits what an allowed Decision can affect at runtime
 ```
 
 The first version adds only authorization. Shell commands and executable Tools
@@ -416,7 +376,7 @@ Host process.
 A future sandbox belongs in the execution plane:
 
 ```text
-ExecutionPlan.sandbox_profile
+ExecutionDecision.constraints.sandbox_profile
     -> driver
     -> sandbox adapter
     -> process or worker
@@ -449,12 +409,11 @@ status.
 
 Control plane:
 
-- derive `ExecutionRequest` from validated `exec` arguments;
-- build a Shell-only `ExecutionPlanCandidate`;
-- call the immediate `ExecutionPolicy`;
+- parse validated `exec` arguments into one Shell-only `CommandParseResult`;
+- call the immediate `ExecutionPolicy.decide`;
 - return `policy_denied` for recognized denied commands;
-- freeze an allowed immutable `ExecutionPlan`;
-- pass only that Plan to the execution plane.
+- return an allowed immutable `ExecutionDecision`;
+- pass only that Decision to the execution plane.
 
 Execution plane:
 
@@ -470,7 +429,7 @@ sandbox, persistent audit store, or public driver protocol in milestone 03.
 
 ### Milestone 04: queue and Session isolation
 
-- queue admitted Plans in the bound Session;
+- queue admitted Decisions in the bound Session;
 - preserve at-most-one-running Execution per Session;
 - let different Sessions execute concurrently;
 - keep Handle lookup and cleanup Session-private;
@@ -478,13 +437,13 @@ sandbox, persistent audit store, or public driver protocol in milestone 03.
 
 ### Milestone 05: filtered environment
 
-- construct Plans only from the effective filtered Session environment;
+- construct parse results only from the effective filtered Session environment;
 - keep Provider credentials outside Agent execution unless explicitly granted;
 - prevent policy diagnostics and audit facts from exposing environment values.
 
 ### Milestone 06: managed Workspace commands
 
-- define structured managed-command routes and Plan facts;
+- define structured managed-command parse facts;
 - authorize `workspace.read`, `workspace.write`, and `workspace.remove`
   independently;
 - evaluate Managed Paths before admission;
@@ -518,7 +477,7 @@ Only after the immediate allow/deny seam is proven:
 1. Every `exec` request passes the common policy gate before process creation.
 2. A recognized direct `rm` invocation returns `policy_denied`.
 3. A denied request creates no process, Handle, Execution record, or queue item.
-4. An allowed request is executed from the same immutable Plan that policy
+4. An allowed request is executed from the same immutable Decision that policy
    evaluated.
 5. Policy cannot be relaxed by a Workspace mutation or model command.
 6. Policy failure does not fail open.
@@ -544,17 +503,11 @@ Only after the immediate allow/deny seam is proven:
 
 ## Open questions
 
-1. Is the first effective policy a secure default supplied by Runtime, a
-   required Host argument, or a Host override of Runtime defaults?
-2. Which direct Shell forms must the first inspector recognize beyond an
-   executable basename and absolute executable path?
-3. What is the explicit behavior for unsupported or ambiguous Shell syntax?
-4. Should policy be snapshotted per Runtime or per Session?
-5. Which Host-facing diagnostic surface records policy decisions without
+1. Which Host-facing diagnostic surface records policy decisions without
    persisting secrets?
-6. What reserved CLI namespace will distinguish Kernel commands from host
+2. What reserved CLI namespace will distinguish Kernel commands from host
    executables?
-7. Which failure facts belong in canonical output, and which require a future
+3. Which failure facts belong in canonical output, and which require a future
    backend-neutral result field?
 
 ## Relationship to unified execution dispatch
@@ -568,9 +521,8 @@ This proposal adds the missing admission boundary:
 
 ```text
 CLI command
-    -> Router: what operation is requested?
-    -> Policy: may the operation start?
-    -> ExecutionPlan: freeze the authorized operation
+    -> CommandParseResult: what operation is requested?
+    -> ExecutionDecision: may this exact operation start?
     -> Execution: how is it observed and managed?
     -> Driver: how is it performed?
 ```

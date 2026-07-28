@@ -15,9 +15,10 @@ Updated: 2026-07-28
 - Revised implementation milestones 03, 04, 05, 06, 10, and 15 around the
   private Execution Control Plane / Execution Plane boundary.
 - Completed the milestone 03 Shell-only tracer bullet:
-  - validated `exec` requests become Shell candidates without side effects;
-  - the Runtime-lifetime Host policy runs before admission;
-  - allowed candidates freeze into immutable `ExecutionPlan` values;
+  - validated `exec` requests parse into immutable `CommandParseResult` values
+    without side effects;
+  - the Runtime-lifetime Host policy produces an immutable
+    `ExecutionDecision` before admission;
   - long-running Shell Executions expose running snapshots and stable
     incremental Cursor reads;
   - output is bounded by chunk and byte limits and reports truncation;
@@ -26,6 +27,9 @@ Updated: 2026-07-28
 - Added a default direct-executable deny policy containing `rm`. A Host may
   replace the deny set through `AgentRuntime.open(denied_executables=...)`;
   Agent and Workspace state cannot mutate the Runtime-lifetime snapshot.
+- Simplified the control path from four pass-through policy types to
+  `CommandParseResult -> ExecutionDecision -> Execution`. An allowed Decision
+  still carries the exact unchanged parse result authorized by policy.
 - Preserved the fixed model-visible `exec`, `output`, and `kill` surface and
   backend-neutral Execution Snapshot.
 
@@ -38,7 +42,7 @@ Updated: 2026-07-28
   `kill`.
 - Direct, quoted, and absolute-path forms of a denied executable are rejected
   before Handle allocation or process creation. The default denies `rm`.
-- The full suite has 95 passing tests. `uv sync --locked --check`, Ruff lint,
+- The full suite has 96 passing tests. `uv sync --locked --check`, Ruff lint,
   and Ruff format checks pass.
 - The parent architecture repository records the specification delta in commit
   `42e008e` (`docs(architecture): adopt unified execution control plane`).
@@ -61,7 +65,7 @@ Updated: 2026-07-28
 
 ## Next
 
-Implement milestone 04 around the admitted immutable Plan boundary:
+Implement milestone 04 around the admitted immutable Decision boundary:
 
 1. add a configurable per-Session FIFO with default capacity 32;
 2. run at most one Execution per Session while allowing cross-Session

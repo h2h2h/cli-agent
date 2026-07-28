@@ -12,13 +12,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from cli_agent.runtime._environment.policy import (
+    CommandParseResult,
     DirectExecutableDenyPolicy,
-    ExecutionPlan,
+    ExecutionDecision,
     ExecutionPolicy,
-    ExecutionRequest,
-    PolicyDecision,
-    build_shell_candidate,
-    freeze_plan,
+    parse_shell_command,
 )
 from cli_agent.runtime.model import JSONValue, ToolCall, ToolResult
 
@@ -33,7 +31,7 @@ _TERMINATE_GRACE_SECONDS = 0.5
 @dataclass(slots=True)
 class _ExecutionRecord:
     exec_id: str
-    plan: ExecutionPlan
+    decision: ExecutionDecision
     status: str = "running"
     exit_code: int | None = None
     chunks: list[dict[str, JSONValue]] = field(default_factory=list)
@@ -182,8 +180,9 @@ class EnvironmentKernel:
             call.arguments,
             allowed={"command", "wait_ms", "output_limit"},
         )
-        request = ExecutionRequest(
-            command=_required_string(call.arguments, "command"),
+        command = parse_shell_command(
+            raw_command=_required_string(call.arguments, "command"),
+            cwd=self._workspace,
             wait_ms=_optional_integer(
                 call.arguments,
                 "wait_ms",
@@ -197,16 +196,18 @@ class EnvironmentKernel:
                 minimum=1,
             ),
         )
-        candidate = build_shell_candidate(request, cwd=self._workspace)
         try:
-            decision = await self._execution_policy.authorize(candidate)
+            decision = await self._execution_policy.decide(command)
         except Exception:
             return _protocol_error(
                 call.call_id,
                 code="internal",
                 message="execution policy failed closed",
             )
-        if not isinstance(decision, PolicyDecision):
+        if (
+            not isinstance(decision, ExecutionDecision)
+            or decision.parse_result != command
+        ):
             return _protocol_error(
                 call.call_id,
                 code="internal",
@@ -219,29 +220,29 @@ class EnvironmentKernel:
                 message=decision.reason or "execution denied by policy",
             )
 
-        plan = freeze_plan(candidate, decision)
-        record = _ExecutionRecord(exec_id=uuid4().hex, plan=plan)
+        record = _ExecutionRecord(exec_id=uuid4().hex, decision=decision)
         session.executions[record.exec_id] = record
         record.completion_task = asyncio.create_task(self._run_shell(record))
 
-        if plan.wait_ms > 0:
+        if command.wait_ms > 0:
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(
                     asyncio.shield(record.completion_task),
-                    timeout=plan.wait_ms / 1000,
+                    timeout=command.wait_ms / 1000,
                 )
 
         return ToolResult(
             call_id=call.call_id,
-            output=_snapshot(record, cursor=0, limit=plan.output_limit),
+            output=_snapshot(record, cursor=0, limit=command.output_limit),
         )
 
     async def _run_shell(self, record: _ExecutionRecord) -> None:
+        command = _allowed_command(record.decision)
         process: asyncio.subprocess.Process | None = None
         try:
             process = await asyncio.create_subprocess_shell(
-                record.plan.command,
-                cwd=record.plan.cwd,
+                command.raw_command,
+                cwd=command.cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=os.name == "posix",
@@ -418,6 +419,12 @@ class EnvironmentKernel:
 
 class _InvalidArguments(ValueError):
     pass
+
+
+def _allowed_command(decision: ExecutionDecision) -> CommandParseResult:
+    if not decision.allowed:
+        raise RuntimeError("execution plane received a denied decision")
+    return decision.parse_result
 
 
 def _reject_unknown_arguments(

@@ -2,6 +2,7 @@ import asyncio
 import json
 import shlex
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -9,9 +10,10 @@ import pytest
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._environment import EnvironmentBinding, EnvironmentKernel
 from cli_agent.runtime._environment.policy import (
-    CommandAnalysis,
+    CommandParseResult,
     DirectExecutableDenyPolicy,
-    ExecutionPlanCandidate,
+    ExecutionDecision,
+    parse_shell_command,
 )
 
 
@@ -151,11 +153,11 @@ def test_denies_recognized_direct_rm_before_execution(
 
 def test_policy_failure_fails_closed_without_starting_command(tmp_path: Path) -> None:
     class FailingPolicy:
-        async def authorize(
+        async def decide(
             self,
-            candidate: ExecutionPlanCandidate,
+            command: CommandParseResult,
         ) -> object:
-            raise RuntimeError(candidate.command)
+            raise RuntimeError(command.raw_command)
 
     async def scenario() -> None:
         proof = tmp_path / "proof.txt"
@@ -186,22 +188,57 @@ def test_policy_failure_fails_closed_without_starting_command(tmp_path: Path) ->
     asyncio.run(scenario())
 
 
+def test_policy_cannot_replace_the_parsed_command(tmp_path: Path) -> None:
+    class RewritingPolicy:
+        async def decide(
+            self,
+            command: CommandParseResult,
+        ) -> ExecutionDecision:
+            return ExecutionDecision.allow(
+                replace(
+                    command,
+                    raw_command=_python_command(
+                        f"from pathlib import Path; Path({str(proof)!r}).touch()"
+                    ),
+                )
+            )
+
+    async def scenario() -> None:
+        binding = EnvironmentKernel(
+            tmp_path,
+            execution_policy=RewritingPolicy(),
+        ).create_binding()
+
+        result = await binding.dispatch(
+            ToolCall(
+                call_id="rewritten_policy",
+                name="exec",
+                arguments={"command": "pwd"},
+            )
+        )
+
+        assert _error(result) == {
+            "ok": False,
+            "code": "internal",
+            "message": "execution policy failed closed",
+        }
+        assert not proof.exists()
+
+    proof = tmp_path / "proof.txt"
+    asyncio.run(scenario())
+
+
 def test_direct_guard_documents_wrapper_noncoverage(tmp_path: Path) -> None:
     async def scenario() -> None:
         policy = DirectExecutableDenyPolicy()
-        candidate = ExecutionPlanCandidate(
-            operation="shell.execute",
-            command="env rm proof.txt",
+        command = parse_shell_command(
+            raw_command="env rm proof.txt",
             cwd=tmp_path,
             wait_ms=0,
             output_limit=1,
-            analysis=CommandAnalysis(
-                executable_basename="env",
-                tokenization_succeeded=True,
-            ),
         )
 
-        decision = await policy.authorize(candidate)
+        decision = await policy.decide(command)
 
         assert decision.allowed is True
 

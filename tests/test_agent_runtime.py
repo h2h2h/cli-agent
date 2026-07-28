@@ -266,7 +266,7 @@ def test_assembles_workspace_and_optional_host_instruction(
         text = "".join(block.text for block in system_message.content)
         assert "You are cli-agent" in text
         assert f"The bound Workspace is {tmp_path.resolve()}." in text
-        assert "exec, output, and kill" in text
+        assert "`exec`, `output`, and `kill`" in text
         assert "not an operating-system security boundary" in text
         assert text.endswith("Host instruction\nPrefer focused, reversible changes.")
         provider.assert_exhausted()

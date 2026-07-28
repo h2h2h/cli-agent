@@ -1,4 +1,4 @@
-"""Private execution admission types and the first Host-owned policy."""
+"""Private command parsing and execution policy types."""
 
 from __future__ import annotations
 
@@ -9,71 +9,70 @@ from typing import Protocol
 
 
 @dataclass(frozen=True, slots=True)
-class ExecutionRequest:
-    """Validated values from one Session-scoped ``exec`` call."""
+class CommandParseResult:
+    """Validated command and facts established without executing it."""
 
-    command: str
+    operation: str
+    raw_command: str
+    cwd: Path
     wait_ms: int
     output_limit: int
-
-
-@dataclass(frozen=True, slots=True)
-class CommandAnalysis:
-    """Facts established without performing the requested operation."""
-
     executable_basename: str | None
     tokenization_succeeded: bool
 
 
 @dataclass(frozen=True, slots=True)
-class ExecutionPlanCandidate:
-    """Shell execution configuration before authorization."""
-
-    operation: str
-    command: str
-    cwd: Path
-    wait_ms: int
-    output_limit: int
-    analysis: CommandAnalysis
-
-
-@dataclass(frozen=True, slots=True)
-class PolicyDecision:
-    """Immediate allow or deny decision returned by execution policy."""
+class ExecutionDecision:
+    """Immutable allow or deny decision for one exact parsed command."""
 
     allowed: bool
+    parse_result: CommandParseResult
     rule_id: str
     reason: str | None = None
 
-    @classmethod
-    def allow(cls, rule_id: str = "default.allow") -> PolicyDecision:
-        return cls(allowed=True, rule_id=rule_id)
+    def __post_init__(self) -> None:
+        if self.allowed and self.reason is not None:
+            raise ValueError("an allowed execution decision cannot have a reason")
+        if not self.allowed and not self.reason:
+            raise ValueError("a denied execution decision must have a reason")
 
     @classmethod
-    def deny(cls, *, rule_id: str, reason: str) -> PolicyDecision:
-        return cls(allowed=False, rule_id=rule_id, reason=reason)
+    def allow(
+        cls,
+        parse_result: CommandParseResult,
+        *,
+        rule_id: str = "default.allow",
+    ) -> ExecutionDecision:
+        return cls(
+            allowed=True,
+            parse_result=parse_result,
+            rule_id=rule_id,
+        )
 
-
-@dataclass(frozen=True, slots=True)
-class ExecutionPlan:
-    """Immutable boundary between control and execution planes."""
-
-    operation: str
-    command: str
-    cwd: Path
-    wait_ms: int
-    output_limit: int
-    policy_rule_id: str
+    @classmethod
+    def deny(
+        cls,
+        parse_result: CommandParseResult,
+        *,
+        rule_id: str,
+        reason: str,
+    ) -> ExecutionDecision:
+        return cls(
+            allowed=False,
+            parse_result=parse_result,
+            rule_id=rule_id,
+            reason=reason,
+        )
 
 
 class ExecutionPolicy(Protocol):
-    """Host-owned admission policy snapshotted by one Environment Kernel."""
+    """Host-owned decision policy snapshotted by one Environment Kernel."""
 
-    async def authorize(
+    async def decide(
         self,
-        candidate: ExecutionPlanCandidate,
-    ) -> PolicyDecision:
-        """Allow or deny one candidate without performing its operation."""
+        command: CommandParseResult,
+    ) -> ExecutionDecision:
+        """Decide one parsed command without performing its operation."""
 
 
 class DirectExecutableDenyPolicy:
@@ -92,65 +91,44 @@ class DirectExecutableDenyPolicy:
             raise ValueError("denied executable names must be non-empty path basenames")
         self._denied_executables = configured
 
-    async def authorize(
+    async def decide(
         self,
-        candidate: ExecutionPlanCandidate,
-    ) -> PolicyDecision:
-        executable = candidate.analysis.executable_basename
+        command: CommandParseResult,
+    ) -> ExecutionDecision:
+        executable = command.executable_basename
         if executable is not None and executable in self._denied_executables:
-            return PolicyDecision.deny(
+            return ExecutionDecision.deny(
+                command,
                 rule_id=f"shell.deny-executable.{executable}",
                 reason=f"direct invocation of {executable!r} is denied by policy",
             )
-        return PolicyDecision.allow()
+        return ExecutionDecision.allow(command)
 
 
-def build_shell_candidate(
-    request: ExecutionRequest,
+def parse_shell_command(
     *,
+    raw_command: str,
     cwd: Path,
-) -> ExecutionPlanCandidate:
-    """Inspect a Shell request without executing or rewriting it."""
+    wait_ms: int,
+    output_limit: int,
+) -> CommandParseResult:
+    """Parse one validated Shell command without executing or rewriting it."""
 
-    return ExecutionPlanCandidate(
-        operation="shell.execute",
-        command=request.command,
-        cwd=cwd,
-        wait_ms=request.wait_ms,
-        output_limit=request.output_limit,
-        analysis=_inspect_direct_executable(request.command),
-    )
-
-
-def freeze_plan(
-    candidate: ExecutionPlanCandidate,
-    decision: PolicyDecision,
-) -> ExecutionPlan:
-    """Freeze an allowed candidate for the execution plane."""
-
-    if not decision.allowed:
-        raise ValueError("cannot freeze a denied execution candidate")
-    return ExecutionPlan(
-        operation=candidate.operation,
-        command=candidate.command,
-        cwd=candidate.cwd,
-        wait_ms=candidate.wait_ms,
-        output_limit=candidate.output_limit,
-        policy_rule_id=decision.rule_id,
-    )
-
-
-def _inspect_direct_executable(command: str) -> CommandAnalysis:
     try:
-        tokens = shlex.split(command, posix=True)
+        tokens = shlex.split(raw_command, posix=True)
     except ValueError:
-        return CommandAnalysis(
-            executable_basename=None,
-            tokenization_succeeded=False,
-        )
+        executable = None
+        tokenization_succeeded = False
+    else:
+        executable = Path(tokens[0]).name if tokens else None
+        tokenization_succeeded = True
 
-    executable = Path(tokens[0]).name if tokens else None
-    return CommandAnalysis(
+    return CommandParseResult(
+        operation="shell.execute",
+        raw_command=raw_command,
+        cwd=cwd,
+        wait_ms=wait_ms,
+        output_limit=output_limit,
         executable_basename=executable,
-        tokenization_succeeded=True,
+        tokenization_succeeded=tokenization_succeeded,
     )
