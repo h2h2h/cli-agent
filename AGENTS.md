@@ -3,6 +3,9 @@
 `cli-agent` is a general-purpose Agent that completes tasks through CLI
 operations.
 
+# Cooperation Rules
+Code changes shall not be committed automatically; commits can only be merged after passing peer review.
+
 # Commit request
 Commit message format. We follow the Conventional Commits specification. This keeps commit history readable.
 ```
