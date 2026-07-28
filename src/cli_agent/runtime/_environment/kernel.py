@@ -26,6 +26,7 @@ _TERMINAL_STATUSES = frozenset({"exited", "failed", "killed"})
 _OUTPUT_CHUNK_SIZE = 4096
 _DEFAULT_OUTPUT_CHUNK_BOUND = 2_000
 _DEFAULT_OUTPUT_BYTE_BOUND = 1_048_576
+_DEFAULT_PENDING_EXECUTION_CAPACITY = 32
 _TERMINATE_GRACE_SECONDS = 0.5
 
 
@@ -55,10 +56,17 @@ class _ExecutionRecord:
         return self.status in _TERMINAL_STATUSES
 
 
+@dataclass(frozen=True, slots=True)
+class _SchedulerAdmission:
+    record: _ExecutionRecord
+    runnable: tuple[_ExecutionRecord, ...]
+
+
 class _ExecutionScheduler:
     """Assign admitted Executions to Runtime-trusted Driver lanes."""
 
-    def __init__(self) -> None:
+    def __init__(self, pending_capacity: int) -> None:
+        self._pending_capacity = _validate_pending_execution_capacity(pending_capacity)
         self._next_submission_sequence = 0
         self._pending: list[_ExecutionRecord] = []
         self._running: dict[_ExecutionLane, set[str]] = {
@@ -69,20 +77,35 @@ class _ExecutionScheduler:
         }
         self._closed = False
 
-    def admit(self, record: _ExecutionRecord) -> tuple[_ExecutionRecord, ...]:
-        """Accept one allowed Execution and return newly runnable work."""
+    def admit(
+        self,
+        decision: ExecutionDecision,
+        lane: _ExecutionLane,
+    ) -> _SchedulerAdmission | None:
+        """Accept allowed work when its required pending capacity is available."""
 
         if self._closed:
             raise RuntimeError("Execution Scheduler is closed")
-        if not record.decision.allowed:
+        if not decision.allowed:
             raise RuntimeError("Execution Scheduler received a denied decision")
-        if record.submission_sequence is not None:
-            raise RuntimeError("Execution was already admitted")
+        if (
+            len(self._running[lane]) >= self._lane_capacities[lane]
+            and len(self._pending) >= self._pending_capacity
+        ):
+            return None
 
-        record.submission_sequence = self._next_submission_sequence
+        record = _ExecutionRecord(
+            exec_id=uuid4().hex,
+            decision=decision,
+            lane=lane,
+            submission_sequence=self._next_submission_sequence,
+        )
         self._next_submission_sequence += 1
         self._pending.append(record)
-        return self._claim_runnable()
+        return _SchedulerAdmission(
+            record=record,
+            runnable=self._claim_runnable(),
+        )
 
     def complete(self, record: _ExecutionRecord) -> tuple[_ExecutionRecord, ...]:
         """Release one running lane occupant and select follow-up work."""
@@ -130,8 +153,8 @@ class _ExecutionScheduler:
 
 @dataclass(slots=True)
 class _EnvironmentSession:
+    scheduler: _ExecutionScheduler
     executions: dict[str, _ExecutionRecord] = field(default_factory=dict)
-    scheduler: _ExecutionScheduler = field(default_factory=_ExecutionScheduler)
 
 
 class EnvironmentBinding:
@@ -172,6 +195,7 @@ class EnvironmentKernel:
         execution_policy: ExecutionPolicy | None = None,
         output_chunk_bound: int = _DEFAULT_OUTPUT_CHUNK_BOUND,
         output_byte_bound: int = _DEFAULT_OUTPUT_BYTE_BOUND,
+        pending_execution_capacity: int = _DEFAULT_PENDING_EXECUTION_CAPACITY,
     ) -> None:
         workspace_path = Path(workspace).resolve()
         if not workspace_path.is_dir():
@@ -180,6 +204,9 @@ class EnvironmentKernel:
             raise ValueError("output_chunk_bound must be >= 1")
         if output_byte_bound < 1:
             raise ValueError("output_byte_bound must be >= 1")
+        validated_pending_capacity = _validate_pending_execution_capacity(
+            pending_execution_capacity
+        )
 
         self._workspace = workspace_path
         self._execution_policy = (
@@ -189,6 +216,7 @@ class EnvironmentKernel:
         )
         self._output_chunk_bound = output_chunk_bound
         self._output_byte_bound = output_byte_bound
+        self._pending_execution_capacity = validated_pending_capacity
         self._sessions: dict[str, _EnvironmentSession] = {}
         self._closed = False
 
@@ -199,7 +227,9 @@ class EnvironmentKernel:
             raise RuntimeError("EnvironmentKernel is closed")
 
         session_id = uuid4().hex
-        self._sessions[session_id] = _EnvironmentSession()
+        self._sessions[session_id] = _EnvironmentSession(
+            scheduler=_ExecutionScheduler(self._pending_execution_capacity)
+        )
         return EnvironmentBinding(self, session_id)
 
     async def close(self) -> None:
@@ -315,13 +345,20 @@ class EnvironmentKernel:
                 message="execution route is not supported",
             )
 
-        record = _ExecutionRecord(
-            exec_id=uuid4().hex,
-            decision=decision,
-            lane=lane,
+        admission = session.scheduler.admit(
+            decision,
+            lane,
         )
+        if admission is None:
+            return _protocol_error(
+                call.call_id,
+                code="queue_full",
+                message="execution pending queue is full",
+            )
+
+        record = admission.record
         session.executions[record.exec_id] = record
-        for runnable in session.scheduler.admit(record):
+        for runnable in admission.runnable:
             self._start_execution(session, runnable)
 
         if command.wait_ms > 0 and not record.is_terminal:
@@ -558,6 +595,12 @@ def _lane_for_decision(decision: ExecutionDecision) -> _ExecutionLane:
     if command.operation == "shell.execute":
         return _ExecutionLane.SHELL
     raise RuntimeError(f"unsupported Execution operation: {command.operation}")
+
+
+def _validate_pending_execution_capacity(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("pending_execution_capacity must be an integer >= 1")
+    return value
 
 
 def _reject_unknown_arguments(

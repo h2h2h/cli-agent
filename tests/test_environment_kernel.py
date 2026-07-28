@@ -497,6 +497,237 @@ def test_promotes_next_shell_execution_after_process_start_failure(
     asyncio.run(scenario())
 
 
+def test_defaults_to_thirty_two_pending_executions(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        started = tmp_path / "default-capacity-started"
+        release = tmp_path / "default-capacity-release"
+        kernel = EnvironmentKernel(tmp_path)
+        binding = kernel.create_binding()
+        try:
+            running = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="exec_default_running",
+                        name="exec",
+                        arguments={
+                            "command": _blocking_command(started, release),
+                            "wait_ms": 0,
+                        },
+                    )
+                )
+            )
+            assert running["status"] == "running"
+            await _wait_for_path(started)
+
+            for index in range(32):
+                queued = _output(
+                    await binding.dispatch(
+                        ToolCall(
+                            call_id=f"exec_default_queued_{index}",
+                            name="exec",
+                            arguments={
+                                "command": _python_command("pass"),
+                                "wait_ms": 0,
+                            },
+                        )
+                    )
+                )
+                assert queued["status"] == "queued"
+
+            overflow = await binding.dispatch(
+                ToolCall(
+                    call_id="exec_default_overflow",
+                    name="exec",
+                    arguments={
+                        "command": _python_command("pass"),
+                        "wait_ms": 0,
+                    },
+                )
+            )
+            assert _error(overflow) == {
+                "ok": False,
+                "code": "queue_full",
+                "message": "execution pending queue is full",
+            }
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+
+def test_configured_pending_capacity_releases_on_promotion(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        first_started = tmp_path / "configured-first-started"
+        first_release = tmp_path / "configured-first-release"
+        second_started = tmp_path / "configured-second-started"
+        second_release = tmp_path / "configured-second-release"
+        kernel = EnvironmentKernel(tmp_path, pending_execution_capacity=1)
+        binding = kernel.create_binding()
+        try:
+            first = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="exec_configured_first",
+                        name="exec",
+                        arguments={
+                            "command": _blocking_command(
+                                first_started,
+                                first_release,
+                            ),
+                            "wait_ms": 0,
+                        },
+                    )
+                )
+            )
+            await _wait_for_path(first_started)
+            second = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="exec_configured_second",
+                        name="exec",
+                        arguments={
+                            "command": _blocking_command(
+                                second_started,
+                                second_release,
+                            ),
+                            "wait_ms": 0,
+                        },
+                    )
+                )
+            )
+            assert first["status"] == "running"
+            assert second["status"] == "queued"
+
+            overflow = await binding.dispatch(
+                ToolCall(
+                    call_id="exec_configured_overflow",
+                    name="exec",
+                    arguments={
+                        "command": _python_command("pass"),
+                        "wait_ms": 0,
+                    },
+                )
+            )
+            assert _error(overflow)["code"] == "queue_full"
+            session = next(iter(kernel._sessions.values()))
+            assert len(session.executions) == 2
+
+            first_release.touch()
+            await _wait_for_path(second_started)
+            first_terminal = await _read_until_terminal(
+                binding,
+                str(first["exec_id"]),
+                cursor=0,
+            )
+            assert first_terminal["status"] == "exited"
+
+            admitted_after_promotion = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="exec_after_promotion",
+                        name="exec",
+                        arguments={
+                            "command": _python_command(
+                                "from pathlib import Path; "
+                                "Path('ran-after-promotion').touch()"
+                            ),
+                            "wait_ms": 0,
+                        },
+                    )
+                )
+            )
+            assert admitted_after_promotion["status"] == "queued"
+            assert len(session.executions) == 3
+
+            second_release.touch()
+            second_terminal = await _read_until_terminal(
+                binding,
+                str(second["exec_id"]),
+                cursor=0,
+            )
+            promoted_terminal = await _read_until_terminal(
+                binding,
+                str(admitted_after_promotion["exec_id"]),
+                cursor=0,
+            )
+            assert second_terminal["status"] == "exited"
+            assert promoted_terminal["status"] == "exited"
+            assert (tmp_path / "ran-after-promotion").exists()
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+
+def test_policy_denial_bypasses_saturated_queue_and_new_session_is_fresh(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        started = tmp_path / "denial-capacity-started"
+        release = tmp_path / "denial-capacity-release"
+        kernel = EnvironmentKernel(tmp_path, pending_execution_capacity=1)
+        binding = kernel.create_binding()
+        try:
+            await binding.dispatch(
+                ToolCall(
+                    call_id="exec_denial_running",
+                    name="exec",
+                    arguments={
+                        "command": _blocking_command(started, release),
+                        "wait_ms": 0,
+                    },
+                )
+            )
+            await _wait_for_path(started)
+            queued = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="exec_denial_queued",
+                        name="exec",
+                        arguments={
+                            "command": _python_command("pass"),
+                            "wait_ms": 0,
+                        },
+                    )
+                )
+            )
+            assert queued["status"] == "queued"
+
+            denied = await binding.dispatch(
+                ToolCall(
+                    call_id="exec_denied_while_full",
+                    name="exec",
+                    arguments={"command": "rm proof.txt", "wait_ms": 0},
+                )
+            )
+            assert _error(denied) == {
+                "ok": False,
+                "code": "policy_denied",
+                "message": "direct invocation of 'rm' is denied by policy",
+            }
+            session = next(iter(kernel._sessions.values()))
+            assert len(session.executions) == 2
+
+            await binding.close()
+            fresh_binding = kernel.create_binding()
+            fresh = _output(
+                await fresh_binding.dispatch(
+                    ToolCall(
+                        call_id="exec_fresh_capacity",
+                        name="exec",
+                        arguments={"command": _python_command("pass")},
+                    )
+                )
+            )
+            assert fresh["status"] == "exited"
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+
 def test_output_bound_discards_later_chunks_and_preserves_first_cursor(
     tmp_path: Path,
 ) -> None:
@@ -785,6 +1016,18 @@ def _python_command(source: str) -> str:
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(source)}"
 
 
+def _blocking_command(started: Path, release: Path) -> str:
+    return _python_command(
+        "import time\n"
+        "from pathlib import Path\n"
+        f"started = Path({str(started)!r})\n"
+        f"release = Path({str(release)!r})\n"
+        "started.touch()\n"
+        "while not release.exists():\n"
+        "    time.sleep(0.01)"
+    )
+
+
 def _output(result: ToolResult) -> dict[str, object]:
     assert isinstance(result.output, dict)
     return result.output
@@ -838,3 +1081,11 @@ async def _wait_for_file_text(path: Path, expected: str) -> None:
             return
         await asyncio.sleep(0.01)
     raise AssertionError(f"{path} did not contain {expected!r}")
+
+
+async def _wait_for_path(path: Path) -> None:
+    for _ in range(100):
+        if path.exists():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{path} was not created")

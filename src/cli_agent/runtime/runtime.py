@@ -10,6 +10,10 @@ from typing import Any
 
 from cli_agent.runtime._agent_loop import AgentLoop
 from cli_agent.runtime._environment import EnvironmentBinding, EnvironmentKernel
+from cli_agent.runtime._environment.kernel import (
+    _DEFAULT_PENDING_EXECUTION_CAPACITY,
+    _validate_pending_execution_capacity,
+)
 from cli_agent.runtime._environment.policy import DirectExecutableDenyPolicy
 from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime.model import ModelEvent, ModelProvider, UserMessage
@@ -52,12 +56,15 @@ class AgentRuntime:
         provider: ModelProvider,
         system_instruction: str | None = None,
         denied_executables: frozenset[str] | None = None,
+        pending_execution_capacity: int = _DEFAULT_PENDING_EXECUTION_CAPACITY,
     ) -> _AgentRuntimeOpener:
         """Prepare to asynchronously open a Workspace-bound Runtime.
 
         ``system_instruction`` extends the canonical instruction assembled for
         each new Agent Session. ``denied_executables`` replaces the default
         direct-executable deny set containing ``rm`` for this Runtime lifetime.
+        ``pending_execution_capacity`` bounds queued Executions in each Session
+        and defaults to 32.
         """
 
         return _AgentRuntimeOpener(
@@ -66,6 +73,7 @@ class AgentRuntime:
             provider,
             system_instruction,
             denied_executables,
+            _validate_pending_execution_capacity(pending_execution_capacity),
         )
 
     @classmethod
@@ -75,15 +83,20 @@ class AgentRuntime:
         provider: ModelProvider,
         system_instruction: str | None,
         denied_executables: frozenset[str] | None,
+        pending_execution_capacity: int,
     ) -> AgentRuntime:
         environment = (
-            EnvironmentKernel(workspace)
+            EnvironmentKernel(
+                workspace,
+                pending_execution_capacity=pending_execution_capacity,
+            )
             if denied_executables is None
             else EnvironmentKernel(
                 workspace,
                 execution_policy=DirectExecutableDenyPolicy(
                     denied_executables,
                 ),
+                pending_execution_capacity=pending_execution_capacity,
             )
         )
         try:
@@ -185,12 +198,14 @@ class _AgentRuntimeOpener:
         provider: ModelProvider,
         system_instruction: str | None,
         denied_executables: frozenset[str] | None,
+        pending_execution_capacity: int,
     ) -> None:
         self._runtime_type = runtime_type
         self._workspace = workspace
         self._provider = provider
         self._system_instruction = system_instruction
         self._denied_executables = denied_executables
+        self._pending_execution_capacity = pending_execution_capacity
         self._runtime: AgentRuntime | None = None
 
     def __await__(self) -> Generator[Any, None, AgentRuntime]:
@@ -220,6 +235,7 @@ class _AgentRuntimeOpener:
                 self._provider,
                 self._system_instruction,
                 self._denied_executables,
+                self._pending_execution_capacity,
             )
         else:
             self._runtime._ensure_open()

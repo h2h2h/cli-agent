@@ -125,6 +125,68 @@ def test_host_configures_runtime_lifetime_executable_deny_set(
     asyncio.run(scenario())
 
 
+def test_passes_default_and_configured_pending_capacity_to_environment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _TrackingEnvironmentKernel.instances.clear()
+    monkeypatch.setattr(
+        runtime_module,
+        "EnvironmentKernel",
+        _TrackingEnvironmentKernel,
+    )
+
+    async def scenario() -> None:
+        default_runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=ScriptedModelProvider(script=()),
+        )
+        configured_runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=ScriptedModelProvider(script=()),
+            pending_execution_capacity=7,
+        )
+
+        assert [
+            kernel.pending_execution_capacity
+            for kernel in _TrackingEnvironmentKernel.instances
+        ] == [32, 7]
+
+        await default_runtime.close()
+        await configured_runtime.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "capacity",
+    (True, False, 0, -1, 1.5, "2", None),
+)
+def test_rejects_invalid_pending_capacity_before_opening_environment(
+    tmp_path: Path,
+    monkeypatch,
+    capacity: object,
+) -> None:
+    _TrackingEnvironmentKernel.instances.clear()
+    monkeypatch.setattr(
+        runtime_module,
+        "EnvironmentKernel",
+        _TrackingEnvironmentKernel,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="pending_execution_capacity must be an integer >= 1",
+    ):
+        AgentRuntime.open(
+            workspace=tmp_path,
+            provider=ScriptedModelProvider(script=()),
+            pending_execution_capacity=capacity,  # type: ignore[arg-type]
+        )
+
+    assert _TrackingEnvironmentKernel.instances == []
+
+
 def test_cleans_up_environment_when_open_fails(
     tmp_path: Path,
     monkeypatch,
@@ -325,8 +387,14 @@ class OpenFailure(Exception):
 class _TrackingEnvironmentKernel:
     instances: list["_TrackingEnvironmentKernel"] = []
 
-    def __init__(self, workspace: str | Path) -> None:
+    def __init__(
+        self,
+        workspace: str | Path,
+        *,
+        pending_execution_capacity: int,
+    ) -> None:
         self.workspace = Path(workspace)
+        self.pending_execution_capacity = pending_execution_capacity
         self.close_count = 0
         self.events: list[str] = []
         self.bindings: list[_TrackingEnvironmentBinding] = []
