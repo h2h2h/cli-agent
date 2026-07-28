@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import cli_agent.runtime._environment.kernel as kernel_module
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._environment import EnvironmentBinding, EnvironmentKernel
 from cli_agent.runtime._environment.policy import (
@@ -728,6 +729,284 @@ def test_policy_denial_bypasses_saturated_queue_and_new_session_is_fresh(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "cancel_index",
+    (0, 1, 2),
+    ids=("first", "middle", "last"),
+)
+def test_kill_removes_queued_execution_and_reuses_capacity(
+    tmp_path: Path,
+    cancel_index: int,
+) -> None:
+    async def scenario() -> None:
+        started = tmp_path / f"cancel-{cancel_index}-started"
+        release = tmp_path / f"cancel-{cancel_index}-release"
+        order = tmp_path / f"cancel-{cancel_index}-order"
+        labels = ("first", "middle", "last")
+        kernel = EnvironmentKernel(tmp_path, pending_execution_capacity=3)
+        binding = kernel.create_binding()
+        try:
+            running = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id=f"exec_running_{cancel_index}",
+                        name="exec",
+                        arguments={
+                            "command": _blocking_command(started, release),
+                            "wait_ms": 0,
+                        },
+                    )
+                )
+            )
+            await _wait_for_path(started)
+
+            queued = []
+            for label in labels:
+                queued.append(
+                    _output(
+                        await binding.dispatch(
+                            ToolCall(
+                                call_id=f"exec_queued_{cancel_index}_{label}",
+                                name="exec",
+                                arguments={
+                                    "command": _append_order_command(order, label),
+                                    "wait_ms": 0,
+                                },
+                            )
+                        )
+                    )
+                )
+            assert [snapshot["status"] for snapshot in queued] == [
+                "queued",
+                "queued",
+                "queued",
+            ]
+
+            selected = queued[cancel_index]
+            killed = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id=f"kill_queued_{cancel_index}",
+                        name="kill",
+                        arguments={"exec_id": selected["exec_id"]},
+                    )
+                )
+            )
+            killed_again = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id=f"kill_queued_again_{cancel_index}",
+                        name="kill",
+                        arguments={"exec_id": selected["exec_id"]},
+                    )
+                )
+            )
+            reread = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id=f"output_killed_{cancel_index}",
+                        name="output",
+                        arguments={"exec_id": selected["exec_id"]},
+                    )
+                )
+            )
+
+            assert killed["status"] == "killed"
+            assert killed["is_terminal"] is True
+            assert killed["exit_code"] is None
+            assert killed["chunks"] == []
+            assert killed["next_cursor"] == 0
+            assert killed_again == killed
+            assert reread == killed
+
+            session = next(iter(kernel._sessions.values()))
+            killed_record = session.executions[str(selected["exec_id"])]
+            assert killed_record.kill_requested is True
+            assert killed_record.process is None
+            assert killed_record.completion_task is None
+
+            replacement = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id=f"exec_replacement_{cancel_index}",
+                        name="exec",
+                        arguments={
+                            "command": _append_order_command(order, "replacement"),
+                            "wait_ms": 0,
+                        },
+                    )
+                )
+            )
+            assert replacement["status"] == "queued"
+
+            release.touch()
+            assert (
+                await _read_until_terminal(
+                    binding,
+                    str(running["exec_id"]),
+                    cursor=0,
+                )
+            )["status"] == "exited"
+            for index, snapshot in enumerate(queued):
+                if index != cancel_index:
+                    assert (
+                        await _read_until_terminal(
+                            binding,
+                            str(snapshot["exec_id"]),
+                            cursor=0,
+                        )
+                    )["status"] == "exited"
+            assert (
+                await _read_until_terminal(
+                    binding,
+                    str(replacement["exec_id"]),
+                    cursor=0,
+                )
+            )["status"] == "exited"
+
+            expected_order = [
+                label for index, label in enumerate(labels) if index != cancel_index
+            ]
+            expected_order.append("replacement")
+            assert order.read_text().splitlines() == expected_order
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+
+def test_killing_queued_execution_wakes_exec_and_output_waiters(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        started = tmp_path / "waiter-running-started"
+        release = tmp_path / "waiter-running-release"
+        must_not_start = tmp_path / "queued-must-not-start"
+        kernel = EnvironmentKernel(tmp_path, pending_execution_capacity=1)
+        binding = kernel.create_binding()
+        try:
+            await binding.dispatch(
+                ToolCall(
+                    call_id="exec_waiter_running",
+                    name="exec",
+                    arguments={
+                        "command": _blocking_command(started, release),
+                        "wait_ms": 0,
+                    },
+                )
+            )
+            await _wait_for_path(started)
+
+            exec_waiter = asyncio.create_task(
+                binding.dispatch(
+                    ToolCall(
+                        call_id="exec_waiting_queued",
+                        name="exec",
+                        arguments={
+                            "command": _python_command(
+                                "from pathlib import Path; "
+                                "Path('queued-must-not-start').touch()"
+                            ),
+                            "wait_ms": 5_000,
+                        },
+                    )
+                )
+            )
+            queued_record = await _wait_for_queued_record(kernel)
+            output_waiter = asyncio.create_task(
+                binding.dispatch(
+                    ToolCall(
+                        call_id="output_waiting_queued",
+                        name="output",
+                        arguments={
+                            "exec_id": queued_record.exec_id,
+                            "wait_ms": 5_000,
+                        },
+                    )
+                )
+            )
+            await asyncio.sleep(0)
+            assert not exec_waiter.done()
+            assert not output_waiter.done()
+
+            killed = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="kill_waiting_queued",
+                        name="kill",
+                        arguments={"exec_id": queued_record.exec_id},
+                    )
+                )
+            )
+            exec_result = _output(await asyncio.wait_for(exec_waiter, timeout=0.5))
+            output_result = _output(await asyncio.wait_for(output_waiter, timeout=0.5))
+
+            assert killed["status"] == "killed"
+            assert exec_result == killed
+            assert output_result == killed
+            assert queued_record.process is None
+            assert queued_record.completion_task is None
+            assert not must_not_start.exists()
+        finally:
+            release.touch()
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+
+def test_pending_kill_and_promotion_have_one_atomic_winner(
+    tmp_path: Path,
+) -> None:
+    decision = ExecutionDecision.allow(
+        parse_shell_command(
+            raw_command="true",
+            cwd=tmp_path,
+            wait_ms=0,
+            output_limit=1,
+        )
+    )
+
+    cancel_wins = kernel_module._ExecutionScheduler(pending_capacity=1)
+    running_admission = cancel_wins.admit(
+        decision,
+        kernel_module._ExecutionLane.SHELL,
+    )
+    queued_admission = cancel_wins.admit(
+        decision,
+        kernel_module._ExecutionLane.SHELL,
+    )
+    assert running_admission is not None
+    assert queued_admission is not None
+    running = running_admission.record
+    queued = queued_admission.record
+
+    assert cancel_wins.cancel_pending(queued) is True
+    running.status = "exited"
+    assert cancel_wins.complete(running) == ()
+    assert queued.status == "killed"
+    assert queued.kill_requested is True
+
+    promotion_wins = kernel_module._ExecutionScheduler(pending_capacity=1)
+    running_admission = promotion_wins.admit(
+        decision,
+        kernel_module._ExecutionLane.SHELL,
+    )
+    queued_admission = promotion_wins.admit(
+        decision,
+        kernel_module._ExecutionLane.SHELL,
+    )
+    assert running_admission is not None
+    assert queued_admission is not None
+    running = running_admission.record
+    queued = queued_admission.record
+
+    running.status = "exited"
+    assert promotion_wins.complete(running) == (queued,)
+    assert queued.status == "running"
+    assert promotion_wins.cancel_pending(queued) is False
+    assert queued.kill_requested is False
+
+
 def test_output_bound_discards_later_chunks_and_preserves_first_cursor(
     tmp_path: Path,
 ) -> None:
@@ -1028,6 +1307,16 @@ def _blocking_command(started: Path, release: Path) -> str:
     )
 
 
+def _append_order_command(order: Path, label: str) -> str:
+    line = f"{label}\n"
+    return _python_command(
+        "from pathlib import Path\n"
+        f"order = Path({str(order)!r})\n"
+        "with order.open('a') as stream:\n"
+        f"    stream.write({line!r})"
+    )
+
+
 def _output(result: ToolResult) -> dict[str, object]:
     assert isinstance(result.output, dict)
     return result.output
@@ -1089,3 +1378,15 @@ async def _wait_for_path(path: Path) -> None:
             return
         await asyncio.sleep(0.01)
     raise AssertionError(f"{path} was not created")
+
+
+async def _wait_for_queued_record(
+    kernel: EnvironmentKernel,
+) -> kernel_module._ExecutionRecord:
+    for _ in range(100):
+        for session in kernel._sessions.values():
+            for record in session.executions.values():
+                if record.status == "queued":
+                    return record
+        await asyncio.sleep(0.01)
+    raise AssertionError("queued Execution Record was not created")

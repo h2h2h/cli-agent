@@ -116,11 +116,13 @@ class _ExecutionScheduler:
         return self._claim_runnable()
 
     def cancel_pending(self, record: _ExecutionRecord) -> bool:
-        """Remove one queued Execution before it acquires a lane."""
+        """Atomically terminate one queued Execution before lane claim."""
 
         for index, pending in enumerate(self._pending):
             if pending is record:
                 self._pending.pop(index)
+                record.kill_requested = True
+                record.status = "killed"
                 return True
         return False
 
@@ -555,13 +557,12 @@ class EnvironmentKernel:
         if record.is_terminal:
             return
 
-        record.kill_requested = True
         if record.status == "queued" and session.scheduler.cancel_pending(record):
-            record.status = "killed"
             record.process_ready.set()
             await _notify_changed(record)
             return
 
+        record.kill_requested = True
         await record.process_ready.wait()
         process = record.process
         if process is not None and process.returncode is None:
