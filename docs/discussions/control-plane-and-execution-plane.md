@@ -1,6 +1,12 @@
 # Control plane and execution plane
 
-Status: proposed
+Status: accepted for specification
+Accepted: 2026-07-28
+Normative follow-up: architecture decision 16
+
+This discussion records the rationale that was accepted for incorporation into
+the architecture specification. Where it differs from the normative
+architecture decision or RFC, those later records govern.
 
 ## Question
 
@@ -250,6 +256,12 @@ Policy is supplied or configured by the Host and enforced at the Kernel
 admission boundary. The Agent and Workspace may observe a safe denial reason
 but cannot modify or relax the effective policy.
 
+The effective policy is selected when the Runtime opens and remains fixed for
+that Runtime lifetime. The Runtime default is the direct dangerous-command
+guard below with `rm` in its deny set. An embedding Host may deliberately
+replace that default policy at open time; neither an Agent request nor a
+Workspace mutation can do so.
+
 Conceptually:
 
 ```python
@@ -355,7 +367,18 @@ rm -rf build             -> DENY
 pytest -q                -> ALLOW
 ```
 
-The implementation must document exactly which Shell forms it recognizes.
+The milestone 03 inspector uses POSIX `shlex` tokenization and examines only
+the first token of the submitted command. If its path basename is in the deny
+set, the command is denied. Leading whitespace, quoting of the executable name,
+and absolute executable paths are therefore covered. A tokenization failure or
+any command whose first token is not denied is not a policy failure: this
+specific positive-match rule does not match it.
+
+Consequently, `rm file`, `"rm" file`, and `/bin/rm file` are recognized, while
+`env rm file`, `command rm file`, `sh -c 'rm file'`, and an `rm` appearing only
+after a Shell operator are outside the first rule's coverage. The complete raw
+string remains the exact Shell-driver payload; inspection never rewrites it.
+
 Wrapper commands, pipelines, conditionals, substitutions, generated scripts,
 and nested interpreters require structured Shell analysis to cover reliably.
 

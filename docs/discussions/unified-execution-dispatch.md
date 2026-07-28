@@ -1,5 +1,13 @@
 # Unified Execution dispatch
 
+Status: accepted for specification
+Accepted: 2026-07-28
+Normative follow-up: architecture decision 16
+
+This discussion records the rationale that was accepted for incorporation into
+the architecture specification. Where it differs from the normative
+architecture decision or RFC, those later records govern.
+
 ## Question
 
 `exec` is the single model-visible entry into the environment. The current
@@ -225,19 +233,22 @@ result encoding remain inside that driver and the Kernel.
 MCP Tools continue through the Tool driver after Repertoire Reconciliation.
 They do not introduce an MCP-specific execution driver or model-visible path.
 
-## Open questions for the implementing milestones
+## Questions assigned to implementing milestones
 
 - **Reserved command namespace.** Should Kernel commands retain the documented
   `tools ...` and Workspace command heads, or use one explicit namespace to
-  avoid collisions with host executables?
+  avoid collisions with host executables? Milestones 06 and 10 must settle this
+  before adding their routes; it does not block the Shell-only milestone 03.
 - **Command grammar.** Which top-level quoting and argument forms are accepted?
   Are pipelines, redirections, `env` prefixes, and shell control operators
   intentionally unsupported for Kernel commands, or will a later proxy provide
-  composition?
+  composition? Milestones 06 and 10 own their reserved grammars. Milestone 03
+  treats the complete submitted string as an opaque Shell payload after the
+  deliberately narrow inspection described by the companion discussion.
 - **Tool process model.** Does each `tools run` use a fresh worker, or does one
   persistent Workspace process serve multiple invocations? The choice must
   preserve cancellation, module-state isolation, and Workspace dependency
-  isolation.
+  isolation. Milestone 10 owns this choice.
 - **Canonical result encoding.** What JSON envelope and exit semantics represent
   Tool success, Tool failure, managed-command success, and recoverable domain
   conflicts in the shared output log?
