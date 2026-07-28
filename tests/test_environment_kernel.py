@@ -320,6 +320,183 @@ def test_wait_timeout_returns_running_execution_and_incremental_output(
     asyncio.run(scenario())
 
 
+def test_schedules_shell_executions_fifo_with_one_running_per_session(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        order = tmp_path / "order.txt"
+        release = tmp_path / "release-first"
+        first_command = _python_command(
+            "import time\n"
+            "from pathlib import Path\n"
+            "order = Path('order.txt')\n"
+            "release = Path('release-first')\n"
+            "order.write_text('first-start\\n')\n"
+            "while not release.exists():\n"
+            "    time.sleep(0.01)\n"
+            "order.write_text(order.read_text() + 'first-end\\n')"
+        )
+        second_command = _python_command(
+            "from pathlib import Path; "
+            "order = Path('order.txt'); "
+            "order.write_text(order.read_text() + 'second\\n')"
+        )
+        third_command = _python_command(
+            "from pathlib import Path; "
+            "order = Path('order.txt'); "
+            "order.write_text(order.read_text() + 'third\\n')"
+        )
+        kernel = EnvironmentKernel(tmp_path)
+        binding = kernel.create_binding()
+        try:
+            first = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="exec_first",
+                        name="exec",
+                        arguments={"command": first_command, "wait_ms": 0},
+                    )
+                )
+            )
+            assert first["status"] == "running"
+            await _wait_for_file_text(order, "first-start\n")
+
+            second = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="exec_second",
+                        name="exec",
+                        arguments={"command": second_command, "wait_ms": 10},
+                    )
+                )
+            )
+            third = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="exec_third",
+                        name="exec",
+                        arguments={"command": third_command, "wait_ms": 10},
+                    )
+                )
+            )
+
+            assert second["status"] == "queued"
+            assert second["is_terminal"] is False
+            assert third["status"] == "queued"
+            assert third["is_terminal"] is False
+            assert order.read_text() == "first-start\n"
+
+            release.touch()
+            first_terminal = await _read_until_terminal(
+                binding,
+                str(first["exec_id"]),
+                cursor=0,
+            )
+            second_terminal = await _read_until_terminal(
+                binding,
+                str(second["exec_id"]),
+                cursor=0,
+            )
+            third_terminal = await _read_until_terminal(
+                binding,
+                str(third["exec_id"]),
+                cursor=0,
+            )
+
+            assert first_terminal["status"] == "exited"
+            assert second_terminal["status"] == "exited"
+            assert third_terminal["status"] == "exited"
+            assert order.read_text() == ("first-start\nfirst-end\nsecond\nthird\n")
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+
+def test_promotes_next_shell_execution_after_process_start_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    real_create_subprocess_shell = asyncio.create_subprocess_shell
+    first_spawn_started: asyncio.Event
+    release_first_spawn: asyncio.Event
+    spawn_count = 0
+
+    async def controlled_create_subprocess_shell(*args, **kwargs):
+        nonlocal spawn_count
+        spawn_count += 1
+        if spawn_count == 1:
+            first_spawn_started.set()
+            await release_first_spawn.wait()
+            raise OSError("synthetic process start failure")
+        return await real_create_subprocess_shell(*args, **kwargs)
+
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_shell",
+        controlled_create_subprocess_shell,
+    )
+
+    async def scenario() -> None:
+        nonlocal first_spawn_started, release_first_spawn
+        first_spawn_started = asyncio.Event()
+        release_first_spawn = asyncio.Event()
+        proof = tmp_path / "promoted-after-failure"
+        kernel = EnvironmentKernel(tmp_path)
+        binding = kernel.create_binding()
+        try:
+            first = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="exec_start_failure",
+                        name="exec",
+                        arguments={"command": "does-not-start", "wait_ms": 0},
+                    )
+                )
+            )
+            await first_spawn_started.wait()
+
+            second = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="exec_after_failure",
+                        name="exec",
+                        arguments={
+                            "command": _python_command(
+                                "from pathlib import Path; "
+                                "Path('promoted-after-failure').touch()"
+                            ),
+                            "wait_ms": 10,
+                        },
+                    )
+                )
+            )
+            assert second["status"] == "queued"
+            assert not proof.exists()
+
+            release_first_spawn.set()
+            first_terminal = await _read_until_terminal(
+                binding,
+                str(first["exec_id"]),
+                cursor=0,
+            )
+            second_terminal = await _read_until_terminal(
+                binding,
+                str(second["exec_id"]),
+                cursor=0,
+            )
+
+            assert first_terminal["status"] == "failed"
+            assert first_terminal["exit_code"] is None
+            assert second_terminal["status"] == "exited"
+            assert proof.exists()
+        finally:
+            release_first_spawn.set()
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+
 def test_output_bound_discards_later_chunks_and_preserves_first_cursor(
     tmp_path: Path,
 ) -> None:
@@ -653,3 +830,11 @@ async def _read_until_terminal(
             snapshot["chunks"] = chunks
             return snapshot
     raise AssertionError("execution did not reach a terminal state")
+
+
+async def _wait_for_file_text(path: Path, expected: str) -> None:
+    for _ in range(100):
+        if path.exists() and path.read_text() == expected:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{path} did not contain {expected!r}")

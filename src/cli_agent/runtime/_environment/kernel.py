@@ -8,6 +8,7 @@ import signal
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from uuid import uuid4
 
@@ -28,11 +29,17 @@ _DEFAULT_OUTPUT_BYTE_BOUND = 1_048_576
 _TERMINATE_GRACE_SECONDS = 0.5
 
 
+class _ExecutionLane(Enum):
+    SHELL = "shell"
+
+
 @dataclass(slots=True)
 class _ExecutionRecord:
     exec_id: str
     decision: ExecutionDecision
-    status: str = "running"
+    lane: _ExecutionLane
+    status: str = "queued"
+    submission_sequence: int | None = None
     exit_code: int | None = None
     chunks: list[dict[str, JSONValue]] = field(default_factory=list)
     retained_bytes: int = 0
@@ -48,9 +55,83 @@ class _ExecutionRecord:
         return self.status in _TERMINAL_STATUSES
 
 
+class _ExecutionScheduler:
+    """Assign admitted Executions to Runtime-trusted Driver lanes."""
+
+    def __init__(self) -> None:
+        self._next_submission_sequence = 0
+        self._pending: list[_ExecutionRecord] = []
+        self._running: dict[_ExecutionLane, set[str]] = {
+            _ExecutionLane.SHELL: set(),
+        }
+        self._lane_capacities = {
+            _ExecutionLane.SHELL: 1,
+        }
+        self._closed = False
+
+    def admit(self, record: _ExecutionRecord) -> tuple[_ExecutionRecord, ...]:
+        """Accept one allowed Execution and return newly runnable work."""
+
+        if self._closed:
+            raise RuntimeError("Execution Scheduler is closed")
+        if not record.decision.allowed:
+            raise RuntimeError("Execution Scheduler received a denied decision")
+        if record.submission_sequence is not None:
+            raise RuntimeError("Execution was already admitted")
+
+        record.submission_sequence = self._next_submission_sequence
+        self._next_submission_sequence += 1
+        self._pending.append(record)
+        return self._claim_runnable()
+
+    def complete(self, record: _ExecutionRecord) -> tuple[_ExecutionRecord, ...]:
+        """Release one running lane occupant and select follow-up work."""
+
+        self._running[record.lane].discard(record.exec_id)
+        if self._closed:
+            return ()
+        return self._claim_runnable()
+
+    def cancel_pending(self, record: _ExecutionRecord) -> bool:
+        """Remove one queued Execution before it acquires a lane."""
+
+        for index, pending in enumerate(self._pending):
+            if pending is record:
+                self._pending.pop(index)
+                return True
+        return False
+
+    def close(self) -> tuple[_ExecutionRecord, ...]:
+        """Stop promotion and release all queued Executions."""
+
+        if self._closed:
+            return ()
+        self._closed = True
+        pending = tuple(self._pending)
+        self._pending.clear()
+        return pending
+
+    def _claim_runnable(self) -> tuple[_ExecutionRecord, ...]:
+        claimed: list[_ExecutionRecord] = []
+        index = 0
+        while index < len(self._pending):
+            record = self._pending[index]
+            running = self._running[record.lane]
+            if len(running) >= self._lane_capacities[record.lane]:
+                index += 1
+                continue
+
+            self._pending.pop(index)
+            running.add(record.exec_id)
+            record.status = "running"
+            claimed.append(record)
+        return tuple(claimed)
+
+
 @dataclass(slots=True)
 class _EnvironmentSession:
     executions: dict[str, _ExecutionRecord] = field(default_factory=dict)
+    scheduler: _ExecutionScheduler = field(default_factory=_ExecutionScheduler)
 
 
 class EnvironmentBinding:
@@ -138,8 +219,13 @@ class EnvironmentKernel:
             await self._release_session(session)
 
     async def _release_session(self, session: _EnvironmentSession) -> None:
+        for record in session.scheduler.close():
+            record.kill_requested = True
+            record.status = "killed"
+            record.process_ready.set()
+            await _notify_changed(record)
         for record in tuple(session.executions.values()):
-            await self._terminate_execution(record)
+            await self._terminate_execution(session, record)
         session.executions.clear()
 
     async def _dispatch(self, session_id: str, call: ToolCall) -> ToolResult:
@@ -220,23 +306,51 @@ class EnvironmentKernel:
                 message=decision.reason or "execution denied by policy",
             )
 
-        record = _ExecutionRecord(exec_id=uuid4().hex, decision=decision)
-        session.executions[record.exec_id] = record
-        record.completion_task = asyncio.create_task(self._run_shell(record))
+        try:
+            lane = _lane_for_decision(decision)
+        except RuntimeError:
+            return _protocol_error(
+                call.call_id,
+                code="internal",
+                message="execution route is not supported",
+            )
 
-        if command.wait_ms > 0:
+        record = _ExecutionRecord(
+            exec_id=uuid4().hex,
+            decision=decision,
+            lane=lane,
+        )
+        session.executions[record.exec_id] = record
+        for runnable in session.scheduler.admit(record):
+            self._start_execution(session, runnable)
+
+        if command.wait_ms > 0 and not record.is_terminal:
             with suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(
-                    asyncio.shield(record.completion_task),
-                    timeout=command.wait_ms / 1000,
-                )
+                async with record.changed:
+                    await asyncio.wait_for(
+                        record.changed.wait_for(lambda: record.is_terminal),
+                        timeout=command.wait_ms / 1000,
+                    )
 
         return ToolResult(
             call_id=call.call_id,
             output=_snapshot(record, cursor=0, limit=command.output_limit),
         )
 
-    async def _run_shell(self, record: _ExecutionRecord) -> None:
+    def _start_execution(
+        self,
+        session: _EnvironmentSession,
+        record: _ExecutionRecord,
+    ) -> None:
+        if record.lane is not _ExecutionLane.SHELL:
+            raise RuntimeError("unsupported Execution lane")
+        record.completion_task = asyncio.create_task(self._run_shell(session, record))
+
+    async def _run_shell(
+        self,
+        session: _EnvironmentSession,
+        record: _ExecutionRecord,
+    ) -> None:
         command = _allowed_command(record.decision)
         process: asyncio.subprocess.Process | None = None
         try:
@@ -277,6 +391,8 @@ class EnvironmentKernel:
             record.exit_code = process.returncode if process is not None else None
         finally:
             record.process_ready.set()
+            for runnable in session.scheduler.complete(record):
+                self._start_execution(session, runnable)
             await _notify_changed(record)
 
     async def _capture_stream(
@@ -388,17 +504,27 @@ class EnvironmentKernel:
                 code="unknown_execution",
                 message="execution not found",
             )
-        await self._terminate_execution(record)
+        await self._terminate_execution(session, record)
         return ToolResult(
             call_id=call.call_id,
             output=_snapshot(record, cursor=cursor, limit=limit),
         )
 
-    async def _terminate_execution(self, record: _ExecutionRecord) -> None:
+    async def _terminate_execution(
+        self,
+        session: _EnvironmentSession,
+        record: _ExecutionRecord,
+    ) -> None:
         if record.is_terminal:
             return
 
         record.kill_requested = True
+        if record.status == "queued" and session.scheduler.cancel_pending(record):
+            record.status = "killed"
+            record.process_ready.set()
+            await _notify_changed(record)
+            return
+
         await record.process_ready.wait()
         process = record.process
         if process is not None and process.returncode is None:
@@ -425,6 +551,13 @@ def _allowed_command(decision: ExecutionDecision) -> CommandParseResult:
     if not decision.allowed:
         raise RuntimeError("execution plane received a denied decision")
     return decision.parse_result
+
+
+def _lane_for_decision(decision: ExecutionDecision) -> _ExecutionLane:
+    command = _allowed_command(decision)
+    if command.operation == "shell.execute":
+        return _ExecutionLane.SHELL
+    raise RuntimeError(f"unsupported Execution operation: {command.operation}")
 
 
 def _reject_unknown_arguments(
