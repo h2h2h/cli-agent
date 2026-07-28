@@ -2,92 +2,69 @@
 
 Updated: 2026-07-28
 
-## Completed
+## Repository state
 
-- Preserved the final v1 code state on `main` and the annotated
-  `cli-agent-v1-baseline-2026-07-27` tag; `v2` remains the development branch.
-- Accepted `docs/discussions/unified-execution-dispatch.md` and
-  `docs/discussions/control-plane-and-execution-plane.md` for specification.
-- Accepted `docs/discussions/driver-aware-execution-scheduler.md`, replacing
-  the permanent global at-most-one-running rule with a serial Shell lane and a
-  future bounded concurrent Tool lane.
-- Deferred persistent Session cwd/environment mutation and its state barrier in
-  `docs/notes/deferred-session-state-barrier.md`.
-- Added architecture decision 16 in the parent AI-Coding repository and
-  reconciled its amendments into decisions 04, 08, and 10, `CONTEXT.md`, both
-  RFC-0001 languages, the architecture map, and an implementation issue impact
-  matrix.
-- Revised implementation milestones 03, 04, 05, 06, 10, and 15 around the
-  private Execution Control Plane / Execution Plane boundary.
-- Completed the milestone 03 Shell-only tracer bullet:
-  - validated `exec` requests parse into immutable `CommandParseResult` values
-    without side effects;
-  - the Runtime-lifetime Host policy produces an immutable
-    `ExecutionDecision` before admission;
-  - long-running Shell Executions expose running snapshots and stable
-    incremental Cursor reads;
-  - output is bounded by chunk and byte limits and reports truncation;
-  - `kill`, Session close, and Runtime close terminate complete POSIX process
-    groups with graceful-then-forced cleanup.
-- Added a default direct-executable deny policy containing `rm`. A Host may
-  replace the deny set through `AgentRuntime.open(denied_executables=...)`;
-  Agent and Workspace state cannot mutate the Runtime-lifetime snapshot.
-- Simplified the control path from four pass-through policy types to
-  `CommandParseResult -> ExecutionDecision -> Execution`. An allowed Decision
-  still carries the exact unchanged parse result authorized by policy.
-- Preserved the fixed model-visible `exec`, `output`, and `kill` surface and
-  backend-neutral Execution Snapshot.
+- Milestones 01 through 04 are complete on branch `v2`. The current head is
+  `ed580d6` (`refactor(environment): split kernel responsibilities`).
+- The full suite has 121 passing tests. Ruff lint, Ruff format, and whitespace
+  checks pass.
 
-## Current state
+## Implemented runtime
 
-- `cli-agent` supports one-shot and interactive multi-turn use through a real
-  OpenAI-compatible Provider.
-- A short command normally returns a terminal Snapshot. A command that outlives
-  `wait_ms` returns a running Handle and continues for later `output` or
-  `kill`.
-- Direct, quoted, and absolute-path forms of a denied executable are rejected
-  before Handle allocation or process creation. The default denies `rm`.
-- The full suite has 96 passing tests. `uv sync --locked --check`, Ruff lint,
-  and Ruff format checks pass.
-- The parent architecture repository records the specification delta in commit
-  `42e008e` (`docs(architecture): adopt unified execution control plane`).
+- The model-visible environment surface is fixed at `exec`, `output`, and `kill`.
+  The control path is Parser → Policy → Router → Scheduler → Driver; only an
+  allowed immutable `ExecutionDecision` reaches admission.
+- Long-running Shell Executions expose Session-private Handles, bounded
+  incremental output, stable Cursors, cancellation, and process-group cleanup.
+- Every Session owns a bounded Scheduler with default pending capacity 32 and a
+  serial FIFO Shell lane. Sessions run concurrently; policy denial consumes no
+  capacity and full pending admission returns `queue_full`.
+- Handles and cleanup remain Session-private. Close releases queued and running
+  work; later reuse of the same Session ID creates fresh transient state.
+- `kernel.py` now retains lifecycle and linear orchestration. Protocol, policy,
+  routing, scheduling, supervision, Execution state, and the Shell Driver live
+  in focused private modules under `_environment/`.
 
 ## Known limits
 
-- The first command inspector uses POSIX `shlex` and checks only the first
-  token's path basename. It deliberately does not unwrap `env`, `command`,
-  `sudo`, interpreters, generated scripts, or commands appearing only after a
-  Shell operator.
-- The deny policy is a command-admission guardrail, not deletion prevention,
-  risk classification, human approval, or an operating-system sandbox.
-- Milestone 04 is not implemented: concurrent `exec` calls in one Session do
-  not yet enter a bounded, driver-aware Execution Scheduler. The first
-  Shell-only lane will run at most one Shell Execution per Session; the future
-  Tool lane will allow bounded parallel execution.
-- Commands still inherit the complete cli-agent process environment, including
-  direnv-loaded Provider credentials. Workspace Environment Request and Host
-  Environment Grant filtering belong to milestone 05.
-- Persistent Session `cd` and `export` semantics do not exist. A cwd/environment
-  generation and read-write barrier is deferred until mutable Session state is
+- Shell children currently inherit the embedding process's complete
+  environment. This can expose direnv-loaded Provider credentials and is the
+  primary gap for milestone 05.
+- The command inspector uses POSIX `shlex` and checks only the first token's
+  basename. The deny policy is an admission guardrail, not comprehensive
+  side-effect detection or an operating-system sandbox.
+- Persistent Session `cd` and `export` do not exist. Cwd/environment generations
+  and their state barrier remain deferred until cross-Execution mutation is
   introduced.
 - Execution records are in memory only and are not restored after Runtime
   restart.
 
-## Next
+## Next: milestone 05 — Filter the Workspace environment
 
-Implement milestone 04 around the admitted immutable Decision boundary:
+First decompose the source ticket at
+`../.scratch/cli-agent-runtime/issues/05-filter-the-workspace-environment.md`
+under `docs/issues/05-filter-the-workspace-environment/`.
 
-1. add a bounded per-Session Execution Scheduler with default pending capacity
-   32;
-2. add a Shell lane that runs at most one Shell Execution per Session while
-   allowing cross-Session concurrency;
-3. retain ordered admission and lane-local FIFO semantics without committing
-   the future Tool lane to global head-of-line blocking;
-4. ensure policy denial consumes no queue capacity;
-5. preserve Session-private Handle lookup and cleanup through the shared
-   Execution Supervisor.
+The milestone must establish the following contract:
 
-The accepted Scheduler design is recorded in
-`docs/discussions/driver-aware-execution-scheduler.md`; deferred Session
-cwd/environment coordination is recorded in
-`docs/notes/deferred-session-state-barrier.md`.
+1. Persist an Agent-visible Workspace Environment Request containing variable
+   names only, and accept an explicit name-to-value Host Environment Grant at
+   Runtime open.
+2. Snapshot the intersection of request and grant plus a Runtime-controlled
+   minimum environment. Never treat the embedding process's complete
+   `os.environ` as an implicit grant.
+3. Give each Session a fixed filtered environment snapshot. Changes to the
+   request, grant mapping, or embedding environment affect only a later Runtime
+   open.
+4. Make every `CommandParseResult` reference the exact effective environment
+   authorized for that Session, and make the Shell Driver pass it explicitly
+   to the child process instead of reconstructing it from `os.environ`.
+5. Keep environment values out of Workspace files, capability files, indexes,
+   generated Tools, policy facts, denial messages, and Runtime diagnostics.
+   Model Provider credentials remain internal unless explicitly requested and
+   granted for Agent-executed work.
+
+Likely implementation seams are `AgentRuntime.open` for the Host Grant,
+Workspace-open logic for the names-only request and effective snapshot,
+`CommandParseResult` for the immutable environment reference, Session creation
+for snapshot ownership, and `drivers/shell.py` for explicit child injection.
