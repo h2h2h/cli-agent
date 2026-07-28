@@ -23,8 +23,9 @@ Workspace
 
 Built-in tools
 - You can use exec, output, and kill according to their supplied schemas.
-- exec runs a short command to completion and returns its execution record and available output.
-- output reads a known execution record. kill addresses a known execution ID; current exec calls complete before returning.
+- exec submits a command through Runtime policy and returns its current Execution snapshot and available output.
+- A wait timeout leaves the Execution running. Use output with its stable Cursor to read later output, or kill to terminate the Execution.
+- The default policy denies recognized direct invocations of rm. This is a narrow command guard, not an operating-system sandbox.
 
 Working method
 - Inspect relevant state before making changes.
