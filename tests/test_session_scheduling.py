@@ -3,13 +3,14 @@ import shlex
 import sys
 from pathlib import Path
 
-import cli_agent.runtime._environment.kernel as kernel_module
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._environment import EnvironmentBinding, EnvironmentKernel
+from cli_agent.runtime._environment.execution import _ExecutionRecord
 from cli_agent.runtime._environment.policy import (
     CommandParseResult,
     ExecutionDecision,
 )
+from cli_agent.runtime._environment.supervisor import _EnvironmentSession
 
 _UNKNOWN_EXECUTION = {
     "ok": False,
@@ -744,8 +745,8 @@ async def _wait_for_path(path: Path) -> None:
 
 
 async def _wait_for_queued_record(
-    session: kernel_module._EnvironmentSession,
-) -> kernel_module._ExecutionRecord:
+    session: _EnvironmentSession,
+) -> _ExecutionRecord:
     for _ in range(100):
         for record in session.executions.values():
             if record.status == "queued":

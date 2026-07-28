@@ -6,7 +6,6 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 from pathlib import Path
 
-import cli_agent.runtime._environment.kernel as kernel_module
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -22,6 +21,7 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
+from cli_agent.runtime._environment.execution import _ExecutionRecord
 
 
 class _CoordinatedProvider:
@@ -534,7 +534,7 @@ async def _wait_for_path(path: Path) -> None:
 
 
 async def _wait_for_terminal_record(
-    record: kernel_module._ExecutionRecord,
+    record: _ExecutionRecord,
 ) -> None:
     for _ in range(100):
         if record.is_terminal:

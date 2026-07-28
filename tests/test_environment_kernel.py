@@ -7,15 +7,17 @@ from pathlib import Path
 
 import pytest
 
-import cli_agent.runtime._environment.kernel as kernel_module
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._environment import EnvironmentBinding, EnvironmentKernel
+from cli_agent.runtime._environment.execution import _ExecutionRecord
 from cli_agent.runtime._environment.policy import (
     CommandParseResult,
     DirectExecutableDenyPolicy,
     ExecutionDecision,
     parse_shell_command,
 )
+from cli_agent.runtime._environment.routing import _route_decision
+from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
 
 
 def test_executes_short_command_and_retains_ordered_output(
@@ -966,14 +968,14 @@ def test_pending_kill_and_promotion_have_one_atomic_winner(
         )
     )
 
-    cancel_wins = kernel_module._ExecutionScheduler(pending_capacity=1)
+    cancel_wins = _ExecutionScheduler(pending_capacity=1)
     running_admission = cancel_wins.admit(
         decision,
-        kernel_module._ExecutionLane.SHELL,
+        _route_decision(decision),
     )
     queued_admission = cancel_wins.admit(
         decision,
-        kernel_module._ExecutionLane.SHELL,
+        _route_decision(decision),
     )
     assert running_admission is not None
     assert queued_admission is not None
@@ -986,14 +988,14 @@ def test_pending_kill_and_promotion_have_one_atomic_winner(
     assert queued.status == "killed"
     assert queued.kill_requested is True
 
-    promotion_wins = kernel_module._ExecutionScheduler(pending_capacity=1)
+    promotion_wins = _ExecutionScheduler(pending_capacity=1)
     running_admission = promotion_wins.admit(
         decision,
-        kernel_module._ExecutionLane.SHELL,
+        _route_decision(decision),
     )
     queued_admission = promotion_wins.admit(
         decision,
-        kernel_module._ExecutionLane.SHELL,
+        _route_decision(decision),
     )
     assert running_admission is not None
     assert queued_admission is not None
@@ -1382,7 +1384,7 @@ async def _wait_for_path(path: Path) -> None:
 
 async def _wait_for_queued_record(
     kernel: EnvironmentKernel,
-) -> kernel_module._ExecutionRecord:
+) -> _ExecutionRecord:
     for _ in range(100):
         for session in kernel._sessions.values():
             for record in session.executions.values():

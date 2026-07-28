@@ -10,11 +10,11 @@ from typing import Any
 
 from cli_agent.runtime._agent_loop import AgentLoop
 from cli_agent.runtime._environment import EnvironmentBinding, EnvironmentKernel
-from cli_agent.runtime._environment.kernel import (
+from cli_agent.runtime._environment.policy import DirectExecutableDenyPolicy
+from cli_agent.runtime._environment.scheduler import (
     _DEFAULT_PENDING_EXECUTION_CAPACITY,
     _validate_pending_execution_capacity,
 )
-from cli_agent.runtime._environment.policy import DirectExecutableDenyPolicy
 from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime.model import ModelEvent, ModelProvider, UserMessage
 
