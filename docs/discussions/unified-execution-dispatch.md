@@ -213,9 +213,19 @@ driver, public driver protocol, or new Snapshot payload.
 
 ### Milestone 04: isolated concurrent Sessions
 
-Place the FIFO queue and at-most-one-running rule around the shared Execution
-lifecycle. Session close cancels queued Executions and delegates cleanup of the
-running Execution through its driver without exposing driver type.
+Place the bounded, driver-aware per-Session Scheduler around the shared
+Execution lifecycle. The Shell lane runs at most one Execution per Session;
+future Tool Driver work may run concurrently within a separate bounded lane.
+Admission remains ordered, but a runnable item in one lane is not blocked only
+because an earlier item is waiting for another lane. Session close cancels
+queued Executions and delegates cleanup of every running Execution through its
+driver without exposing driver type.
+
+The accepted
+[Driver-aware per-Session Execution Scheduler](./driver-aware-execution-scheduler.md)
+discussion supersedes the earlier global at-most-one-running recommendation.
+Milestone 04 remains Shell-only, so its first observable scheduling behavior is
+still serial Shell execution.
 
 ### Milestone 06: conflict-safe Workspace mutations
 
@@ -229,6 +239,11 @@ remain Kernel-owned semantics.
 Define the reserved `tools` command grammar and add the Tool driver. Capability
 View access, validation, provenance, dependency environment selection, and Tool
 result encoding remain inside that driver and the Kernel.
+
+Add the bounded Tool scheduling lane and prove that Tool Executions can run
+concurrently without being blocked by a busy Shell lane. AgentLoop preserves
+model-returned Tool Result order even when Tool Executions complete out of
+order.
 
 MCP Tools continue through the Tool driver after Repertoire Reconciliation.
 They do not introduce an MCP-specific execution driver or model-visible path.

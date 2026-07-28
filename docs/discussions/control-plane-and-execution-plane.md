@@ -98,7 +98,7 @@ EnvironmentBinding
 |                              v                       |
 |  Execution plane                                     |
 |                                                      |
-|  Session queue                                       |
+|  Session Execution Scheduler                         |
 |      -> Execution Supervisor                         |
 |      -> Shell / Tool / Managed driver                |
 |      -> output buffer / Cursor / state               |
@@ -273,7 +273,7 @@ The execution plane accepts only allowed, admitted, immutable Decisions.
 The Supervisor owns:
 
 - Execution creation and state transitions;
-- Session FIFO integration;
+- Session Scheduler integration and Driver lane release;
 - wait behavior;
 - output Buffer and Cursor coordination;
 - driver start and cancellation;
@@ -297,6 +297,14 @@ allowed:
 | Shell | host subprocess | process group |
 | Tool | Workspace Tool Environment | worker or Tool invocation |
 | Managed command | Kernel operation | optimistic operation state |
+
+Scheduling is Driver-aware without becoming Driver-visible to the model. The
+Shell lane has capacity one per Session. A future Tool lane may run multiple
+Executions within a bounded Host-configured budget. Admission remains ordered
+and FIFO within each lane, while a runnable item may bypass an earlier item
+that is blocked only on another lane. The accepted
+[Driver-aware per-Session Execution Scheduler](./driver-aware-execution-scheduler.md)
+discussion defines the detailed ordering and lifecycle semantics.
 
 All drivers emit normalized stdout/stderr-style output and completion into the
 shared Execution contract. Driver-specific fields do not leak into
@@ -429,8 +437,10 @@ sandbox, persistent audit store, or public driver protocol in milestone 03.
 
 ### Milestone 04: queue and Session isolation
 
-- queue admitted Decisions in the bound Session;
-- preserve at-most-one-running Execution per Session;
+- admit allowed Decisions into a bounded Scheduler in the bound Session;
+- preserve at-most-one-running Shell Execution per Session;
+- establish ordered, lane-aware scheduling without adding the future Tool
+  Driver;
 - let different Sessions execute concurrently;
 - keep Handle lookup and cleanup Session-private;
 - ensure policy denial consumes no queue capacity.
@@ -456,6 +466,10 @@ sandbox, persistent audit store, or public driver protocol in milestone 03.
 - expose Tool name, operation, validation state, and trusted provenance to
   policy;
 - keep Tool dependency and process mechanics in the Tool driver;
+- add a bounded parallel Tool lane without allowing Agent-authored metadata to
+  grant concurrency authority;
+- preserve model-returned Tool Result order when Tool work completes out of
+  order;
 - preserve one common Execution and permission path for generated MCP Tools.
 
 ### Later work

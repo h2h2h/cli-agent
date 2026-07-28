@@ -8,6 +8,11 @@ Updated: 2026-07-28
   `cli-agent-v1-baseline-2026-07-27` tag; `v2` remains the development branch.
 - Accepted `docs/discussions/unified-execution-dispatch.md` and
   `docs/discussions/control-plane-and-execution-plane.md` for specification.
+- Accepted `docs/discussions/driver-aware-execution-scheduler.md`, replacing
+  the permanent global at-most-one-running rule with a serial Shell lane and a
+  future bounded concurrent Tool lane.
+- Deferred persistent Session cwd/environment mutation and its state barrier in
+  `docs/notes/deferred-session-state-barrier.md`.
 - Added architecture decision 16 in the parent AI-Coding repository and
   reconciled its amendments into decisions 04, 08, and 10, `CONTEXT.md`, both
   RFC-0001 languages, the architecture map, and an implementation issue impact
@@ -56,10 +61,15 @@ Updated: 2026-07-28
 - The deny policy is a command-admission guardrail, not deletion prevention,
   risk classification, human approval, or an operating-system sandbox.
 - Milestone 04 is not implemented: concurrent `exec` calls in one Session do
-  not yet enter a bounded at-most-one-running FIFO.
+  not yet enter a bounded, driver-aware Execution Scheduler. The first
+  Shell-only lane will run at most one Shell Execution per Session; the future
+  Tool lane will allow bounded parallel execution.
 - Commands still inherit the complete cli-agent process environment, including
   direnv-loaded Provider credentials. Workspace Environment Request and Host
   Environment Grant filtering belong to milestone 05.
+- Persistent Session `cd` and `export` semantics do not exist. A cwd/environment
+  generation and read-write barrier is deferred until mutable Session state is
+  introduced.
 - Execution records are in memory only and are not restored after Runtime
   restart.
 
@@ -67,9 +77,17 @@ Updated: 2026-07-28
 
 Implement milestone 04 around the admitted immutable Decision boundary:
 
-1. add a configurable per-Session FIFO with default capacity 32;
-2. run at most one Execution per Session while allowing cross-Session
-   concurrency;
-3. ensure policy denial consumes no queue capacity;
-4. preserve Session-private Handle lookup and cleanup through the shared
+1. add a bounded per-Session Execution Scheduler with default pending capacity
+   32;
+2. add a Shell lane that runs at most one Shell Execution per Session while
+   allowing cross-Session concurrency;
+3. retain ordered admission and lane-local FIFO semantics without committing
+   the future Tool lane to global head-of-line blocking;
+4. ensure policy denial consumes no queue capacity;
+5. preserve Session-private Handle lookup and cleanup through the shared
    Execution Supervisor.
+
+The accepted Scheduler design is recorded in
+`docs/discussions/driver-aware-execution-scheduler.md`; deferred Session
+cwd/environment coordination is recorded in
+`docs/notes/deferred-session-state-barrier.md`.
