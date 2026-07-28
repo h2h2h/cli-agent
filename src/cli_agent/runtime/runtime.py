@@ -10,6 +10,7 @@ from typing import Any
 
 from cli_agent.runtime._agent_loop import AgentLoop
 from cli_agent.runtime._environment import EnvironmentBinding, EnvironmentKernel
+from cli_agent.runtime._environment.policy import DirectExecutableDenyPolicy
 from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime.model import ModelEvent, ModelProvider, UserMessage
 
@@ -50,11 +51,13 @@ class AgentRuntime:
         workspace: str | Path,
         provider: ModelProvider,
         system_instruction: str | None = None,
+        denied_executables: frozenset[str] | None = None,
     ) -> _AgentRuntimeOpener:
         """Prepare to asynchronously open a Workspace-bound Runtime.
 
         ``system_instruction`` extends the canonical instruction assembled for
-        each new Agent Session.
+        each new Agent Session. ``denied_executables`` replaces the default
+        direct-executable deny set containing ``rm`` for this Runtime lifetime.
         """
 
         return _AgentRuntimeOpener(
@@ -62,6 +65,7 @@ class AgentRuntime:
             workspace,
             provider,
             system_instruction,
+            denied_executables,
         )
 
     @classmethod
@@ -70,8 +74,18 @@ class AgentRuntime:
         workspace: str | Path,
         provider: ModelProvider,
         system_instruction: str | None,
+        denied_executables: frozenset[str] | None,
     ) -> AgentRuntime:
-        environment = EnvironmentKernel(workspace)
+        environment = (
+            EnvironmentKernel(workspace)
+            if denied_executables is None
+            else EnvironmentKernel(
+                workspace,
+                execution_policy=DirectExecutableDenyPolicy(
+                    denied_executables,
+                ),
+            )
+        )
         try:
             return cls(
                 default_provider=provider,
@@ -170,11 +184,13 @@ class _AgentRuntimeOpener:
         workspace: str | Path,
         provider: ModelProvider,
         system_instruction: str | None,
+        denied_executables: frozenset[str] | None,
     ) -> None:
         self._runtime_type = runtime_type
         self._workspace = workspace
         self._provider = provider
         self._system_instruction = system_instruction
+        self._denied_executables = denied_executables
         self._runtime: AgentRuntime | None = None
 
     def __await__(self) -> Generator[Any, None, AgentRuntime]:
@@ -203,6 +219,7 @@ class _AgentRuntimeOpener:
                 self._workspace,
                 self._provider,
                 self._system_instruction,
+                self._denied_executables,
             )
         else:
             self._runtime._ensure_open()

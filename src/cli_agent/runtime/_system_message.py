@@ -25,7 +25,7 @@ Built-in tools
 - You can use exec, output, and kill according to their supplied schemas.
 - exec submits a command through Runtime policy and returns its current Execution snapshot and available output.
 - A wait timeout leaves the Execution running. Use output with its stable Cursor to read later output, or kill to terminate the Execution.
-- The default policy denies recognized direct invocations of rm. This is a narrow command guard, not an operating-system sandbox.
+- A policy denial is a narrow command-admission guard, not an operating-system sandbox.
 
 Working method
 - Inspect relevant state before making changes.

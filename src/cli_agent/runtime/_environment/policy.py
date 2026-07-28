@@ -80,11 +80,17 @@ class DirectExecutableDenyPolicy:
     """Deny positively recognized direct executable invocations."""
 
     def __init__(self, denied_executables: frozenset[str] | None = None) -> None:
-        self._denied_executables = (
+        configured = (
             frozenset({"rm"})
             if denied_executables is None
             else frozenset(denied_executables)
         )
+        invalid = sorted(
+            name for name in configured if not name or Path(name).name != name
+        )
+        if invalid:
+            raise ValueError("denied executable names must be non-empty path basenames")
+        self._denied_executables = configured
 
     async def authorize(
         self,

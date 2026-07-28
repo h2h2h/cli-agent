@@ -14,7 +14,9 @@ from cli_agent.runtime import (
     ScriptedModelProvider,
     SystemMessage,
     ToolCall,
+    ToolCallReady,
     ToolResult,
+    ToolResultMessage,
     UserMessage,
 )
 
@@ -70,6 +72,55 @@ def test_closes_runtime_context_manager(tmp_path: Path, monkeypatch) -> None:
         with pytest.raises(RuntimeClosedError, match="AgentRuntime is closed"):
             async with opener:
                 pass
+
+    asyncio.run(scenario())
+
+
+def test_host_configures_runtime_lifetime_executable_deny_set(
+    tmp_path: Path,
+) -> None:
+    call = ToolCall(
+        call_id="deny_echo",
+        name="exec",
+        arguments={"command": "echo must-not-run"},
+    )
+    tool_message = AssistantMessage(content=(call,))
+    final_message = AssistantMessage.text("Denied.")
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                ToolCallReady(call=call),
+                ModelCompletion(
+                    message=tool_message,
+                    finish_reason="tool_calls",
+                ),
+            ),
+            (
+                ModelCompletion(
+                    message=final_message,
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+
+    async def scenario() -> None:
+        async with AgentRuntime.open(
+            workspace=tmp_path,
+            provider=provider,
+            denied_executables=frozenset({"echo"}),
+        ) as runtime:
+            await _collect_turn(runtime, "session", UserMessage.text("Run echo"))
+
+        result_message = provider.requests[1].messages[-1]
+        assert isinstance(result_message, ToolResultMessage)
+        result = result_message.content[0]
+        assert result.error == {
+            "ok": False,
+            "code": "policy_denied",
+            "message": "direct invocation of 'echo' is denied by policy",
+        }
+        provider.assert_exhausted()
 
     asyncio.run(scenario())
 
