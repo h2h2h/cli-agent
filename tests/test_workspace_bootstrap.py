@@ -198,6 +198,7 @@ def test_concurrent_runtime_opens_share_idempotent_bootstrap(
     assert environment.read_bytes() == b""
     assert {path.name for path in workspace_state.iterdir()} == {
         ".capability-view",
+        ".tool-environment",
         "env",
         "library",
         "skills",

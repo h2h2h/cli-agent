@@ -40,6 +40,8 @@ def test_exposes_host_execution_policy_contracts() -> None:
         "ExecutionApprovalRequest",
         "ApprovalResponse",
         "ExecutionApprover",
+        "ToolCommand",
+        "ToolReference",
     }
     for name in public_policy_names:
         assert name in runtime.__all__, f"{name} missing from cli_agent.runtime.__all__"

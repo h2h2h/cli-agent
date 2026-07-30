@@ -24,6 +24,7 @@ from cli_agent.runtime._environment.drivers.base import (
 from cli_agent.runtime._environment.drivers.custom import _CustomDriver
 from cli_agent.runtime._environment.drivers.executions import _InlineExecution
 from cli_agent.runtime._environment.drivers.shell import _ShellDriver
+from cli_agent.runtime._environment.drivers.tool import _ToolDriver
 from cli_agent.runtime._environment.execution import (
     _ExecutionState,
     _notify_changed,
@@ -42,6 +43,7 @@ from cli_agent.runtime._environment.policy import (
 )
 from cli_agent.runtime._environment.routing import (
     _CommandRouter,
+    _DriverKind,
     _ExecutionRoute,
     _route_decision,
     _SchedulingClass,
@@ -53,6 +55,9 @@ from cli_agent.runtime._environment.scheduler import (
     _validate_parallel_limit,
     _validate_queue_limit,
 )
+from cli_agent.runtime._tool_catalog import _ToolCatalog
+from cli_agent.runtime._tool_commands import _ToolCommandClassifier
+from cli_agent.runtime._tool_environment import _ToolEnvironment
 from cli_agent.runtime.model import JSONValue, ToolCall, ToolResult
 
 _DEFAULT_CHUNK_LIMIT = 2_000
@@ -122,11 +127,15 @@ class EnvironmentKernel:
         byte_limit: int = _DEFAULT_BYTE_LIMIT,
         queue_limit: int = _DEFAULT_QUEUE_LIMIT,
         parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
+        tool_parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
         parallel_commands: frozenset[str] | None = None,
+        parallel_tools: frozenset[str] | None = None,
         registry: _CustomCommandRegistry | None = None,
         approval_gate: _ExecutionApprovalGate | None = None,
         approval_session_id: str | None = None,
         capability_view: _CapabilityView | None = None,
+        tool_catalog: _ToolCatalog | None = None,
+        tool_environment: _ToolEnvironment | None = None,
     ) -> None:
         root = Path(workspace).resolve()
         if not root.is_dir():
@@ -142,6 +151,7 @@ class EnvironmentKernel:
         self._approval_session_id = approval_session_id
         queue_limit = _validate_queue_limit(queue_limit)
         parallel_limit = _validate_parallel_limit(parallel_limit)
+        tool_parallel_limit = _validate_parallel_limit(tool_parallel_limit)
         self._chunk_limit = chunk_limit
         self._byte_limit = byte_limit
         registry = (
@@ -152,12 +162,24 @@ class EnvironmentKernel:
         self._router = _CommandRouter(
             shell_driver=_ShellDriver(capability_view),
             custom_driver=_CustomDriver(registry),
+            tool_driver=(
+                _ToolDriver(tool_catalog, tool_environment)
+                if tool_catalog is not None and tool_environment is not None
+                else None
+            ),
             parallel_shell_commands=frozenset(parallel_commands or ()),
+            parallel_tools=frozenset(parallel_tools or ()),
         )
         self._parser = ShlexCommandParser()
+        self._tool_classifier = (
+            _ToolCommandClassifier(tool_catalog)
+            if tool_catalog is not None
+            else None
+        )
         self._scheduler = _ExecutionScheduler(
             queue_limit,
             parallel_limit,
+            tool_parallel_limit,
         )
         self._env = dict(base_env or {})
         self._cwd = self._workspace
@@ -209,11 +231,41 @@ class EnvironmentKernel:
             return await self._output(call)
         return await self._kill(call)
 
-    async def _exec(self, call: ToolCall) -> ToolResult:
+    async def dispatch_batch(
+        self,
+        calls: tuple[ToolCall, ...],
+    ) -> tuple[ToolResult, ...]:
+        """Admit model-returned calls in order, then await them concurrently."""
+
+        admitted: list[tuple[ToolCall, ToolResult]] = []
+        for call in calls:
+            if call.name == "exec":
+                result = await self._exec(call, wait_for_completion=False)
+            else:
+                result = await self.dispatch(call)
+            admitted.append((call, result))
+
+        return tuple(
+            await asyncio.gather(
+                *(
+                    self._await_initial_exec(call, result)
+                    for call, result in admitted
+                )
+            )
+        )
+
+    async def _exec(
+        self,
+        call: ToolCall,
+        *,
+        wait_for_completion: bool = True,
+    ) -> ToolResult:
         args = _validate_arguments(call, _SCHEMA_BY_NAME["exec"])
         if isinstance(args, ToolResult):
             return args
         command = self._parser.parse(args["command"])
+        if self._tool_classifier is not None:
+            command = self._tool_classifier.classify(command)
         try:
             evaluation = await self._policy.evaluate(command)
         except Exception:
@@ -262,7 +314,7 @@ class EnvironmentKernel:
                 message="execution pending queue is full",
             )
 
-        if args["wait_ms"] > 0 and not state.is_terminal:
+        if wait_for_completion and args["wait_ms"] > 0 and not state.is_terminal:
             with suppress(asyncio.TimeoutError):
                 async with state.changed:
                     await asyncio.wait_for(
@@ -273,6 +325,41 @@ class EnvironmentKernel:
         return ToolResult(
             call_id=call.call_id,
             output=_snapshot(state, cursor=0, limit=args["output_limit"]),
+        )
+
+    async def _await_initial_exec(
+        self,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> ToolResult:
+        if call.name != "exec" or result.error is not None:
+            return result
+        args = _validate_arguments(call, _SCHEMA_BY_NAME["exec"])
+        if isinstance(args, ToolResult):
+            return result
+        output = result.output
+        if not isinstance(output, dict):
+            return result
+        exec_id = output.get("exec_id")
+        if not isinstance(exec_id, str):
+            return result
+        state = self._executions.get(exec_id)
+        if state is None:
+            return result
+        if args["wait_ms"] > 0 and not state.is_terminal:
+            with suppress(asyncio.TimeoutError):
+                async with state.changed:
+                    await asyncio.wait_for(
+                        state.changed.wait_for(lambda: state.is_terminal),
+                        timeout=args["wait_ms"] / 1000,
+                    )
+        return ToolResult(
+            call_id=call.call_id,
+            output=_snapshot(
+                state,
+                cursor=0,
+                limit=args["output_limit"],
+            ),
         )
 
     async def _authorize(
@@ -437,12 +524,15 @@ class EnvironmentKernel:
                     await state.completion_task
 
     def _start_execution(self, state: _ExecutionState) -> None:
-        is_parallel = state.route.scheduling is _SchedulingClass.PARALLEL_SAFE
+        isolate_context = (
+            state.route.scheduling is _SchedulingClass.PARALLEL_SAFE
+            or state.route.driver_kind is _DriverKind.TOOL
+        )
         context = _DriverContext(
             workspace=self._workspace,
             cwd=self._cwd,
-            environment=dict(self._env) if is_parallel else self._env,
-            set_cwd=None if is_parallel else self._set_cwd,
+            environment=dict(self._env) if isolate_context else self._env,
+            set_cwd=None if isolate_context else self._set_cwd,
         )
         try:
             execution = state.route.driver.prepare(

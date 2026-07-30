@@ -66,7 +66,5 @@ class AgentLoop:
                 yield completion
                 return
 
-            results = []
-            for tool_call in tool_calls:
-                results.append(await self._kernel.dispatch(tool_call))
-            self._history.append(ToolResultMessage(content=tuple(results)))
+            results = await self._kernel.dispatch_batch(tool_calls)
+            self._history.append(ToolResultMessage(content=results))

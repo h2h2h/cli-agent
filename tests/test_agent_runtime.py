@@ -155,7 +155,9 @@ def test_passes_default_and_configured_limits_to_kernel(
             provider=configured_provider,
             pending_execution_capacity=7,
             parallel_execution_capacity=3,
+            parallel_tool_execution_capacity=2,
             parallel_shell_commands=frozenset({"cat", "rg"}),
+            parallel_tools=frozenset({"search", "fetch"}),
         )
         await _collect_turn(
             default_runtime,
@@ -180,6 +182,14 @@ def test_passes_default_and_configured_limits_to_kernel(
             kernel.parallel_commands
             for kernel in _TrackingEnvironmentKernel.instances
         ] == [frozenset(), frozenset({"cat", "rg"})]
+        assert [
+            kernel.tool_parallel_limit
+            for kernel in _TrackingEnvironmentKernel.instances
+        ] == [4, 2]
+        assert [
+            kernel.parallel_tools
+            for kernel in _TrackingEnvironmentKernel.instances
+        ] == [frozenset(), frozenset({"search", "fetch"})]
         assert [
             kernel.approval_session_id
             for kernel in _TrackingEnvironmentKernel.instances
@@ -218,6 +228,35 @@ def test_rejects_invalid_pending_capacity_before_opening_environment(
         )
 
     assert _TrackingEnvironmentKernel.instances == []
+
+
+@pytest.mark.parametrize(
+    ("argument", "value", "message"),
+    (
+        (
+            "parallel_tool_execution_capacity",
+            0,
+            "parallel_execution_capacity must be an integer >= 1",
+        ),
+        (
+            "parallel_tools",
+            frozenset({"class"}),
+            "parallel Tool names must be non-keyword Python identifiers",
+        ),
+    ),
+)
+def test_rejects_invalid_tool_parallel_configuration(
+    tmp_path: Path,
+    argument: str,
+    value: object,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        AgentRuntime.open(
+            workspace=tmp_path,
+            provider=ScriptedModelProvider(script=()),
+            **{argument: value},
+        )
 
 
 @pytest.mark.parametrize(
@@ -514,27 +553,41 @@ class _TrackingEnvironmentKernel:
         base_env: Mapping[str, str],
         policy: object,
         capability_view: object,
+        tool_catalog: object,
+        tool_environment: object,
         approval_gate: object,
         approval_session_id: str,
         queue_limit: int,
         parallel_limit: int,
+        tool_parallel_limit: int,
         parallel_commands: frozenset[str],
+        parallel_tools: frozenset[str],
     ) -> None:
         self.workspace = Path(workspace)
         self.base_env = base_env
         self.policy = policy
         self.capability_view = capability_view
+        self.tool_catalog = tool_catalog
+        self.tool_environment = tool_environment
         self.approval_gate = approval_gate
         self.approval_session_id = approval_session_id
         self.queue_limit = queue_limit
         self.parallel_limit = parallel_limit
+        self.tool_parallel_limit = tool_parallel_limit
         self.parallel_commands = parallel_commands
+        self.parallel_tools = parallel_tools
         self.close_count = 0
         self.events: list[str] = []
         self.instances.append(self)
 
     async def dispatch(self, call: ToolCall) -> ToolResult:
         raise AssertionError(f"unexpected Tool Call: {call}")
+
+    async def dispatch_batch(
+        self,
+        calls: tuple[ToolCall, ...],
+    ) -> tuple[ToolResult, ...]:
+        raise AssertionError(f"unexpected Tool Calls: {calls}")
 
     async def close(self) -> None:
         self.close_count += 1

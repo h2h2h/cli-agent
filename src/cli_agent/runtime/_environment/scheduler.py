@@ -8,6 +8,7 @@ from uuid import uuid4
 from cli_agent.runtime._environment.execution import _ExecutionState
 from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime._environment.routing import (
+    _ExecutionLane,
     _ExecutionRoute,
     _SchedulingClass,
 )
@@ -41,9 +42,11 @@ class _ExecutionScheduler:
         self,
         queue_limit: int,
         parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
+        tool_parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
     ) -> None:
         self._queue_limit = _validate_queue_limit(queue_limit)
         self._parallel_limit = _validate_parallel_limit(parallel_limit)
+        self._tool_parallel_limit = _validate_parallel_limit(tool_parallel_limit)
         self._next_submission_sequence = 0
         self._pending: list[_ExecutionState] = []
         self._running: dict[str, _ExecutionState] = {}
@@ -106,46 +109,71 @@ class _ExecutionScheduler:
         return pending
 
     def _can_start_immediately(self, route: _ExecutionRoute) -> bool:
-        if self._pending:
+        if any(pending.route.lane is route.lane for pending in self._pending):
             return False
-        if not self._running:
+        lane_running = tuple(
+            state
+            for state in self._running.values()
+            if state.route.lane is route.lane
+        )
+        if not lane_running:
             return True
         if route.scheduling is _SchedulingClass.SERIAL:
             return False
-        if len(self._running) >= self._parallel_limit:
+        if len(lane_running) >= self._lane_limit(route.lane):
             return False
         return all(
-            running.route.scheduling is _SchedulingClass.PARALLEL_SAFE
-            for running in self._running.values()
+            state.route.scheduling is _SchedulingClass.PARALLEL_SAFE
+            for state in lane_running
         )
 
     def _claim_runnable(self) -> tuple[_ExecutionState, ...]:
         if not self._pending:
             return ()
-        if any(
-            state.route.scheduling is _SchedulingClass.SERIAL
-            for state in self._running.values()
-        ):
-            return ()
-
-        head = self._pending[0]
-        if head.route.scheduling is _SchedulingClass.SERIAL:
-            if self._running:
-                return ()
-            return (self._claim_head(),)
 
         claimed: list[_ExecutionState] = []
-        while (
-            self._pending
-            and len(self._running) < self._parallel_limit
-            and self._pending[0].route.scheduling
-            is _SchedulingClass.PARALLEL_SAFE
-        ):
-            claimed.append(self._claim_head())
+        for lane in _ExecutionLane:
+            claimed.extend(self._claim_lane(lane))
         return tuple(claimed)
 
-    def _claim_head(self) -> _ExecutionState:
-        state = self._pending.pop(0)
+    def _claim_lane(self, lane: _ExecutionLane) -> tuple[_ExecutionState, ...]:
+        running = [
+            state for state in self._running.values() if state.route.lane is lane
+        ]
+        if any(
+            state.route.scheduling is _SchedulingClass.SERIAL for state in running
+        ):
+            return ()
+        pending = [state for state in self._pending if state.route.lane is lane]
+        if not pending:
+            return ()
+
+        head = pending[0]
+        if head.route.scheduling is _SchedulingClass.SERIAL:
+            if running:
+                return ()
+            return (self._claim(head),)
+
+        claimed: list[_ExecutionState] = []
+        capacity = self._lane_limit(lane) - len(running)
+        for state in pending:
+            if capacity <= 0:
+                break
+            if state.route.scheduling is _SchedulingClass.SERIAL:
+                break
+            claimed.append(self._claim(state))
+            capacity -= 1
+        return tuple(claimed)
+
+    def _claim(self, state: _ExecutionState) -> _ExecutionState:
+        self._pending.remove(state)
         self._running[state.exec_id] = state
         state.status = "running"
         return state
+
+    def _lane_limit(self, lane: _ExecutionLane) -> int:
+        return (
+            self._tool_parallel_limit
+            if lane is _ExecutionLane.TOOL
+            else self._parallel_limit
+        )

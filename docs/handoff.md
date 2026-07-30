@@ -4,17 +4,20 @@ Updated: 2026-07-30
 
 ## Repository state
 
-- Milestones 01 through 06 are present on branch `v2`; the current head is
-  `e83152b` (`feat(policy): add host-mediated execution approval`).
-- The milestone 07 Workspace Capability View implementation is in the working
-  tree and awaits peer review. No M7 commit was created.
+- Milestones 01 through 07 are present on branch `v2`; the current head is
+  `8c31741` (`feat(workspace): mount capability view`).
+- The prioritized milestone 10 Tool capability command implementation is in
+  the working tree and awaits peer review. No M10 commit was created.
 - [RFC-0001](./rfcs/approved/RFC-0001-host-mediated-execution-approval.md)
   supersedes the adjacent scratch milestone 06 ticket for this repository; the
   external scratch artifact remains historical input rather than the active
   implementation contract.
 - [RFC-0002](./rfcs/approved/RFC-0002-workspace-capability-view.md) supersedes
   the original M7 filesystem strategy for this repository.
-- The working tree has 217 passing tests, and Ruff passes for `src` and
+- [RFC-0003](./rfcs/approved/RFC-0003-tool-capability-commands.md) records the
+  implemented M10 command grammar, Catalog, Tool Environment, worker, Policy,
+  and scheduling decisions.
+- The working tree has 245 passing tests, and Ruff passes for `src` and
   `tests`.
 
 ## Implemented runtime
@@ -39,9 +42,10 @@ Updated: 2026-07-30
 - Long-running Shell Executions expose Session-private Handles, bounded
   incremental output, stable Cursors, cancellation, and process-group cleanup.
 - Every Session owns a bounded ordered Scheduler with default pending capacity
-  32. Commands remain serial by default; consecutive Runtime-trusted
-  `PARALLEL_SAFE` commands may run in bounded batches without crossing an
-  earlier serial barrier. Sessions run concurrently, policy denial consumes no
+  32. Default and Tool lanes claim work independently while preserving FIFO
+  admission within each lane. Commands remain serial within their lane by
+  default; consecutive Runtime-trusted `PARALLEL_SAFE` commands may run in
+  bounded batches. Sessions run concurrently, policy denial consumes no
   capacity, and full pending admission returns `queue_full`.
 - Handles and cleanup remain Session-private. Close releases queued and running
   work; later reuse of the same Session ID creates fresh transient state.
@@ -82,6 +86,32 @@ Updated: 2026-07-30
   the exact parse result, the Router prefers a Runtime-owned Custom registry
   and otherwise selects the Shell Driver. The default Policy asks for direct
   known mutators, explicit output redirection, and in-place `sed`.
+- Runtime open builds a trusted Tool Catalog from top-level effective
+  `.workspace/tools/*.py` entries. It validates identifier names, Capability
+  View provenance, UTF-8 source, and Python syntax without importing modules.
+  `tools/index.md` is an atomically generated projection, not authority.
+- The exact top-level `tools` command head is reserved. `tools list`,
+  `tools info <name>`, quoted `tools run`, and exact `PY<< ... PY` blocks
+  follow the Tool Driver; malformed composition does not fall back to Shell.
+  Policy receives immutable operation, reference, validation, provenance, and
+  dynamic-reference facts. The current default Policy allows every Tool
+  operation as explicitly selected by the project owner.
+- `.workspace/.tool-environment/.venv` is mutable state private to one
+  Workspace. Runtime open hashes the effective `tools/requirements.txt` and
+  uses `uv pip sync` only when it changes. Sync failures are fail-soft:
+  list/info remain available while run reports the stored error without Host
+  Python fallback.
+- Every Tool run starts the private venv Python with one fixed stdlib-only
+  worker and a JSON stdin payload. Only Catalog-valid modules are offered in
+  the `tools` namespace. Fresh workers isolate module state, and the existing
+  process Execution path supplies bounded output, Handles, cancellation, and
+  process-group cleanup.
+- Tool routes use a bounded lane independent of the default Shell/Custom lane.
+  List/info are Runtime-trusted parallel-safe operations. Run is parallel-safe
+  only when all statically referenced names are valid and present in the
+  Host's `parallel_tools` allow list; dynamic or incomplete references remain
+  serial. AgentLoop admits a model batch in returned order, waits concurrently,
+  and writes Tool Results back in that same order.
 - The Kernel consumes one Driver Execution `run`/`cancel` contract and one
   bounded output sink. `_ExecutionState` stores backend-neutral lifecycle
   state rather than subprocess-specific handles, so a future Tool Driver will
@@ -116,15 +146,23 @@ Updated: 2026-07-30
   decides whether one exact command may start; it neither detects stale reads
   nor makes concurrent file updates conflict-safe.
 - Persistent Session `unset` and shell expansion for structured export do not
-  exist. `tools` remains unregistered until the Workspace Tool Environment and
-  Tool custom commands are implemented.
+  exist.
+- Tool structural validation is not safety certification. The default Policy
+  allows arbitrary Tool Python, workers inherit the effective child
+  environment, and no filesystem, process, network, or Secret sandbox is
+  added.
+- Tool Catalog, generated index, and dependencies are Runtime-open snapshots.
+  Tool files created or changed during an active Runtime are reconciled on the
+  next open.
+- Workspace provenance does not yet distinguish human-authored from
+  Agent-authored Tool files. This distinction is not currently needed by the
+  default-allow Tool Policy.
 - Execution States are in memory only and are not restored after Runtime
   restart.
 
-## Next: milestone 08 — Discover and load Skills on demand
+## Next
 
-After peer review of RFC-0002 and the M7 working tree, implement
-`../.scratch/cli-agent-runtime/issues/08-discover-and-load-skills-on-demand.md`.
-Use the Capability View's actual-layer inspection for Skill provenance and
-invalid override reporting. Generated indexes remain Runtime-owned derived
-files and must not become authority for provenance or execution scheduling.
+Peer review RFC-0003 and the M10 working tree, then commit only on explicit
+request. After M10 is accepted, return to milestone 08 — Discover and load
+Skills on demand — using the same actual-layer provenance and generated-index
+rules.

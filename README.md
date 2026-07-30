@@ -141,6 +141,56 @@ lower link, and a command that directly addresses the external Repertoire path
 bypasses the view. Use an external sandbox when strict lower immutability is
 required.
 
+## Tool capability commands
+
+Runtime open scans top-level Python files in `.workspace/tools` and generates
+`.workspace/tools/index.md` as a readable projection. The index reports Tool
+validation, actual Repertoire or Workspace provenance, shadowing, and a short
+documentation summary. It is generated output: Policy, execution, and
+scheduling use the Runtime's trusted open-time Tool Catalog rather than reading
+claims from `index.md`.
+
+Use the reserved AEP-compatible grammar through `exec`:
+
+```text
+tools list
+tools info math_tool
+tools run "tools.math_tool.add(2, 3)"
+tools run PY<<
+values = [tools.math_tool.add(1, 2), 4]
+json.dumps(values)
+PY
+```
+
+`tools run` accepts ordinary Python composition and prints a non-`None` final
+expression. Each invocation starts a fresh worker with the Workspace-private
+interpreter at `.workspace/.tool-environment/.venv`; Tool module globals do
+not survive into a later invocation. Declare shared dependencies in
+`.workspace/tools/requirements.txt`. Runtime open reconciles changed
+requirements with `uv pip sync`, while uv's physical package cache may still
+be shared.
+
+Dependency synchronization failure is fail-soft: the Runtime can still open
+and `tools list` / `tools info` remain available, but `tools run` reports that
+the Tool Environment is unavailable. It never silently falls back to the Host
+Python interpreter.
+
+Every exact top-level `tools` command is Runtime-reserved. Unsupported
+pipelines, redirections, backgrounding, or malformed arguments fail on the
+Tool route rather than falling through to a Host executable. Use an explicit
+path to invoke a Host program also named `tools`.
+
+The default Policy currently allows all Tool invocations, including Workspace
+Tools and arbitrary Python payloads. Tool code inherits the child-process
+environment and is not filesystem, process, network, or Secret sandboxed.
+Embedding Hosts can replace the execution Policy, and should use an external
+sandbox where this authority is unacceptable.
+
+Tool work has a bounded per-Session lane independent of Shell work.
+`AgentRuntime.open(parallel_tools=..., parallel_tool_execution_capacity=...)`
+can authorize named Tools for parallel execution. This authority comes only
+from Host configuration; Tool files and generated indexes cannot grant it.
+
 ## Workspace and Session environment
 
 `.workspace/env` is a dotenv file containing persistent Workspace custom

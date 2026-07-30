@@ -74,6 +74,8 @@ class _CustomCommandRegistry:
     ) -> _CustomCommandSpec | None:
         """Return the handler selected by the AEP command-head rule."""
 
+        if command.tool is not None:
+            return None
         if not command.tokenization_succeeded or not command.tokens:
             return None
         return self._commands.get(command.tokens[0])

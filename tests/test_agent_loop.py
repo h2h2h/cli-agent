@@ -146,7 +146,9 @@ def test_continues_generation_after_exec_tool_result(tmp_path: Path) -> None:
     provider.assert_exhausted()
 
 
-def test_dispatches_tool_calls_serially_in_message_order(tmp_path: Path) -> None:
+def test_dispatches_tool_calls_in_order_and_preserves_dependencies(
+    tmp_path: Path,
+) -> None:
     user_message = UserMessage.text("Create and inspect a marker")
     write_call, read_call = _ordered_file_calls()
     tool_message = AssistantMessage(content=(write_call, read_call))

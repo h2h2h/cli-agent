@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import keyword
 from collections.abc import AsyncIterator, Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,8 @@ from cli_agent.runtime._environment.scheduler import (
     _validate_queue_limit,
 )
 from cli_agent.runtime._system_message import assemble_system_message
+from cli_agent.runtime._tool_catalog import _ToolCatalog
+from cli_agent.runtime._tool_environment import _ToolEnvironment
 from cli_agent.runtime._workspace import (
     _load_workspace_environment,
     _prepare_workspace,
@@ -54,23 +57,31 @@ class AgentRuntime:
         provider: ModelProvider,
         workspace: Path,
         capability_view: _CapabilityView,
+        tool_catalog: _ToolCatalog,
+        tool_environment: _ToolEnvironment,
         base_env: Mapping[str, str],
         policy: ExecutionPolicy,
         approval_gate: _ExecutionApprovalGate | None,
         queue_limit: int,
         parallel_limit: int,
+        tool_parallel_limit: int,
         parallel_commands: frozenset[str],
+        parallel_tools: frozenset[str],
         instruction: str | None,
     ) -> None:
         self._provider = provider
         self._workspace = workspace
         self._capability_view = capability_view
+        self._tool_catalog = tool_catalog
+        self._tool_environment = tool_environment
         self._base_env = base_env
         self._policy = policy
         self._approval_gate = approval_gate
         self._queue_limit = queue_limit
         self._parallel_limit = parallel_limit
+        self._tool_parallel_limit = tool_parallel_limit
         self._parallel_commands = parallel_commands
+        self._parallel_tools = parallel_tools
         self._instruction = instruction
         self._sessions: dict[str, _Session] = {}
         self._closed = False
@@ -89,7 +100,9 @@ class AgentRuntime:
         approval_timeout_seconds: float = _DEFAULT_APPROVAL_TIMEOUT_SECONDS,
         pending_execution_capacity: int = _DEFAULT_QUEUE_LIMIT,
         parallel_execution_capacity: int = _DEFAULT_PARALLEL_LIMIT,
+        parallel_tool_execution_capacity: int = _DEFAULT_PARALLEL_LIMIT,
         parallel_shell_commands: frozenset[str] | None = None,
+        parallel_tools: frozenset[str] | None = None,
     ) -> _AgentRuntimeOpener:
         """Prepare to asynchronously open a Workspace-bound Runtime.
 
@@ -106,6 +119,9 @@ class AgentRuntime:
         and defaults to 32. ``parallel_execution_capacity`` bounds a batch of
         trusted parallel-safe commands; ``parallel_shell_commands`` grants that
         scheduling class to simple direct invocations of those executables.
+        ``parallel_tool_execution_capacity`` independently bounds the Tool
+        lane; only names in the Host-owned ``parallel_tools`` set may run
+        concurrently within that lane.
         """
 
         return _AgentRuntimeOpener(
@@ -120,7 +136,9 @@ class AgentRuntime:
             _validate_approval_timeout(approval_timeout_seconds),
             _validate_queue_limit(pending_execution_capacity),
             _validate_parallel_limit(parallel_execution_capacity),
+            _validate_parallel_limit(parallel_tool_execution_capacity),
             frozenset(parallel_shell_commands or ()),
+            _validate_parallel_tool_names(parallel_tools or frozenset()),
         )
 
     @classmethod
@@ -136,11 +154,15 @@ class AgentRuntime:
         approval_timeout: float,
         queue_limit: int,
         parallel_limit: int,
+        tool_parallel_limit: int,
         parallel_commands: frozenset[str],
+        parallel_tools: frozenset[str],
     ) -> AgentRuntime:
         paths = _prepare_workspace(workspace)
         base_env = _load_workspace_environment(paths.environment)
         capability_view = _CapabilityView.open(paths.root, repertoire)
+        tool_catalog = _ToolCatalog.reconcile(capability_view)
+        tool_environment = await _ToolEnvironment.reconcile(capability_view)
         effective_policy = ExecutablePolicy() if policy is None else policy
         approval_gate = (
             None
@@ -155,12 +177,16 @@ class AgentRuntime:
             provider=provider,
             workspace=paths.root,
             capability_view=capability_view,
+            tool_catalog=tool_catalog,
+            tool_environment=tool_environment,
             base_env=base_env,
             policy=effective_policy,
             approval_gate=approval_gate,
             queue_limit=queue_limit,
             parallel_limit=parallel_limit,
+            tool_parallel_limit=tool_parallel_limit,
             parallel_commands=parallel_commands,
+            parallel_tools=parallel_tools,
             instruction=instruction,
         )
 
@@ -247,13 +273,17 @@ class AgentRuntime:
         return EnvironmentKernel(
             self._workspace,
             capability_view=self._capability_view,
+            tool_catalog=self._tool_catalog,
+            tool_environment=self._tool_environment,
             base_env=self._base_env,
             policy=self._policy,
             approval_gate=self._approval_gate,
             approval_session_id=session_id,
             queue_limit=self._queue_limit,
             parallel_limit=self._parallel_limit,
+            tool_parallel_limit=self._tool_parallel_limit,
             parallel_commands=self._parallel_commands,
+            parallel_tools=self._parallel_tools,
         )
 
 
@@ -273,7 +303,9 @@ class _AgentRuntimeOpener:
         approval_timeout: float,
         queue_limit: int,
         parallel_limit: int,
+        tool_parallel_limit: int,
         parallel_commands: frozenset[str],
+        parallel_tools: frozenset[str],
     ) -> None:
         self._runtime_cls = runtime_cls
         self._workspace = workspace
@@ -286,7 +318,9 @@ class _AgentRuntimeOpener:
         self._approval_timeout = approval_timeout
         self._queue_limit = queue_limit
         self._parallel_limit = parallel_limit
+        self._tool_parallel_limit = tool_parallel_limit
         self._parallel_commands = parallel_commands
+        self._parallel_tools = parallel_tools
         self._runtime: AgentRuntime | None = None
 
     def __await__(self) -> Generator[Any, None, AgentRuntime]:
@@ -322,8 +356,30 @@ class _AgentRuntimeOpener:
                 self._approval_timeout,
                 self._queue_limit,
                 self._parallel_limit,
+                self._tool_parallel_limit,
                 self._parallel_commands,
+                self._parallel_tools,
             )
         else:
             self._runtime._ensure_open()
         return self._runtime
+
+
+def _validate_parallel_tool_names(names: frozenset[str]) -> frozenset[str]:
+    invalid = sorted(
+        (
+            name
+            for name in names
+            if (
+                not isinstance(name, str)
+                or not name.isidentifier()
+                or keyword.iskeyword(name)
+            )
+        ),
+        key=repr,
+    )
+    if invalid:
+        raise ValueError(
+            "parallel Tool names must be non-keyword Python identifiers"
+        )
+    return frozenset(names)

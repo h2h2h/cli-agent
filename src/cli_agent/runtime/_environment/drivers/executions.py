@@ -40,8 +40,14 @@ class _InlineExecution:
 class _ProcessExecution:
     """Own one child process and its process group."""
 
-    def __init__(self, spawn: _ProcessSpawner) -> None:
+    def __init__(
+        self,
+        spawn: _ProcessSpawner,
+        *,
+        input_data: bytes | None = None,
+    ) -> None:
         self._spawn = spawn
+        self._input_data = input_data
         self._process: asyncio.subprocess.Process | None = None
         self._ready = asyncio.Event()
         self._completed = asyncio.Event()
@@ -60,6 +66,12 @@ class _ProcessExecution:
             self._ready.set()
             if self._cancel_requested:
                 _signal_process(process, force=False)
+            if self._input_data is not None:
+                if process.stdin is None:
+                    raise RuntimeError("process input was configured without stdin")
+                process.stdin.write(self._input_data)
+                await process.stdin.drain()
+                process.stdin.close()
 
             stdout_task = asyncio.create_task(
                 self._capture_stream(output, process.stdout, "stdout")

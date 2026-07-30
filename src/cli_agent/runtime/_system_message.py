@@ -25,6 +25,7 @@ Capabilities
 - The effective capability files are under `.workspace/tools`, `.workspace/skills`, and `.workspace/library`.
 - These paths merge a user-maintained Repertoire with Workspace-local files. Workspace files take precedence.
 - Commands that the Runtime recognizes as modifying files may require Host approval before they start.
+- Use `tools list` to discover Python Tools, `tools info <name>` to inspect one, and `tools run "<python code>"` or the exact `tools run PY<< ... PY` block form to execute them through the Workspace-private Tool Environment.
 
 Built-in tools
 - You can use `exec`, `output`, and `kill` according to their supplied schemas.

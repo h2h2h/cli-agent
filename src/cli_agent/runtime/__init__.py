@@ -1,7 +1,11 @@
 """Provider-neutral building blocks for the cli-agent Runtime."""
 
 from cli_agent.runtime._builtin_tools import ToolSchema
-from cli_agent.runtime._environment.command_parser import CommandParseResult
+from cli_agent.runtime._environment.command_parser import (
+    CommandParseResult,
+    ToolCommand,
+    ToolReference,
+)
 from cli_agent.runtime._environment.policy import (
     ApprovalResponse,
     ExecutablePolicy,
@@ -62,6 +66,8 @@ __all__ = (
     "TextDelta",
     "ToolCall",
     "ToolCallReady",
+    "ToolCommand",
+    "ToolReference",
     "ToolResult",
     "ToolResultMessage",
     "UserMessage",
