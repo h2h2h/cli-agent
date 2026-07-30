@@ -9,6 +9,7 @@ from types import TracebackType
 from typing import Any
 
 from cli_agent.runtime._agent_loop import AgentLoop
+from cli_agent.runtime._capability_view import _CapabilityView
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.policy import (
     _DEFAULT_APPROVAL_CAPACITY,
@@ -52,6 +53,7 @@ class AgentRuntime:
         *,
         provider: ModelProvider,
         workspace: Path,
+        capability_view: _CapabilityView,
         base_env: Mapping[str, str],
         policy: ExecutionPolicy,
         approval_gate: _ExecutionApprovalGate | None,
@@ -62,6 +64,7 @@ class AgentRuntime:
     ) -> None:
         self._provider = provider
         self._workspace = workspace
+        self._capability_view = capability_view
         self._base_env = base_env
         self._policy = policy
         self._approval_gate = approval_gate
@@ -77,6 +80,7 @@ class AgentRuntime:
         cls,
         *,
         workspace: str | Path,
+        repertoire: str | Path | None = None,
         provider: ModelProvider,
         system_instruction: str | None = None,
         execution_policy: ExecutionPolicy | None = None,
@@ -89,6 +93,8 @@ class AgentRuntime:
     ) -> _AgentRuntimeOpener:
         """Prepare to asynchronously open a Workspace-bound Runtime.
 
+        ``repertoire`` selects the user-maintained capability lower and
+        defaults to ``~/.config/cli-agent/repertoire``.
         ``system_instruction`` extends the canonical instruction assembled for
         each new Agent Session. ``execution_policy`` replaces the default
         executable Policy, which asks for recognized direct filesystem
@@ -105,6 +111,7 @@ class AgentRuntime:
         return _AgentRuntimeOpener(
             cls,
             workspace,
+            repertoire,
             provider,
             system_instruction,
             execution_policy,
@@ -120,6 +127,7 @@ class AgentRuntime:
     async def _open(
         cls,
         workspace: str | Path,
+        repertoire: str | Path | None,
         provider: ModelProvider,
         instruction: str | None,
         policy: ExecutionPolicy | None,
@@ -132,6 +140,7 @@ class AgentRuntime:
     ) -> AgentRuntime:
         paths = _prepare_workspace(workspace)
         base_env = _load_workspace_environment(paths.environment)
+        capability_view = _CapabilityView.open(paths.root, repertoire)
         effective_policy = ExecutablePolicy() if policy is None else policy
         approval_gate = (
             None
@@ -145,6 +154,7 @@ class AgentRuntime:
         return cls(
             provider=provider,
             workspace=paths.root,
+            capability_view=capability_view,
             base_env=base_env,
             policy=effective_policy,
             approval_gate=approval_gate,
@@ -236,6 +246,7 @@ class AgentRuntime:
     def _new_kernel(self, session_id: str) -> EnvironmentKernel:
         return EnvironmentKernel(
             self._workspace,
+            capability_view=self._capability_view,
             base_env=self._base_env,
             policy=self._policy,
             approval_gate=self._approval_gate,
@@ -253,6 +264,7 @@ class _AgentRuntimeOpener:
         self,
         runtime_cls: type[AgentRuntime],
         workspace: str | Path,
+        repertoire: str | Path | None,
         provider: ModelProvider,
         instruction: str | None,
         policy: ExecutionPolicy | None,
@@ -265,6 +277,7 @@ class _AgentRuntimeOpener:
     ) -> None:
         self._runtime_cls = runtime_cls
         self._workspace = workspace
+        self._repertoire = repertoire
         self._provider = provider
         self._instruction = instruction
         self._policy = policy
@@ -300,6 +313,7 @@ class _AgentRuntimeOpener:
         if self._runtime is None:
             self._runtime = await self._runtime_cls._open(
                 self._workspace,
+                self._repertoire,
                 self._provider,
                 self._instruction,
                 self._policy,

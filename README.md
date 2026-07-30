@@ -45,6 +45,16 @@ direnv exec ./path/to/workspace \
   --workspace ./path/to/workspace
 ```
 
+The default capability Repertoire is
+`~/.config/cli-agent/repertoire`. Select another user-maintained lower tree
+when needed:
+
+```bash
+cli-agent \
+  --workspace ./path/to/workspace \
+  --repertoire ./path/to/repertoire
+```
+
 direnv is a host-side environment loader, not a Runtime dependency.
 
 Shell Executions inherit the complete environment of the embedding cli-agent
@@ -63,6 +73,10 @@ chmod  chown  cp  dd  install  ln  mkdir  mv
 patch  rm  rmdir  tee  touch  truncate  unlink
 ```
 
+Shell output redirection to a file and `sed -i` also require approval by
+default. Input redirection, file-descriptor duplication, and ordinary
+read-only `sed` invocations do not.
+
 Other executable names are allowed by default. The Reference CLI displays the
 exact command and reason on stderr:
 
@@ -80,10 +94,52 @@ consume Execution queue capacity.
 Embedding Hosts can supply an `ExecutablePolicy` with disjoint allow, deny, and
 ask executable-name sets, a default `PolicyAction`, and an asynchronous
 `ExecutionApprover` through `AgentRuntime.open`. Executable-name inspection is
-a narrow admission guardrail: wrappers, scripts, interpreters, and arbitrary
-programs can perform effects that are not visible from the first executable
-name. It is not an operating-system sandbox or comprehensive modification
-detector.
+a narrow admission guardrail augmented by explicit output-redirection and
+in-place-`sed` recognition. Wrappers, scripts, interpreters, compound commands,
+and arbitrary programs can still perform effects that are not visible from
+the first executable name. It is not an operating-system sandbox or
+comprehensive modification detector.
+
+## Capability View
+
+Runtime open creates or validates the default or selected Repertoire:
+
+```text
+~/.config/cli-agent/repertoire/
+├── tools/
+├── skills/
+└── library/
+```
+
+It presents the effective capability files inside the Workspace:
+
+```text
+.workspace/
+├── env
+├── tools/
+├── skills/
+├── library/
+└── .capability-view/
+    └── whiteouts/
+```
+
+The three capability directories are real Workspace directories. Repertoire
+files appear within them as file-level symbolic links, while Workspace-created
+files are ordinary files. A Workspace file at the same relative path shadows
+the Repertoire version.
+
+After Policy and optional Host approval, recognized modifying Shell commands
+copy a lower-backed target into the Workspace before the child process starts.
+Removing a lower-only file creates a persistent whiteout; removing a Workspace
+override reveals the lower file again; removing a Workspace-only file leaves
+it absent. Runtime-owned inspection derives source and shadow facts from the
+actual link and layer state rather than file-authored metadata.
+
+This is a cooperative Capability View, not filesystem containment. A script or
+interpreter whose runtime-computed write is not recognized can still follow a
+lower link, and a command that directly addresses the external Repertoire path
+bypasses the view. Use an external sandbox when strict lower immutability is
+required.
 
 ## Workspace and Session environment
 

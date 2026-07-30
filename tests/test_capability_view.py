@@ -1,0 +1,474 @@
+import asyncio
+import os
+import shlex
+from pathlib import Path
+
+import pytest
+
+from cli_agent.runtime import (
+    ApprovalResponse,
+    ExecutionApprovalRequest,
+    ToolCall,
+    ToolResult,
+)
+from cli_agent.runtime._capability_view import _CapabilityView
+from cli_agent.runtime._environment import EnvironmentKernel
+from cli_agent.runtime._environment.command_parser import parse_shell_command
+from cli_agent.runtime._environment.drivers.base import (
+    _DriverContext,
+    _ExecutionOutcome,
+)
+from cli_agent.runtime._environment.drivers.shell import _ShellDriver
+from cli_agent.runtime._environment.policy import _ExecutionApprovalGate
+
+
+def test_attach_exposes_lower_files_and_preserves_workspace_overrides(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    repertoire = tmp_path / "repertoire"
+    workspace.mkdir()
+    lower_tool = repertoire / "tools" / "calc.py"
+    lower_skill = repertoire / "skills" / "review" / "SKILL.md"
+    lower_tool.parent.mkdir(parents=True)
+    lower_skill.parent.mkdir(parents=True)
+    (repertoire / "library").mkdir()
+    lower_tool.write_text("LOWER = 1\n", encoding="utf-8")
+    lower_skill.write_text("# Review\n", encoding="utf-8")
+    upper_tool = workspace / ".workspace" / "tools" / "local.py"
+    upper_tool.parent.mkdir(parents=True)
+    upper_tool.write_text("LOCAL = 1\n", encoding="utf-8")
+
+    view = _CapabilityView.open(workspace, repertoire)
+
+    visible_lower = workspace / ".workspace" / "tools" / "calc.py"
+    visible_skill = workspace / ".workspace" / "skills" / "review" / "SKILL.md"
+    assert visible_lower.is_symlink()
+    assert visible_lower.read_text(encoding="utf-8") == "LOWER = 1\n"
+    assert visible_skill.is_symlink()
+    assert upper_tool.read_text(encoding="utf-8") == "LOCAL = 1\n"
+    assert view.inspect("tools/calc.py").provenance == "repertoire"
+    assert view.inspect("tools/local.py").provenance == "workspace"
+
+
+def test_workspace_override_shadows_lower_across_reopen(tmp_path: Path) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "same.py"
+    lower.write_text("lower-v1\n", encoding="utf-8")
+    upper = workspace / ".workspace" / "tools" / "same.py"
+    upper.parent.mkdir(parents=True)
+    upper.write_text("workspace\n", encoding="utf-8")
+
+    first = _CapabilityView.open(workspace, repertoire)
+    lower.write_text("lower-v2\n", encoding="utf-8")
+    second = _CapabilityView.open(workspace, repertoire)
+
+    assert upper.is_file()
+    assert not upper.is_symlink()
+    assert upper.read_text(encoding="utf-8") == "workspace\n"
+    assert first.inspect("tools/same.py").shadows_repertoire is True
+    assert second.inspect("tools/same.py").shadows_repertoire is True
+
+
+def test_invalid_workspace_override_remains_authoritative_and_is_reported(
+    tmp_path: Path,
+) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "invalid.py"
+    lower.write_text("lower\n", encoding="utf-8")
+    override = workspace / ".workspace" / "tools" / "invalid.py"
+    override.mkdir(parents=True)
+
+    view = _CapabilityView.open(workspace, repertoire)
+    inspected = view.inspect("tools/invalid.py")
+
+    assert override.is_dir()
+    assert inspected.provenance == "workspace"
+    assert inspected.shadows_repertoire is True
+    assert inspected.valid is False
+    assert inspected.validation_error is not None
+
+
+def test_approved_output_redirection_copies_up_before_shell_spawn(
+    tmp_path: Path,
+) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "message.txt"
+    lower.write_text("lower\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+    visible = workspace / ".workspace" / "tools" / "message.txt"
+    approver = _RecordingApprover(ApprovalResponse.ALLOW)
+
+    async def scenario() -> None:
+        kernel = EnvironmentKernel(
+            workspace,
+            capability_view=view,
+            approval_gate=_ExecutionApprovalGate(approver),
+        )
+        try:
+            result = await _exec(
+                kernel,
+                "echo workspace > .workspace/tools/message.txt",
+            )
+            assert _output(result)["status"] == "exited"
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+    assert len(approver.requests) == 1
+    assert approver.requests[0].contains_output_redirection is True
+    assert lower.read_text(encoding="utf-8") == "lower\n"
+    assert visible.is_file()
+    assert not visible.is_symlink()
+    assert visible.read_text(encoding="utf-8") == "workspace\n"
+    assert view.inspect("tools/message.txt").shadows_repertoire is True
+
+
+def test_denied_modification_does_not_copy_up(tmp_path: Path) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "preserved.txt"
+    lower.write_text("lower\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+    visible = workspace / ".workspace" / "tools" / "preserved.txt"
+
+    async def scenario() -> None:
+        kernel = EnvironmentKernel(
+            workspace,
+            capability_view=view,
+            approval_gate=_ExecutionApprovalGate(
+                _RecordingApprover(ApprovalResponse.DENY)
+            ),
+        )
+        try:
+            result = await _exec(
+                kernel,
+                "echo denied > .workspace/tools/preserved.txt",
+            )
+            assert result.error is not None
+            assert result.error["code"] == "policy_denied"
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+    assert visible.is_symlink()
+    assert lower.read_text(encoding="utf-8") == "lower\n"
+
+
+def test_approved_direct_mutator_copies_up_lower_file(
+    tmp_path: Path,
+) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "touched.txt"
+    lower.write_text("lower\n", encoding="utf-8")
+    lower_mtime = lower.stat().st_mtime_ns
+    view = _CapabilityView.open(workspace, repertoire)
+    visible = workspace / ".workspace" / "tools" / "touched.txt"
+
+    _run_approved(
+        workspace,
+        view,
+        "touch .workspace/tools/touched.txt",
+    )
+
+    assert not visible.is_symlink()
+    assert visible.read_text(encoding="utf-8") == "lower\n"
+    assert lower.stat().st_mtime_ns == lower_mtime
+
+
+def test_rm_lower_only_file_creates_persistent_whiteout(
+    tmp_path: Path,
+) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "hidden.py"
+    lower.write_text("lower\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+    visible = workspace / ".workspace" / "tools" / "hidden.py"
+
+    _run_approved(workspace, view, "rm .workspace/tools/hidden.py")
+
+    assert lower.is_file()
+    assert not os.path.lexists(visible)
+    assert view.inspect("tools/hidden.py").provenance == "whiteout"
+
+    reopened = _CapabilityView.open(workspace, repertoire)
+    assert not os.path.lexists(visible)
+    assert reopened.inspect("tools/hidden.py").provenance == "whiteout"
+
+
+def test_rm_workspace_override_reveals_lower_immediately(
+    tmp_path: Path,
+) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "restored.py"
+    lower.write_text("lower\n", encoding="utf-8")
+    upper = workspace / ".workspace" / "tools" / "restored.py"
+    upper.parent.mkdir(parents=True)
+    upper.write_text("workspace\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+
+    _run_approved(workspace, view, "rm .workspace/tools/restored.py")
+
+    assert upper.is_symlink()
+    assert upper.read_text(encoding="utf-8") == "lower\n"
+    assert view.inspect("tools/restored.py").provenance == "repertoire"
+
+
+def test_rm_workspace_only_file_leaves_path_absent(tmp_path: Path) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    local = workspace / ".workspace" / "tools" / "local.py"
+    local.parent.mkdir(parents=True)
+    local.write_text("workspace\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+
+    _run_approved(workspace, view, "rm .workspace/tools/local.py")
+
+    assert not local.exists()
+    assert view.inspect("tools/local.py").provenance is None
+
+
+def test_removing_capability_root_recreates_managed_directory(
+    tmp_path: Path,
+) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    view = _CapabilityView.open(workspace, repertoire)
+    tools = workspace / ".workspace" / "tools"
+
+    _run_approved(workspace, view, "rmdir .workspace/tools")
+
+    assert tools.is_dir()
+    assert not tools.is_symlink()
+
+
+def test_reopen_removes_generated_link_after_lower_file_is_removed(
+    tmp_path: Path,
+) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "removed.py"
+    lower.write_text("lower\n", encoding="utf-8")
+    _CapabilityView.open(workspace, repertoire)
+    visible = workspace / ".workspace" / "tools" / "removed.py"
+    assert visible.is_symlink()
+
+    lower.unlink()
+    reopened = _CapabilityView.open(workspace, repertoire)
+
+    assert not os.path.lexists(visible)
+    assert reopened.inspect("tools/removed.py").provenance is None
+
+
+def test_copy_up_is_atomic_across_concurrent_sessions(tmp_path: Path) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "shared.txt"
+    lower.write_text("lower\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+    approver = _RecordingApprover(ApprovalResponse.ALLOW)
+    gate = _ExecutionApprovalGate(approver)
+
+    async def scenario() -> None:
+        first = EnvironmentKernel(
+            workspace,
+            capability_view=view,
+            approval_gate=gate,
+        )
+        second = EnvironmentKernel(
+            workspace,
+            capability_view=view,
+            approval_gate=gate,
+        )
+        try:
+            await asyncio.gather(
+                _exec(
+                    first,
+                    "echo first > .workspace/tools/shared.txt",
+                ),
+                _exec(
+                    second,
+                    "echo second > .workspace/tools/shared.txt",
+                ),
+            )
+        finally:
+            await first.close()
+            await second.close()
+
+    asyncio.run(scenario())
+
+    visible = workspace / ".workspace" / "tools" / "shared.txt"
+    assert lower.read_text(encoding="utf-8") == "lower\n"
+    assert not visible.is_symlink()
+    assert visible.read_text(encoding="utf-8") in {"first\n", "second\n"}
+
+
+def test_cancelled_shell_execution_does_not_copy_up(tmp_path: Path) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "cancelled.txt"
+    lower.write_text("lower\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+    visible = workspace / ".workspace" / "tools" / "cancelled.txt"
+
+    async def scenario() -> None:
+        execution = _ShellDriver(view).prepare(
+            parse_shell_command("touch .workspace/tools/cancelled.txt"),
+            _DriverContext(
+                workspace=workspace,
+                cwd=workspace,
+                environment={},
+            ),
+        )
+        await execution.cancel()
+        outcome = await execution.run(_DiscardOutput())
+
+        assert outcome == _ExecutionOutcome.killed()
+
+    asyncio.run(scenario())
+
+    assert visible.is_symlink()
+    assert lower.read_text(encoding="utf-8") == "lower\n"
+
+
+def test_copy_up_rejects_symbolic_link_directory_traversal(
+    tmp_path: Path,
+) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower_directory = repertoire / "tools" / "nested"
+    lower_directory.mkdir()
+    lower = lower_directory / "protected.txt"
+    lower.write_text("lower\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+    visible_directory = workspace / ".workspace" / "tools" / "nested"
+    for entry in tuple(visible_directory.iterdir()):
+        entry.unlink()
+    visible_directory.rmdir()
+    visible_directory.symlink_to(lower_directory, target_is_directory=True)
+
+    async def scenario() -> None:
+        kernel = EnvironmentKernel(
+            workspace,
+            capability_view=view,
+            approval_gate=_ExecutionApprovalGate(
+                _RecordingApprover(ApprovalResponse.ALLOW)
+            ),
+        )
+        try:
+            result = await _exec(
+                kernel,
+                "echo changed > .workspace/tools/nested/protected.txt",
+            )
+            assert _output(result)["status"] == "failed"
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+    assert lower.read_text(encoding="utf-8") == "lower\n"
+
+
+def test_rejects_workspace_capability_symlink_that_forges_lower_origin(
+    tmp_path: Path,
+) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "real.py"
+    lower.write_text("lower\n", encoding="utf-8")
+    forged_target = tmp_path / "forged.py"
+    forged_target.write_text("forged\n", encoding="utf-8")
+    forged = workspace / ".workspace" / "tools" / "real.py"
+    forged.parent.mkdir(parents=True)
+    forged.symlink_to(forged_target)
+
+    with pytest.raises(
+        ValueError,
+        match="matching Repertoire file",
+    ):
+        _CapabilityView.open(workspace, repertoire)
+
+    assert forged.is_symlink()
+    assert forged.read_text(encoding="utf-8") == "forged\n"
+
+
+def test_rejects_repertoire_inside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(ValueError, match="outside the Workspace state"):
+        _CapabilityView.open(
+            workspace,
+            workspace / ".workspace" / "repertoire",
+        )
+
+
+def test_allows_default_repertoire_beneath_workspace_ancestor(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "home"
+    workspace.mkdir()
+    repertoire = workspace / ".config" / "cli-agent" / "repertoire"
+
+    view = _CapabilityView.open(workspace, repertoire)
+
+    assert view.repertoire == repertoire
+    assert (workspace / ".workspace" / "tools").is_dir()
+
+
+def _roots(tmp_path: Path) -> tuple[Path, Path]:
+    workspace = tmp_path / "workspace"
+    repertoire = tmp_path / "repertoire"
+    workspace.mkdir()
+    for name in ("tools", "skills", "library"):
+        (repertoire / name).mkdir(parents=True)
+    return workspace, repertoire
+
+
+def _run_approved(
+    workspace: Path,
+    view: _CapabilityView,
+    command: str,
+) -> None:
+    async def scenario() -> None:
+        kernel = EnvironmentKernel(
+            workspace,
+            capability_view=view,
+            approval_gate=_ExecutionApprovalGate(
+                _RecordingApprover(ApprovalResponse.ALLOW)
+            ),
+        )
+        try:
+            assert _output(await _exec(kernel, command))["status"] == "exited"
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+
+async def _exec(kernel: EnvironmentKernel, command: str) -> ToolResult:
+    return await kernel.dispatch(
+        ToolCall(
+            call_id=f"exec-{shlex.quote(command)}",
+            name="exec",
+            arguments={"command": command},
+        )
+    )
+
+
+def _output(result: ToolResult) -> dict[str, object]:
+    assert result.error is None
+    assert isinstance(result.output, dict)
+    return result.output
+
+
+class _RecordingApprover:
+    def __init__(self, response: ApprovalResponse) -> None:
+        self.response = response
+        self.requests: list[ExecutionApprovalRequest] = []
+
+    async def approve(
+        self,
+        request: ExecutionApprovalRequest,
+    ) -> ApprovalResponse:
+        self.requests.append(request)
+        return self.response
+
+
+class _DiscardOutput:
+    async def write(self, stream: str, data: bytes) -> None:
+        del stream, data

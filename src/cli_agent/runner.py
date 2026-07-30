@@ -33,6 +33,7 @@ async def run_agent(
 
     async with AgentRuntime.open(
         workspace=config.workspace,
+        repertoire=config.repertoire,
         provider=provider,
         execution_approver=_TerminalExecutionApprover(
             stdin=stdin,

@@ -199,6 +199,26 @@ class ExecutablePolicy:
                     matched = True
                     break
 
+        if not matched and command.contains_output_redirection:
+            return PolicyEvaluation.ask(
+                command,
+                rule_id="shell.ask-output-redirection",
+                reason="Shell output redirection requires Host approval",
+            )
+        if (
+            not matched
+            and executable == "sed"
+            and any(
+                token == "-i" or token.startswith("-i")
+                for token in command.tokens[1:]
+            )
+        ):
+            return PolicyEvaluation.ask(
+                command,
+                rule_id="shell.ask-in-place-edit",
+                reason="in-place file editing requires Host approval",
+            )
+
         rule_id = (
             f"shell.{action.value}-executable.{executable}"
             if matched
@@ -243,6 +263,7 @@ class ExecutionApprovalRequest:
     executable_basename: str | None
     tokenization_succeeded: bool
     contains_shell_composition: bool
+    contains_output_redirection: bool
     rule_id: str
     reason: str
 
@@ -317,6 +338,9 @@ class _ExecutionApprovalGate:
             ),
             contains_shell_composition=(
                 evaluation.parse_result.contains_shell_composition
+            ),
+            contains_output_redirection=(
+                evaluation.parse_result.contains_output_redirection
             ),
             rule_id=evaluation.rule_id,
             reason=evaluation.reason,

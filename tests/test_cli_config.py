@@ -64,6 +64,23 @@ def test_parses_workspace_override_and_normalizes_base_url(
     )
 
 
+def test_parses_optional_repertoire_override(tmp_path: Path) -> None:
+    repertoire = tmp_path / "user-repertoire"
+
+    config = parse_cli_config(
+        [
+            "Inspect capabilities",
+            "--workspace",
+            str(tmp_path),
+            "--repertoire",
+            str(repertoire),
+        ],
+        environ=_environment(),
+    )
+
+    assert config.repertoire == repertoire.resolve()
+
+
 def test_parses_interactive_session_without_task(tmp_path: Path) -> None:
     config = parse_cli_config(
         [

@@ -4,15 +4,17 @@ Updated: 2026-07-30
 
 ## Repository state
 
-- Milestones 01 through 05 are present on branch `v2`; the current head is
-  `09e9662` (`feat(runtime): establish session-scoped environment kernel`).
-- The revised milestone 06 Host-mediated execution approval implementation is
-  in the working tree and awaits peer review. No commit was created.
+- Milestones 01 through 06 are present on branch `v2`; the current head is
+  `e83152b` (`feat(policy): add host-mediated execution approval`).
+- The milestone 07 Workspace Capability View implementation is in the working
+  tree and awaits peer review. No M7 commit was created.
 - [RFC-0001](./rfcs/approved/RFC-0001-host-mediated-execution-approval.md)
   supersedes the adjacent scratch milestone 06 ticket for this repository; the
   external scratch artifact remains historical input rather than the active
   implementation contract.
-- The working tree has 190 passing tests, and Ruff passes for `src` and
+- [RFC-0002](./rfcs/approved/RFC-0002-workspace-capability-view.md) supersedes
+  the original M7 filesystem strategy for this repository.
+- The working tree has 217 passing tests, and Ruff passes for `src` and
   `tests`.
 
 ## Implemented runtime
@@ -48,6 +50,20 @@ Updated: 2026-07-30
   before any Session Kernel construction. Wrong object types and symbolic
   links fail open; close and later open failure preserve the persistent
   namespace.
+- Runtime open accepts an optional Repertoire and otherwise creates or
+  validates `~/.config/cli-agent/repertoire/{tools,skills,library}`. The
+  Reference CLI exposes the same selection through `--repertoire`.
+- `.workspace/tools`, `.workspace/skills`, and `.workspace/library` are real
+  directories forming the visible Capability View. Lower Repertoire files
+  appear as exact file-level symbolic links; real Workspace entries take
+  precedence, including structurally invalid overrides.
+- Recognized approved writes copy lower-backed targets into the Workspace with
+  atomic replacement before Shell spawn. Lower-only removal creates a
+  persistent whiteout, removing an override immediately reveals lower, and
+  removing a Workspace-only file leaves it absent.
+- Private inspection reports Repertoire, Workspace, or whiteout provenance and
+  shadow facts from actual layer state. Repertoire and conflicting Workspace
+  symbolic links are rejected rather than trusted from authored metadata.
 - Runtime open parses the strict UTF-8 dotenv file with `python-dotenv` into an
   immutable Runtime-owned snapshot before Session Kernel construction.
   Later file changes affect only a later Runtime open.
@@ -61,11 +77,11 @@ Updated: 2026-07-30
   `cd` persists Session cwd and `export` persists the Session environment.
   Both pass through Policy, admission, Execution snapshots, cancellation, and
   cleanup. Malformed export assignment sets fail atomically.
-- Command parsing records only generic syntax facts. After the basename-only
-  Policy and optional approval produce a final Decision for the exact parse
-  result, the Router prefers a Runtime-owned Custom registry and otherwise
-  selects the Shell Driver. Process creation is private to a Driver or handler
-  and is not a routing category.
+- Command parsing records generic syntax facts plus explicit file output
+  redirection. After Policy and optional approval produce a final Decision for
+  the exact parse result, the Router prefers a Runtime-owned Custom registry
+  and otherwise selects the Shell Driver. The default Policy asks for direct
+  known mutators, explicit output redirection, and in-place `sed`.
 - The Kernel consumes one Driver Execution `run`/`cancel` contract and one
   bounded output sink. `_ExecutionState` stores backend-neutral lifecycle
   state rather than subprocess-specific handles, so a future Tool Driver will
@@ -89,30 +105,26 @@ Updated: 2026-07-30
 - The dotenv loader deliberately disables interpolation and rejects bare keys.
   There is no automatic migration from the earlier experimental
   `.workspace/env/KEY` directory layout.
-- The command inspector uses POSIX `shlex` and checks only the first token's
-  basename. Executable allow/deny/ask lists are admission guardrails, not
-  comprehensive side-effect detection or an operating-system sandbox.
+- The command inspector uses POSIX `shlex`, direct executable basenames,
+  explicit output redirection, and in-place `sed` flags. Wrappers, compound
+  commands, scripts, interpreters, and runtime-computed paths remain outside
+  comprehensive side-effect detection.
+- The file-level link view is cooperative, not an operating-system sandbox.
+  An unrecognized write may follow a lower link, and direct access to the
+  external Repertoire path bypasses copy-up.
 - Ordinary Shell writes have no optimistic version check. Human approval
   decides whether one exact command may start; it neither detects stale reads
   nor makes concurrent file updates conflict-safe.
 - Persistent Session `unset` and shell expansion for structured export do not
-  exist. `tools` remains unregistered until the Capability View and Workspace
-  Tool Environment are implemented.
+  exist. `tools` remains unregistered until the Workspace Tool Environment and
+  Tool custom commands are implemented.
 - Execution States are in memory only and are not restored after Runtime
   restart.
 
-## Next: milestone 07 — Mount the Capability View
+## Next: milestone 08 — Discover and load Skills on demand
 
-After peer review of revised milestone 06, implement
-`../.scratch/cli-agent-runtime/issues/07-mount-the-capability-view.md`.
-
-Before code, amend that milestone's design to choose how ordinary CLI writes
-interact with the Repertoire lower and Workspace upper now that there is no
-Agent-visible managed write grammar. In particular, copy-up, whiteouts,
-generated indexes, actual-layer provenance, and invalid authoritative
-Workspace overrides need a concrete cross-platform filesystem strategy.
-
-Keep Runtime-owned reconciliation and generated-file mutations separate from
-ordinary Agent Shell writes: private Runtime operations still require Managed
-Paths, atomic replacement, and trusted provenance even though they are not
-exposed as `workspace write` commands.
+After peer review of RFC-0002 and the M7 working tree, implement
+`../.scratch/cli-agent-runtime/issues/08-discover-and-load-skills-on-demand.md`.
+Use the Capability View's actual-layer inspection for Skill provenance and
+invalid override reporting. Generated indexes remain Runtime-owned derived
+files and must not become authority for provenance or execution scheduling.

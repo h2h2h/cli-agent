@@ -17,6 +17,7 @@ class CommandParseResult:
     executable_basename: str | None
     tokenization_succeeded: bool
     contains_shell_composition: bool
+    contains_output_redirection: bool
 
 
 class CommandParser(ABC):
@@ -53,6 +54,9 @@ class ShlexCommandParser(CommandParser):
             executable_basename=executable,
             tokenization_succeeded=tokenization_succeeded,
             contains_shell_composition=self._contains_shell_composition(raw_command),
+            contains_output_redirection=bool(
+                _shell_output_redirection_targets(raw_command)
+            ),
         )
 
     def _split_shell_command(self, raw_command: str) -> list[str]:
@@ -86,3 +90,29 @@ class ShlexCommandParser(CommandParser):
 def parse_shell_command(raw_command: str) -> CommandParseResult:
     """Parse one command with the default :class:`ShlexCommandParser`."""
     return ShlexCommandParser().parse(raw_command)
+
+
+def _shell_output_redirection_targets(raw_command: str) -> tuple[str, ...]:
+    """Return syntactically explicit file targets for output redirections."""
+
+    try:
+        lexer = shlex.shlex(
+            raw_command,
+            posix=True,
+            punctuation_chars="|&;<>",
+        )
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = tuple(lexer)
+    except ValueError:
+        return ()
+
+    targets: list[str] = []
+    for index, token in enumerate(tokens[:-1]):
+        if token not in {">", ">>", "<>", ">|"}:
+            continue
+        target = tokens[index + 1]
+        if target == "&" or target.startswith("&"):
+            continue
+        targets.append(target)
+    return tuple(targets)

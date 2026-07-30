@@ -10,6 +10,7 @@ from pathlib import Path
 import jsonschema
 
 from cli_agent.runtime._builtin_tools import BUILDIN_TOOL_SCHEMA_DEFINITIONS
+from cli_agent.runtime._capability_view import _CapabilityView
 from cli_agent.runtime._environment.command_parser import ShlexCommandParser
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
@@ -125,6 +126,7 @@ class EnvironmentKernel:
         registry: _CustomCommandRegistry | None = None,
         approval_gate: _ExecutionApprovalGate | None = None,
         approval_session_id: str | None = None,
+        capability_view: _CapabilityView | None = None,
     ) -> None:
         root = Path(workspace).resolve()
         if not root.is_dir():
@@ -148,7 +150,7 @@ class EnvironmentKernel:
             else registry
         )
         self._router = _CommandRouter(
-            shell_driver=_ShellDriver(),
+            shell_driver=_ShellDriver(capability_view),
             custom_driver=_CustomDriver(registry),
             parallel_shell_commands=frozenset(parallel_commands or ()),
         )

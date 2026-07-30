@@ -329,10 +329,11 @@ previous direct-`rm` deny policy. No persisted state migration is required.
 ## Open Questions
 
 1. Whether future Hosts need durable approval audit records.
-2. Whether a later policy inspector should distinguish redirection from other
-   Shell composition.
-3. How milestone 07 provides copy-up for ordinary CLI writes without a managed
-   write grammar.
+2. Resolved by
+   [RFC-0002](./RFC-0002-workspace-capability-view.md): the default Policy
+   distinguishes explicit file output redirection and in-place `sed` editing.
+3. Resolved by RFC-0002: `.workspace` uses real capability directories,
+   file-level lower links, approved-command copy-up, and persistent whiteouts.
 
 These questions do not block the first allow-once implementation.
 

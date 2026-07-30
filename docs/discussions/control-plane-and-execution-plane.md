@@ -147,11 +147,13 @@ eventual side effects: arbitrary Shell commands and executable Tools can
 compute behavior dynamically. Parsing must not start a process, mutate the
 Workspace, import and execute a Tool, or allocate an Execution Handle.
 
-The first Policy intentionally uses only the executable basename. After a
-final allowed Decision, the Router selects a Runtime-trusted scheduling class
-and Driver. A future Policy that independently authorizes structured Tool
-operations must move their trusted semantic recognition before that Policy
-without changing the execution-plane contracts below.
+The first Policy intentionally used only the executable basename. RFC-0002
+later added syntax-only recognition for explicit file output redirection and
+in-place `sed` while retaining the same immutable parse and authorization
+boundary. After a final allowed Decision, the Router selects a Runtime-trusted
+scheduling class and Driver. A future Policy that independently authorizes
+structured Tool operations must move their trusted semantic recognition before
+that Policy without changing the execution-plane contracts below.
 
 ### PolicyEvaluation and ExecutionDecision
 
@@ -349,12 +351,12 @@ rm -rf build             -> ASK
 pytest -q                -> ALLOW
 ```
 
-The milestone 03 inspector uses POSIX `shlex` tokenization and examines only
-the first token of the submitted command. If its path basename is in the deny
-set, the command is denied. Leading whitespace, quoting of the executable name,
-and absolute executable paths are therefore covered. A tokenization failure or
-any command whose first token is not denied is not a policy failure: this
-specific positive-match rule does not match it.
+The milestone 03 inspector used POSIX `shlex` tokenization and examined only
+the first token of the submitted command. RFC-0001 replaced immediate denial
+with `ALLOW`, `DENY`, and `ASK`; RFC-0002 additionally asks by default for
+explicit file output redirection and in-place `sed`. Leading whitespace,
+quoting of the executable name, and absolute executable paths remain covered
+for configured basename rules.
 
 Consequently, `rm file`, `"rm" file`, and `/bin/rm file` are recognized, while
 `env rm file`, `command rm file`, `sh -c 'rm file'`, and an `rm` appearing only

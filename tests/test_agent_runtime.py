@@ -446,6 +446,9 @@ def test_assembles_workspace_and_optional_host_instruction(
         text = "".join(block.text for block in system_message.content)
         assert "You are cli-agent" in text
         assert f"The bound Workspace is {tmp_path.resolve()}." in text
+        assert ".workspace/tools" in text
+        assert ".workspace/skills" in text
+        assert ".workspace/library" in text
         assert "`exec`, `output`, and `kill`" in text
         assert "not an operating-system security boundary" in text
         assert text.endswith("Host instruction\nPrefer focused, reversible changes.")
@@ -510,6 +513,7 @@ class _TrackingEnvironmentKernel:
         *,
         base_env: Mapping[str, str],
         policy: object,
+        capability_view: object,
         approval_gate: object,
         approval_session_id: str,
         queue_limit: int,
@@ -519,6 +523,7 @@ class _TrackingEnvironmentKernel:
         self.workspace = Path(workspace)
         self.base_env = base_env
         self.policy = policy
+        self.capability_view = capability_view
         self.approval_gate = approval_gate
         self.approval_session_id = approval_session_id
         self.queue_limit = queue_limit

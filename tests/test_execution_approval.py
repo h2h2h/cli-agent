@@ -104,6 +104,49 @@ def test_default_policy_allows_unclassified_direct_executables(
 
 
 @pytest.mark.parametrize(
+    "command",
+    (
+        "echo value > file.txt",
+        "echo value >>file.txt",
+        "printf value 2> errors.txt",
+        "cat <> state.txt",
+        "sed -i 's/old/new/' file.txt",
+    ),
+)
+def test_default_policy_asks_for_explicit_writes(command: str) -> None:
+    async def scenario() -> None:
+        evaluation = await ExecutablePolicy().evaluate(
+            parse_shell_command(command)
+        )
+
+        assert evaluation.action is PolicyAction.ASK
+        assert evaluation.reason is not None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "cat < file.txt",
+        "echo value 2>&1",
+        "sed -n 1p file.txt",
+    ),
+)
+def test_default_policy_does_not_treat_read_or_fd_redirection_as_file_write(
+    command: str,
+) -> None:
+    async def scenario() -> None:
+        evaluation = await ExecutablePolicy().evaluate(
+            parse_shell_command(command)
+        )
+
+        assert evaluation.action is PolicyAction.ALLOW
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
     "kwargs",
     (
         {

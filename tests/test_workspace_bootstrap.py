@@ -25,6 +25,12 @@ def test_runtime_open_bootstraps_and_preserves_workspace_state(
         assert workspace_environment.is_file()
         assert not workspace_environment.is_symlink()
         assert workspace_environment.read_bytes() == b""
+        default_repertoire = (
+            Path.home() / ".config" / "cli-agent" / "repertoire"
+        )
+        assert {
+            path.name for path in default_repertoire.iterdir()
+        } == {"library", "skills", "tools"}
         if os.name == "posix":
             assert stat.S_IMODE(workspace_state.stat().st_mode) & 0o077 == 0
             assert stat.S_IMODE(workspace_environment.stat().st_mode) & 0o077 == 0
@@ -65,6 +71,34 @@ def test_runtime_open_reuses_existing_workspace_state_without_changes(
     if os.name == "posix":
         assert stat.S_IMODE(workspace_state.stat().st_mode) == 0o755
         assert stat.S_IMODE(workspace_environment.stat().st_mode) == 0o640
+
+
+def test_runtime_open_uses_explicit_repertoire(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    repertoire = tmp_path / "repertoire"
+    workspace.mkdir()
+    lower = repertoire / "tools" / "selected.py"
+    lower.parent.mkdir(parents=True)
+    (repertoire / "skills").mkdir()
+    (repertoire / "library").mkdir()
+    lower.write_text("SELECTED = True\n", encoding="utf-8")
+
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(
+            workspace=workspace,
+            repertoire=repertoire,
+            provider=ScriptedModelProvider(script=()),
+        )
+        try:
+            assert runtime._capability_view.repertoire == repertoire
+        finally:
+            await runtime.close()
+
+    asyncio.run(scenario())
+
+    visible = workspace / ".workspace" / "tools" / "selected.py"
+    assert visible.is_symlink()
+    assert visible.read_text(encoding="utf-8") == "SELECTED = True\n"
 
 
 def test_runtime_open_rejects_workspace_state_file_conflict(
@@ -162,7 +196,13 @@ def test_concurrent_runtime_opens_share_idempotent_bootstrap(
     assert workspace_state.is_dir()
     assert environment.is_file()
     assert environment.read_bytes() == b""
-    assert tuple(path.name for path in workspace_state.iterdir()) == ("env",)
+    assert {path.name for path in workspace_state.iterdir()} == {
+        ".capability-view",
+        "env",
+        "library",
+        "skills",
+        "tools",
+    }
 
 
 def test_runtime_open_requires_existing_workspace(tmp_path: Path) -> None:

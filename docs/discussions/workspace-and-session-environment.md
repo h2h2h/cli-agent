@@ -114,10 +114,12 @@ Runtime close never deletes `.workspace`. An open failure does not remove an
 empty namespace it created. The Runtime does not overwrite user environment
 files or modify `.gitignore`.
 
-`.workspace` is a reserved persistent namespace, not the Capability View
-itself. Later milestones may add independently owned subdirectories for the
-Workspace capability upper layer, Tool Environment, generated state,
-whiteouts, or locks.
+At milestone 05, `.workspace` was only a reserved persistent namespace and not
+yet the Capability View.
+[RFC-0002](../rfcs/approved/RFC-0002-workspace-capability-view.md) later
+selected `.workspace/tools`, `.workspace/skills`, and `.workspace/library` as
+the visible Capability View while retaining `.workspace/env` and hidden
+Runtime-owned metadata in the same persistent namespace.
 
 ## Session semantics
 

@@ -31,6 +31,7 @@ class CliConfig:
     base_url: str
     model: str
     api_key: str = field(repr=False)
+    repertoire: Path | None = None
 
 
 def parse_cli_config(
@@ -52,6 +53,11 @@ def parse_cli_config(
         raise CliConfigurationError(
             f"workspace must be an existing directory: {args.workspace}"
         )
+    repertoire = (
+        None
+        if args.repertoire is None
+        else Path(args.repertoire).expanduser().resolve()
+    )
 
     model = _required_environment(environment, MODEL_ENV)
     base_url = _normalize_base_url(_required_environment(environment, BASE_URL_ENV))
@@ -63,6 +69,7 @@ def parse_cli_config(
         base_url=base_url,
         model=model,
         api_key=api_key,
+        repertoire=repertoire,
     )
 
 
@@ -95,6 +102,14 @@ def _argument_parser() -> argparse.ArgumentParser:
         "--workspace",
         default=".",
         help="Workspace directory (default: current directory).",
+    )
+    parser.add_argument(
+        "--repertoire",
+        default=None,
+        help=(
+            "Repertoire directory "
+            "(default: ~/.config/cli-agent/repertoire)."
+        ),
     )
     return parser
 
