@@ -4,6 +4,13 @@ Status: accepted for specification
 Accepted: 2026-07-28
 Normative follow-up: architecture decision 16
 
+The lane-based scheduling references are superseded by
+[AEP-aligned Custom dispatch and ordered parallel scheduling](./aep-aligned-custom-dispatch-and-parallel-scheduling.md).
+The lifecycle shape is amended by
+[Session-scoped Environment Kernel](./session-scoped-environment-kernel.md):
+each Agent Session owns one Kernel and there is no Environment Binding or
+Kernel-owned Session registry.
+
 This discussion records the rationale that was accepted for incorporation into
 the architecture specification. Where it differs from the normative
 architecture decision or RFC, those later records govern.
@@ -76,11 +83,8 @@ AgentLoop
     |
     | exec(command)
     v
-EnvironmentBinding
-    |
-    v
 +------------------------------------------------------+
-| EnvironmentKernel                                    |
+| Session-scoped EnvironmentKernel                     |
 |                                                      |
 |  Control plane                                       |
 |                                                      |
@@ -99,7 +103,7 @@ EnvironmentBinding
 |  Execution plane                                     |
 |                                                      |
 |  Session Execution Scheduler                         |
-|      -> Execution Supervisor                         |
+|      -> Kernel execution supervision                 |
 |      -> Shell / Tool / Managed driver                |
 |      -> output buffer / Cursor / state               |
 |      -> cancellation / cleanup                       |
@@ -124,23 +128,21 @@ execution plane. Execution is the shared lifecycle across both.
 
 ### CommandParseResult
 
-`CommandParseResult` is the immutable result of validating, routing, and
-inspecting one Session-scoped model `exec` call. It records both the exact
-request and the facts the control plane can establish without performing it:
-
-- raw command and requested wait/output settings;
-- bound working directory and effective environment reference;
-- selected route or private driver;
-- recognized executable names or Kernel operation;
-- normalized arguments available at that layer;
-- Shell constructs or wrappers the inspector recognizes;
-- managed paths, Tool name, and Capability Provenance when applicable;
-- uncertainty or unsupported syntax relevant to policy.
+`CommandParseResult` is the immutable result of syntax inspection for one
+Session-scoped model `exec` call. It records the exact raw command, tokenization
+result, recognized direct executable basename, and generic Shell composition
+facts without performing or classifying the command.
 
 It is not yet accepted work and has no `exec_id`. Parsing is not proof of all
 eventual side effects: arbitrary Shell commands and executable Tools can
 compute behavior dynamically. Parsing must not start a process, mutate the
 Workspace, import and execute a Tool, or allocate an Execution Handle.
+
+The first Policy intentionally uses only the executable basename. After an
+allowed Decision, the Router selects a Runtime-trusted lane and Driver. A
+future Policy that independently authorizes structured Tool or managed
+operations must move their trusted semantic recognition before that Policy
+without changing the execution-plane contracts below.
 
 ### ExecutionDecision
 
@@ -179,21 +181,22 @@ Execution continues to own the backend-neutral lifecycle:
 - terminal exit information;
 - cancellation and Session-release behavior.
 
-Driver-specific resources remain private. A Shell driver owns a process group;
-a Tool driver may own a worker; an atomic managed command may have no
+Driver-specific resources remain private. A Shell Driver Execution may own a
+process group or perform a Runtime-local builtin with no external resource; a
+Tool Driver may own a worker invocation; an atomic managed command may have no
 long-lived process to terminate.
 
 ## Control plane
 
 The control plane is read-only with respect to the requested operation until
-authorization succeeds. Its three-stage pipeline is:
+authorization succeeds. Its pipeline is:
 
 ```text
-parse -> decide -> execute
+parse -> decide -> route -> execute
 ```
 
 `parse` produces `CommandParseResult`; `decide` produces an immutable
-`ExecutionDecision`; only an allowed Decision may cross into `execute`.
+`ExecutionDecision`; only an allowed Decision may be routed and admitted.
 
 ### Command routing
 
@@ -268,9 +271,9 @@ Managed Path, network profile, or other planned capabilities.
 
 The execution plane accepts only allowed, admitted, immutable Decisions.
 
-### Execution Supervisor
+### Execution supervision
 
-The Supervisor owns:
+The Session Kernel owns:
 
 - Execution creation and state transitions;
 - Session Scheduler integration and Driver lane release;
@@ -279,6 +282,11 @@ The Supervisor owns:
 - driver start and cancellation;
 - terminal snapshots;
 - Session and Runtime cleanup.
+
+The selected Driver synchronously prepares a side-effect-free Driver Execution
+when scheduled work becomes runnable. The Kernel then uses only its common
+`run` and `cancel` contract. It does not branch on command operation, Driver
+kind, subprocess state, or future worker state.
 
 `output` and `kill` address this state through a Session-private Handle. They do
 not rerun command policy:
@@ -292,11 +300,11 @@ not rerun command policy:
 Drivers execute allowed Decisions but do not decide whether commands are
 allowed:
 
-| Driver | Mechanism | Owned execution resource |
+| Driver | Prepared Execution | Owned execution resource |
 |---|---|---|
-| Shell | host subprocess | process group |
-| Tool | Workspace Tool Environment | worker or Tool invocation |
-| Managed command | Kernel operation | optimistic operation state |
+| Shell | inline builtin or child process | none or process group |
+| Tool | inline operation, process, or worker invocation | mechanism-specific |
+| Managed command | Runtime-local operation | optimistic operation state |
 
 Scheduling is Driver-aware without becoming Driver-visible to the model. The
 Shell lane has capacity one per Session. A future Tool lane may run multiple
@@ -306,8 +314,9 @@ that is blocked only on another lane. The accepted
 [Driver-aware per-Session Execution Scheduler](./driver-aware-execution-scheduler.md)
 discussion defines the detailed ordering and lifecycle semantics.
 
-All drivers emit normalized stdout/stderr-style output and completion into the
-shared Execution contract. Driver-specific fields do not leak into
+All Driver Executions emit normalized stdout/stderr-style output through the
+shared bounded sink and return one backend-neutral terminal outcome.
+Driver-specific fields do not leak into the Execution State or
 `ExecutionSnapshot`.
 
 MCP Tools continue through the Tool driver. They do not introduce an
@@ -445,11 +454,21 @@ sandbox, persistent audit store, or public driver protocol in milestone 03.
 - keep Handle lookup and cleanup Session-private;
 - ensure policy denial consumes no queue capacity.
 
-### Milestone 05: filtered environment
+### Milestone 05: Workspace and Session environment
 
-- construct parse results only from the effective filtered Session environment;
-- keep Provider credentials outside Agent execution unless explicitly granted;
-- prevent policy diagnostics and audit facts from exposing environment values.
+- establish `.workspace` idempotently during Runtime open and load the
+  user-maintained `.workspace/env` configuration once per Runtime;
+- initialize each Session Kernel with an independent copy of those Workspace
+  values;
+- recognize the narrow top-level `export KEY=VALUE ...` grammar as ordered
+  Shell-lane Session mutation without adding a model-visible syscall;
+- start each Shell child with `dict(os.environ) | session.env`, allowing
+  Session values to override same-named Host values;
+- bind the child environment when the Shell Execution starts rather than
+  carrying environment values through policy facts or diagnostics;
+- explicitly document that complete Host environment inheritance, including
+  Provider credentials, is an accepted AEP-compatibility trade-off rather than
+  a Secret-isolation guarantee.
 
 ### Milestone 06: managed Workspace commands
 
@@ -490,7 +509,7 @@ Only after the immediate allow/deny seam is proven:
 
 1. Every `exec` request passes the common policy gate before process creation.
 2. A recognized direct `rm` invocation returns `policy_denied`.
-3. A denied request creates no process, Handle, Execution record, or queue item.
+3. A denied request creates no process, Handle, Execution State, or queue item.
 4. An allowed request is executed from the same immutable Decision that policy
    evaluated.
 5. Policy cannot be relaxed by a Workspace mutation or model command.
@@ -535,10 +554,11 @@ This proposal adds the missing admission boundary:
 
 ```text
 CLI command
-    -> CommandParseResult: what operation is requested?
-    -> ExecutionDecision: may this exact operation start?
+    -> CommandParseResult: what syntax facts are established?
+    -> ExecutionDecision: may this exact command continue?
+    -> ExecutionRoute: which trusted lane and Driver own it?
     -> Execution: how is it observed and managed?
-    -> Driver: how is it performed?
+    -> Driver Execution: how is it run and cancelled?
 ```
 
 Together, the two discussions establish one path for Shell, Tool, and managed

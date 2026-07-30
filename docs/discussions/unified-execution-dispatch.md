@@ -4,6 +4,9 @@ Status: accepted for specification
 Accepted: 2026-07-28
 Normative follow-up: architecture decision 16
 
+The Custom dispatch and scheduling portions are refined by
+[AEP-aligned Custom dispatch and ordered parallel scheduling](./aep-aligned-custom-dispatch-and-parallel-scheduling.md).
+
 This discussion records the rationale that was accepted for incorporation into
 the architecture specification. Where it differs from the normative
 architecture decision or RFC, those later records govern.
@@ -137,7 +140,7 @@ Separate command routing from Execution supervision and concrete execution:
                       |
                       v
              +----------------------+
-             | Execution Supervisor |
+             | Kernel supervision   |
              | state / Cursor / log |
              | wait / cancel / close|
              +----------+-----------+
@@ -148,7 +151,7 @@ Separate command routing from Execution supervision and concrete execution:
 
 The Command Router determines which private driver understands a command. The
 driver performs the work and emits normalized stdout/stderr-style output. The
-Execution Supervisor owns the Session-visible record and all backend-neutral
+Session Kernel owns the private Execution State and all backend-neutral
 lifecycle behavior.
 
 The distinction matters:

@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -36,13 +37,13 @@ def test_opens_and_closes_runtime_explicitly(tmp_path: Path, monkeypatch) -> Non
         )
 
         assert not runtime.closed
-        assert len(_TrackingEnvironmentKernel.instances) == 1
+        assert _TrackingEnvironmentKernel.instances == []
 
         await runtime.close()
         await runtime.close()
 
         assert runtime.closed
-        assert _TrackingEnvironmentKernel.instances[0].close_count == 1
+        assert _TrackingEnvironmentKernel.instances == []
         with pytest.raises(RuntimeClosedError, match="AgentRuntime is closed"):
             async with runtime:
                 pass
@@ -67,8 +68,7 @@ def test_closes_runtime_context_manager(tmp_path: Path, monkeypatch) -> None:
             assert not runtime.closed
 
         assert runtime.closed
-        assert len(_TrackingEnvironmentKernel.instances) == 1
-        assert _TrackingEnvironmentKernel.instances[0].close_count == 1
+        assert _TrackingEnvironmentKernel.instances == []
         with pytest.raises(RuntimeClosedError, match="AgentRuntime is closed"):
             async with opener:
                 pass
@@ -125,7 +125,7 @@ def test_host_configures_runtime_lifetime_executable_deny_set(
     asyncio.run(scenario())
 
 
-def test_passes_default_and_configured_pending_capacity_to_environment(
+def test_passes_default_and_configured_limits_to_kernel(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -137,20 +137,46 @@ def test_passes_default_and_configured_pending_capacity_to_environment(
     )
 
     async def scenario() -> None:
+        default_provider = ScriptedModelProvider(
+            script=((_completion(AssistantMessage.text("default")),),)
+        )
+        configured_provider = ScriptedModelProvider(
+            script=((_completion(AssistantMessage.text("configured")),),)
+        )
         default_runtime = await AgentRuntime.open(
             workspace=tmp_path,
-            provider=ScriptedModelProvider(script=()),
+            provider=default_provider,
         )
         configured_runtime = await AgentRuntime.open(
             workspace=tmp_path,
-            provider=ScriptedModelProvider(script=()),
+            provider=configured_provider,
             pending_execution_capacity=7,
+            parallel_execution_capacity=3,
+            parallel_shell_commands=frozenset({"cat", "rg"}),
+        )
+        await _collect_turn(
+            default_runtime,
+            "default",
+            UserMessage.text("default"),
+        )
+        await _collect_turn(
+            configured_runtime,
+            "configured",
+            UserMessage.text("configured"),
         )
 
         assert [
-            kernel.pending_execution_capacity
+            kernel.queue_limit
             for kernel in _TrackingEnvironmentKernel.instances
         ] == [32, 7]
+        assert [
+            kernel.parallel_limit
+            for kernel in _TrackingEnvironmentKernel.instances
+        ] == [4, 3]
+        assert [
+            kernel.parallel_commands
+            for kernel in _TrackingEnvironmentKernel.instances
+        ] == [frozenset(), frozenset({"cat", "rg"})]
 
         await default_runtime.close()
         await configured_runtime.close()
@@ -209,8 +235,47 @@ def test_cleans_up_environment_when_open_fails(
                 provider=ScriptedModelProvider(script=()),
             )
 
+        assert _TrackingEnvironmentKernel.instances == []
+        assert (tmp_path / ".workspace").is_dir()
+        assert (tmp_path / ".workspace" / "env").is_file()
+
+    asyncio.run(scenario())
+
+
+def test_closes_new_kernel_when_agent_loop_construction_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _TrackingEnvironmentKernel.instances.clear()
+    monkeypatch.setattr(
+        runtime_module,
+        "EnvironmentKernel",
+        _TrackingEnvironmentKernel,
+    )
+
+    class FailingAgentLoop:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise OpenFailure
+
+    monkeypatch.setattr(runtime_module, "AgentLoop", FailingAgentLoop)
+
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=ScriptedModelProvider(script=()),
+        )
+
+        with pytest.raises(OpenFailure):
+            await _collect_turn(
+                runtime,
+                "session-a",
+                UserMessage.text("fail during Session construction"),
+            )
+
+        assert runtime._sessions == {}
         assert len(_TrackingEnvironmentKernel.instances) == 1
         assert _TrackingEnvironmentKernel.instances[0].close_count == 1
+        await runtime.close()
 
     asyncio.run(scenario())
 
@@ -290,7 +355,7 @@ def test_reusing_closed_session_id_creates_fresh_state(tmp_path: Path) -> None:
 
         await _collect_turn(runtime, "session-a", first_user)
         first_session = runtime._sessions["session-a"]
-        first_environment = first_session.environment
+        first_kernel = first_session.kernel
         await runtime.close_session("session-a")
         await runtime.close_session("session-a")
         await runtime.close_session("unknown")
@@ -304,11 +369,10 @@ def test_reusing_closed_session_id_creates_fresh_state(tmp_path: Path) -> None:
         assert provider.requests[0].messages == (first_system, first_user)
         assert provider.requests[1].messages == (second_system, second_user)
         assert second_system is not first_system
-        assert first_environment._closed is True
+        assert first_kernel._closed is True
         assert second_session is not first_session
         assert second_session.loop is not first_session.loop
-        assert second_session.environment is not first_environment
-        assert second_session.environment._session_id != first_environment._session_id
+        assert second_session.kernel is not first_kernel
         provider.assert_exhausted()
         await runtime.close()
 
@@ -345,7 +409,7 @@ def test_assembles_workspace_and_optional_host_instruction(
     asyncio.run(scenario())
 
 
-def test_runtime_closes_all_sessions_before_environment(
+def test_runtime_closes_every_session_kernel(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -373,14 +437,13 @@ def test_runtime_closes_all_sessions_before_environment(
         await runtime.close()
         await runtime.close()
 
-        kernel = _TrackingEnvironmentKernel.instances[0]
-        assert [binding.close_count for binding in kernel.bindings] == [1, 1]
-        assert kernel.close_count == 1
-        assert kernel.events == [
-            "binding.close",
-            "binding.close",
-            "kernel.close",
-        ]
+        assert len(_TrackingEnvironmentKernel.instances) == 2
+        assert [
+            kernel.close_count for kernel in _TrackingEnvironmentKernel.instances
+        ] == [1, 1]
+        assert [
+            kernel.events for kernel in _TrackingEnvironmentKernel.instances
+        ] == [["kernel.close"], ["kernel.close"]]
         await runtime.close_session("session-a")
         with pytest.raises(RuntimeClosedError, match="AgentRuntime is closed"):
             await _collect_turn(runtime, "session-a", UserMessage.text("closed"))
@@ -399,36 +462,28 @@ class _TrackingEnvironmentKernel:
         self,
         workspace: str | Path,
         *,
-        pending_execution_capacity: int,
+        base_env: Mapping[str, str],
+        policy: object,
+        queue_limit: int,
+        parallel_limit: int,
+        parallel_commands: frozenset[str],
     ) -> None:
         self.workspace = Path(workspace)
-        self.pending_execution_capacity = pending_execution_capacity
+        self.base_env = base_env
+        self.policy = policy
+        self.queue_limit = queue_limit
+        self.parallel_limit = parallel_limit
+        self.parallel_commands = parallel_commands
         self.close_count = 0
         self.events: list[str] = []
-        self.bindings: list[_TrackingEnvironmentBinding] = []
         self.instances.append(self)
-
-    def create_binding(self) -> "_TrackingEnvironmentBinding":
-        binding = _TrackingEnvironmentBinding(self.events)
-        self.bindings.append(binding)
-        return binding
-
-    async def close(self) -> None:
-        self.close_count += 1
-        self.events.append("kernel.close")
-
-
-class _TrackingEnvironmentBinding:
-    def __init__(self, events: list[str]) -> None:
-        self._events = events
-        self.close_count = 0
 
     async def dispatch(self, call: ToolCall) -> ToolResult:
         raise AssertionError(f"unexpected Tool Call: {call}")
 
     async def close(self) -> None:
         self.close_count += 1
-        self._events.append("binding.close")
+        self.events.append("kernel.close")
 
 
 def _completion(message: AssistantMessage) -> ModelCompletion:

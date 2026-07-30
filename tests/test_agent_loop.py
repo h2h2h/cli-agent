@@ -41,7 +41,7 @@ def test_completes_a_text_only_turn(tmp_path: Path) -> None:
     )
     loop = AgentLoop(
         provider,
-        EnvironmentKernel(tmp_path).create_binding(),
+        EnvironmentKernel(tmp_path),
         system_message=SYSTEM_MESSAGE,
     )
 
@@ -93,7 +93,7 @@ def test_continues_generation_after_exec_tool_result(tmp_path: Path) -> None:
     kernel = EnvironmentKernel(tmp_path)
     loop = AgentLoop(
         provider,
-        kernel.create_binding(),
+        kernel,
         system_message=SYSTEM_MESSAGE,
     )
 
@@ -171,7 +171,7 @@ def test_dispatches_tool_calls_serially_in_message_order(tmp_path: Path) -> None
     )
     loop = AgentLoop(
         provider,
-        EnvironmentKernel(tmp_path).create_binding(),
+        EnvironmentKernel(tmp_path),
         system_message=SYSTEM_MESSAGE,
     )
 
@@ -228,7 +228,7 @@ def test_tool_call_ready_order_does_not_change_dispatch_order(
     )
     loop = AgentLoop(
         provider,
-        EnvironmentKernel(tmp_path).create_binding(),
+        EnvironmentKernel(tmp_path),
         system_message=SYSTEM_MESSAGE,
     )
 

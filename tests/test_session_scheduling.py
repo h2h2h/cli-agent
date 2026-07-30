@@ -4,13 +4,10 @@ import sys
 from pathlib import Path
 
 from cli_agent.runtime import ToolCall, ToolResult
-from cli_agent.runtime._environment import EnvironmentBinding, EnvironmentKernel
-from cli_agent.runtime._environment.execution import _ExecutionRecord
-from cli_agent.runtime._environment.policy import (
-    CommandParseResult,
-    ExecutionDecision,
-)
-from cli_agent.runtime._environment.supervisor import _EnvironmentSession
+from cli_agent.runtime._environment import EnvironmentKernel
+from cli_agent.runtime._environment.command_parser import CommandParseResult
+from cli_agent.runtime._environment.execution import _ExecutionState
+from cli_agent.runtime._environment.policy import ExecutionDecision
 
 _UNKNOWN_EXECUTION = {
     "ok": False,
@@ -60,13 +57,17 @@ def test_foreign_and_missing_handles_are_indistinguishable(
         running_started = tmp_path / "private-running-started"
         running_release = tmp_path / "private-running-release"
         queued_proof = tmp_path / "private-queued-proof"
-        kernel = EnvironmentKernel(
+        owner = EnvironmentKernel(
             tmp_path,
-            execution_policy=policy,
-            pending_execution_capacity=1,
+            policy=policy,
+            queue_limit=1,
         )
-        owner = kernel.create_binding()
-        stranger = kernel.create_binding()
+        stranger = EnvironmentKernel(
+            tmp_path,
+            policy=policy,
+            queue_limit=1,
+        )
+        replacement: EnvironmentKernel | None = None
         try:
             terminal = _output(
                 await owner.dispatch(
@@ -185,7 +186,11 @@ def test_foreign_and_missing_handles_are_indistinguishable(
                 str(snapshot["exec_id"]) for snapshot in (terminal, running, queued)
             )
             await owner.close()
-            replacement = kernel.create_binding()
+            replacement = EnvironmentKernel(
+                tmp_path,
+                policy=policy,
+                queue_limit=1,
+            )
             for index, exec_id in enumerate(old_handles):
                 for tool_name in ("output", "kill"):
                     invalidated = await replacement.dispatch(
@@ -198,7 +203,10 @@ def test_foreign_and_missing_handles_are_indistinguishable(
                     assert _error(invalidated) == _UNKNOWN_EXECUTION
             assert policy.calls == 3
         finally:
-            await kernel.close()
+            await owner.close()
+            await stranger.close()
+            if replacement is not None:
+                await replacement.close()
 
     asyncio.run(scenario())
 
@@ -215,9 +223,8 @@ def test_sessions_run_shell_work_concurrently_without_cross_session_hol(
         b_release = tmp_path / "session-b-release"
         b_promoted = tmp_path / "session-b-promoted"
         b_observed = tmp_path / "session-b-observed"
-        kernel = EnvironmentKernel(tmp_path, pending_execution_capacity=1)
-        binding_a = kernel.create_binding()
-        binding_b = kernel.create_binding()
+        binding_a = EnvironmentKernel(tmp_path, queue_limit=1)
+        binding_b = EnvironmentKernel(tmp_path, queue_limit=1)
         try:
             running_a = _output(
                 await binding_a.dispatch(
@@ -296,13 +303,13 @@ def test_sessions_run_shell_work_concurrently_without_cross_session_hol(
             assert not a_release.exists() and not b_release.exists()
             assert not a_promoted.exists() and not b_promoted.exists()
 
-            session_a = kernel._sessions[binding_a._session_id]
-            session_b = kernel._sessions[binding_b._session_id]
             assert [
-                record.submission_sequence for record in session_a.executions.values()
+                state.submission_sequence
+                for state in binding_a._executions.values()
             ] == [0, 1]
             assert [
-                record.submission_sequence for record in session_b.executions.values()
+                state.submission_sequence
+                for state in binding_b._executions.values()
             ] == [0, 1]
 
             a_release.touch()
@@ -350,7 +357,8 @@ def test_sessions_run_shell_work_concurrently_without_cross_session_hol(
             assert b_promoted.exists()
             assert b_observed.read_text() == "from-a"
         finally:
-            await kernel.close()
+            await binding_a.close()
+            await binding_b.close()
 
     asyncio.run(scenario())
 
@@ -361,10 +369,9 @@ def test_close_prevents_admission_after_async_policy_returns(
     async def scenario() -> None:
         policy = _BlockingPolicy()
         must_not_run = tmp_path / "close-policy-must-not-run"
-        kernel = EnvironmentKernel(tmp_path, execution_policy=policy)
-        binding = kernel.create_binding()
+        kernel = EnvironmentKernel(tmp_path, policy=policy)
         dispatch = asyncio.create_task(
-            binding.dispatch(
+            kernel.dispatch(
                 ToolCall(
                     call_id="exec_during_close",
                     name="exec",
@@ -374,7 +381,7 @@ def test_close_prevents_admission_after_async_policy_returns(
         )
         await policy.entered.wait()
 
-        await binding.close()
+        await kernel.close()
         policy.release.set()
         result = await asyncio.wait_for(dispatch, timeout=0.5)
 
@@ -384,7 +391,7 @@ def test_close_prevents_admission_after_async_policy_returns(
             "message": "environment session is closed",
         }
         assert not must_not_run.exists()
-        assert kernel._sessions == {}
+        assert kernel._executions == {}
         await kernel.close()
 
     asyncio.run(scenario())
@@ -399,10 +406,9 @@ def test_close_cancels_owned_work_and_recreation_is_fresh(
         queued_must_not_run = tmp_path / "closing-queued-must-not-run"
         peer_started = tmp_path / "peer-session-started"
         peer_release = tmp_path / "peer-session-release"
-        kernel = EnvironmentKernel(tmp_path, pending_execution_capacity=1)
-        closing = kernel.create_binding()
-        peer = kernel.create_binding()
-        closing_session_id = closing._session_id
+        closing = EnvironmentKernel(tmp_path, queue_limit=1)
+        peer = EnvironmentKernel(tmp_path, queue_limit=1)
+        replacement: EnvironmentKernel | None = None
         try:
             running = _output(
                 await closing.dispatch(
@@ -432,16 +438,15 @@ def test_close_cancels_owned_work_and_recreation_is_fresh(
                     )
                 )
             )
-            closing_session = kernel._sessions[closing_session_id]
-            queued_record = await _wait_for_queued_record(closing_session)
-            running_record = closing_session.executions[str(running["exec_id"])]
+            queued_state = await _wait_for_queued_state(closing)
+            running_state = closing._executions[str(running["exec_id"])]
             output_waiter = asyncio.create_task(
                 closing.dispatch(
                     ToolCall(
                         call_id="output_closing_queued",
                         name="output",
                         arguments={
-                            "exec_id": queued_record.exec_id,
+                            "exec_id": queued_state.exec_id,
                             "wait_ms": 5_000,
                         },
                     )
@@ -469,14 +474,13 @@ def test_close_cancels_owned_work_and_recreation_is_fresh(
 
             assert exec_result["status"] == "killed"
             assert output_result == exec_result
-            assert running_record.status == "killed"
-            assert running_record.completion_task is not None
-            assert running_record.completion_task.done()
-            assert queued_record.status == "killed"
-            assert queued_record.completion_task is None
+            assert running_state.status == "killed"
+            assert running_state.completion_task is not None
+            assert running_state.completion_task.done()
+            assert queued_state.status == "killed"
+            assert queued_state.completion_task is None
             assert not queued_must_not_run.exists()
-            assert closing_session.executions == {}
-            assert closing_session_id not in kernel._sessions
+            assert closing._executions == {}
             assert (
                 _output(
                     await peer.dispatch(
@@ -500,10 +504,12 @@ def test_close_cancels_owned_work_and_recreation_is_fresh(
             assert _error(closed_binding_result)["code"] == "internal"
             await closing.close()
 
-            replacement = kernel.create_binding()
-            assert replacement._session_id != closing_session_id
+            replacement = EnvironmentKernel(
+                tmp_path,
+                queue_limit=1,
+            )
             for index, old_exec_id in enumerate(
-                (str(running["exec_id"]), queued_record.exec_id)
+                (str(running["exec_id"]), queued_state.exec_id)
             ):
                 invalidated = await replacement.dispatch(
                     ToolCall(
@@ -524,12 +530,11 @@ def test_close_cancels_owned_work_and_recreation_is_fresh(
                 )
             )
             assert fresh["status"] == "exited"
-            fresh_session = kernel._sessions[replacement._session_id]
-            fresh_record = fresh_session.executions[str(fresh["exec_id"])]
-            assert fresh_record.submission_sequence == 0
+            fresh_state = replacement._executions[str(fresh["exec_id"])]
+            assert fresh_state.submission_sequence == 0
             assert fresh["exec_id"] not in {
                 running["exec_id"],
-                queued_record.exec_id,
+                queued_state.exec_id,
             }
 
             peer_release.touch()
@@ -542,7 +547,10 @@ def test_close_cancels_owned_work_and_recreation_is_fresh(
         finally:
             closing_release.touch()
             peer_release.touch()
-            await kernel.close()
+            await closing.close()
+            await peer.close()
+            if replacement is not None:
+                await replacement.close()
 
     asyncio.run(scenario())
 
@@ -553,9 +561,8 @@ def test_close_wakes_concurrent_running_cancellation_waiter(
     async def scenario() -> None:
         started = tmp_path / "close-kill-waiter-started"
         kernel = EnvironmentKernel(tmp_path)
-        binding = kernel.create_binding()
         running = _output(
-            await binding.dispatch(
+            await kernel.dispatch(
                 ToolCall(
                     call_id="exec_close_kill_waiter",
                     name="exec",
@@ -567,11 +574,10 @@ def test_close_wakes_concurrent_running_cancellation_waiter(
             )
         )
         await _wait_for_path(started)
-        session = kernel._sessions[binding._session_id]
-        record = session.executions[str(running["exec_id"])]
+        state = kernel._executions[str(running["exec_id"])]
 
         kill_waiter = asyncio.create_task(
-            binding.dispatch(
+            kernel.dispatch(
                 ToolCall(
                     call_id="kill_during_close",
                     name="kill",
@@ -582,34 +588,35 @@ def test_close_wakes_concurrent_running_cancellation_waiter(
         await asyncio.sleep(0)
         assert not kill_waiter.done()
 
-        await asyncio.wait_for(binding.close(), timeout=2)
+        await asyncio.wait_for(kernel.close(), timeout=2)
         killed = _output(await asyncio.wait_for(kill_waiter, timeout=0.5))
 
         assert killed["status"] == "killed"
         assert killed["is_terminal"] is True
-        assert record.completion_task is not None
-        assert record.completion_task.done()
-        assert session.executions == {}
-        await binding.close()
+        assert state.completion_task is not None
+        assert state.completion_task.done()
+        assert kernel._executions == {}
         await kernel.close()
 
     asyncio.run(scenario())
 
 
-def test_kernel_close_cancels_running_and_queued_work_in_every_session(
+def test_each_kernel_close_cancels_its_running_and_queued_work(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path, pending_execution_capacity=1)
-        bindings = (kernel.create_binding(), kernel.create_binding())
-        records = []
+        kernels = (
+            EnvironmentKernel(tmp_path, queue_limit=1),
+            EnvironmentKernel(tmp_path, queue_limit=1),
+        )
+        states = []
         queued_proofs = []
-        for index, binding in enumerate(bindings):
+        for index, kernel in enumerate(kernels):
             started = tmp_path / f"kernel-close-{index}-started"
             release = tmp_path / f"kernel-close-{index}-release"
             queued_proof = tmp_path / f"kernel-close-{index}-queued"
             running = _output(
-                await binding.dispatch(
+                await kernel.dispatch(
                     ToolCall(
                         call_id=f"exec_kernel_close_running_{index}",
                         name="exec",
@@ -622,7 +629,7 @@ def test_kernel_close_cancels_running_and_queued_work_in_every_session(
             )
             await _wait_for_path(started)
             queued = _output(
-                await binding.dispatch(
+                await kernel.dispatch(
                     ToolCall(
                         call_id=f"exec_kernel_close_queued_{index}",
                         name="exec",
@@ -633,28 +640,28 @@ def test_kernel_close_cancels_running_and_queued_work_in_every_session(
                     )
                 )
             )
-            session = kernel._sessions[binding._session_id]
-            records.append(
+            states.append(
                 (
-                    session.executions[str(running["exec_id"])],
-                    session.executions[str(queued["exec_id"])],
+                    kernel._executions[str(running["exec_id"])],
+                    kernel._executions[str(queued["exec_id"])],
                 )
             )
             queued_proofs.append(queued_proof)
 
-        await kernel.close()
-        await kernel.close()
+        for kernel in kernels:
+            await kernel.close()
+            await kernel.close()
 
-        assert kernel._sessions == {}
-        for running_record, queued_record in records:
-            assert running_record.status == "killed"
-            assert running_record.completion_task is not None
-            assert running_record.completion_task.done()
-            assert queued_record.status == "killed"
-            assert queued_record.completion_task is None
+        assert all(kernel._executions == {} for kernel in kernels)
+        for running_state, queued_state in states:
+            assert running_state.status == "killed"
+            assert running_state.completion_task is not None
+            assert running_state.completion_task.done()
+            assert queued_state.status == "killed"
+            assert queued_state.completion_task is None
         assert not any(path.exists() for path in queued_proofs)
-        for index, binding in enumerate(bindings):
-            closed = await binding.dispatch(
+        for index, kernel in enumerate(kernels):
+            closed = await kernel.dispatch(
                 ToolCall(
                     call_id=f"exec_after_kernel_close_{index}",
                     name="exec",
@@ -709,7 +716,7 @@ def _error(result: ToolResult) -> dict[str, object]:
 
 
 async def _read_until_terminal(
-    binding: EnvironmentBinding,
+    binding: EnvironmentKernel,
     exec_id: str,
 ) -> dict[str, object]:
     chunks: list[object] = []
@@ -744,12 +751,12 @@ async def _wait_for_path(path: Path) -> None:
     raise AssertionError(f"{path} was not created")
 
 
-async def _wait_for_queued_record(
-    session: _EnvironmentSession,
-) -> _ExecutionRecord:
+async def _wait_for_queued_state(
+    kernel: EnvironmentKernel,
+) -> _ExecutionState:
     for _ in range(100):
-        for record in session.executions.values():
-            if record.status == "queued":
-                return record
+        for state in kernel._executions.values():
+            if state.status == "queued":
+                return state
         await asyncio.sleep(0.01)
-    raise AssertionError("queued Execution Record was not created")
+    raise AssertionError("queued Execution State was not created")

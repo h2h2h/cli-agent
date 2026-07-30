@@ -21,7 +21,7 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._environment.execution import _ExecutionRecord
+from cli_agent.runtime._environment.execution import _ExecutionState
 
 
 class _CoordinatedProvider:
@@ -263,31 +263,27 @@ def test_public_runtime_proves_concurrent_session_scheduling(
             assert system_a is not system_b
 
             old_session_a = runtime._sessions["session-a"]
-            old_binding_a = old_session_a.environment
-            old_environment_a = runtime._environment._sessions[
-                old_binding_a._session_id
-            ]
-            old_records_a = tuple(old_environment_a.executions.values())
-            old_handles_a = tuple(record.exec_id for record in old_records_a)
+            old_kernel_a = old_session_a.kernel
+            old_states_a = tuple(old_kernel_a._executions.values())
+            old_handles_a = tuple(state.exec_id for state in old_states_a)
             session_b = runtime._sessions["session-b"]
-            binding_b = session_b.environment
-            environment_b = runtime._environment._sessions[binding_b._session_id]
+            kernel_b = session_b.kernel
             running_b_id = str(_result_output(initial_b[0])["exec_id"])
-            assert environment_b.executions[running_b_id].status == "running"
+            assert kernel_b._executions[running_b_id].status == "running"
 
             await runtime.close_session("session-a")
-            assert old_binding_a._closed is True
-            assert old_environment_a.executions == {}
+            assert old_kernel_a._closed is True
+            assert old_kernel_a._executions == {}
             assert all(
-                record.status in {"killed", "exited", "failed"}
-                for record in old_records_a
+                state.status in {"killed", "exited", "failed"}
+                for state in old_states_a
             )
             assert all(
-                record.completion_task is None or record.completion_task.done()
-                for record in old_records_a
+                state.completion_task is None or state.completion_task.done()
+                for state in old_states_a
             )
             assert not a_queued.exists() and not a_overflow.exists()
-            assert environment_b.executions[running_b_id].status == "running"
+            assert kernel_b._executions[running_b_id].status == "running"
 
             provider_a.finish_allowed.set()
             events_a = await asyncio.wait_for(turn_a, timeout=0.5)
@@ -296,14 +292,14 @@ def test_public_runtime_proves_concurrent_session_scheduling(
             b_release.touch()
             await _wait_for_path(b_queued)
             for result in initial_b:
-                await _wait_for_terminal_record(
-                    environment_b.executions[str(_result_output(result)["exec_id"])]
+                await _wait_for_terminal_state(
+                    kernel_b._executions[str(_result_output(result)["exec_id"])]
                 )
             provider_b.finish_allowed.set()
             events_b = await asyncio.wait_for(turn_b, timeout=0.5)
             assert isinstance(events_b[-1], ModelCompletion)
             assert [
-                environment_b.executions[str(_result_output(result)["exec_id"])].status
+                kernel_b._executions[str(_result_output(result)["exec_id"])].status
                 for result in initial_b
             ] == ["exited", "exited"]
 
@@ -376,11 +372,11 @@ def test_public_runtime_proves_concurrent_session_scheduling(
             assert fresh_proof.exists()
             fresh_session = runtime._sessions["session-a"]
             assert fresh_session is not old_session_a
-            assert fresh_session.environment is not old_binding_a
-            fresh_environment = runtime._environment._sessions[
-                fresh_session.environment._session_id
-            ]
-            assert fresh_environment.executions[fresh_exec_id].submission_sequence == 0
+            assert fresh_session.kernel is not old_kernel_a
+            assert (
+                fresh_session.kernel._executions[fresh_exec_id].submission_sequence
+                == 0
+            )
             fresh_provider.assert_exhausted()
             default_provider.assert_exhausted()
 
@@ -397,17 +393,13 @@ def test_public_runtime_proves_concurrent_session_scheduling(
                 ]
 
             active_sessions = tuple(runtime._sessions.values())
-            active_environment_sessions = tuple(runtime._environment._sessions.values())
+            active_kernels = tuple(session.kernel for session in active_sessions)
             await runtime.close()
 
             assert runtime.closed
             assert runtime._sessions == {}
-            assert runtime._environment._sessions == {}
-            assert all(session.environment._closed for session in active_sessions)
-            assert all(
-                not environment.executions
-                for environment in active_environment_sessions
-            )
+            assert all(kernel._closed for kernel in active_kernels)
+            assert all(not kernel._executions for kernel in active_kernels)
         finally:
             provider_a.finish_allowed.set()
             provider_b.finish_allowed.set()
@@ -533,14 +525,14 @@ async def _wait_for_path(path: Path) -> None:
     raise AssertionError(f"{path} was not created")
 
 
-async def _wait_for_terminal_record(
-    record: _ExecutionRecord,
+async def _wait_for_terminal_state(
+    state: _ExecutionState,
 ) -> None:
     for _ in range(100):
-        if record.is_terminal:
+        if state.is_terminal:
             return
         await asyncio.sleep(0.01)
-    raise AssertionError(f"Execution {record.exec_id} did not terminate")
+    raise AssertionError(f"Execution {state.exec_id} did not terminate")
 
 
 def _deny_network(*args: object, **kwargs: object) -> None:

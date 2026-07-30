@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from cli_agent.runtime._environment import EnvironmentBinding
+from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime.model import (
     ModelCompletion,
     ModelEvent,
@@ -24,12 +24,12 @@ class AgentLoop:
     def __init__(
         self,
         provider: ModelProvider,
-        environment: EnvironmentBinding,
+        kernel: EnvironmentKernel,
         *,
         system_message: SystemMessage,
     ) -> None:
         self._provider = provider
-        self._environment = environment
+        self._kernel = kernel
         self._history: list[ModelMessage] = [system_message]
 
     @property
@@ -68,5 +68,5 @@ class AgentLoop:
 
             results = []
             for tool_call in tool_calls:
-                results.append(await self._environment.dispatch(tool_call))
+                results.append(await self._kernel.dispatch(tool_call))
             self._history.append(ToolResultMessage(content=tuple(results)))

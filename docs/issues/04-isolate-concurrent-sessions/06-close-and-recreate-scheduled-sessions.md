@@ -15,8 +15,9 @@ Scheduler.
 
 Persistent Session cwd and environment mutation do not exist yet. Freshness in
 this milestone therefore means no old conversation, Scheduler, Handle, output,
-Cursor, or transient execution state is reused; filtered environment snapshots
-remain milestone 05 work.
+Cursor, or transient execution state is reused. Milestone 05 will initialize a
+fresh custom environment from `.workspace/env` and will discard any prior
+Session's in-memory `export` changes.
 
 ### Changes
 
@@ -52,8 +53,9 @@ remain milestone 05 work.
 的 Agent Loop 和 Environment Session，而不是重新连接已经关闭的 Scheduler。
 
 目前还没有持久化的 Session cwd 和环境变量修改。因而本 milestone 中的“全新”
-是指不复用旧 conversation、Scheduler、Handle、输出、Cursor 或瞬态执行状态；
-过滤后的环境快照仍属于 milestone 05。
+是指不复用旧 conversation、Scheduler、Handle、输出、Cursor 或瞬态执行状态。
+Milestone 05 将从 `.workspace/env` 初始化全新的自定义环境，并丢弃旧 Session
+在内存中的 `export` 修改。
 
 ### 变更
 

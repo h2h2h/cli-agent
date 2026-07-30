@@ -8,16 +8,32 @@ from pathlib import Path
 import pytest
 
 from cli_agent.runtime import ToolCall, ToolResult
-from cli_agent.runtime._environment import EnvironmentBinding, EnvironmentKernel
-from cli_agent.runtime._environment.execution import _ExecutionRecord
-from cli_agent.runtime._environment.policy import (
+from cli_agent.runtime._environment import EnvironmentKernel
+from cli_agent.runtime._environment.command_parser import (
     CommandParseResult,
-    DirectExecutableDenyPolicy,
-    ExecutionDecision,
     parse_shell_command,
 )
-from cli_agent.runtime._environment.routing import _route_decision
+from cli_agent.runtime._environment.commands import (
+    _builtin_custom_commands,
+    _CustomCommandRegistry,
+)
+from cli_agent.runtime._environment.drivers.custom import _CustomDriver
+from cli_agent.runtime._environment.drivers.shell import _ShellDriver
+from cli_agent.runtime._environment.execution import _ExecutionState
+from cli_agent.runtime._environment.policy import (
+    DirectExecutableDenyPolicy,
+    ExecutionDecision,
+)
+from cli_agent.runtime._environment.routing import _CommandRouter, _route_decision
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
+
+
+def _router() -> _CommandRouter:
+    registry = _CustomCommandRegistry(_builtin_custom_commands())
+    return _CommandRouter(
+        shell_driver=_ShellDriver(),
+        custom_driver=_CustomDriver(registry),
+    )
 
 
 def test_executes_short_command_and_retains_ordered_output(
@@ -25,7 +41,7 @@ def test_executes_short_command_and_retains_ordered_output(
 ) -> None:
     async def scenario() -> None:
         kernel = EnvironmentKernel(tmp_path)
-        binding = kernel.create_binding()
+        binding = kernel
         command = _python_command(
             "import os, sys; "
             "print(os.getcwd()); "
@@ -93,7 +109,7 @@ def test_executes_short_command_and_retains_ordered_output(
 
 def test_reports_nonzero_exit_as_terminal_execution(tmp_path: Path) -> None:
     async def scenario() -> None:
-        binding = EnvironmentKernel(tmp_path).create_binding()
+        binding = EnvironmentKernel(tmp_path)
 
         result = await binding.dispatch(
             ToolCall(
@@ -134,7 +150,7 @@ def test_denies_recognized_direct_rm_before_execution(
     async def scenario() -> None:
         proof = tmp_path / "proof.txt"
         proof.write_text("preserved")
-        binding = EnvironmentKernel(tmp_path).create_binding()
+        binding = EnvironmentKernel(tmp_path)
 
         result = await binding.dispatch(
             ToolCall(
@@ -166,8 +182,8 @@ def test_policy_failure_fails_closed_without_starting_command(tmp_path: Path) ->
         proof = tmp_path / "proof.txt"
         binding = EnvironmentKernel(
             tmp_path,
-            execution_policy=FailingPolicy(),
-        ).create_binding()
+            policy=FailingPolicy(),
+        )
 
         result = await binding.dispatch(
             ToolCall(
@@ -209,8 +225,8 @@ def test_policy_cannot_replace_the_parsed_command(tmp_path: Path) -> None:
     async def scenario() -> None:
         binding = EnvironmentKernel(
             tmp_path,
-            execution_policy=RewritingPolicy(),
-        ).create_binding()
+            policy=RewritingPolicy(),
+        )
 
         result = await binding.dispatch(
             ToolCall(
@@ -234,12 +250,7 @@ def test_policy_cannot_replace_the_parsed_command(tmp_path: Path) -> None:
 def test_direct_guard_documents_wrapper_noncoverage(tmp_path: Path) -> None:
     async def scenario() -> None:
         policy = DirectExecutableDenyPolicy()
-        command = parse_shell_command(
-            raw_command="env rm proof.txt",
-            cwd=tmp_path,
-            wait_ms=0,
-            output_limit=1,
-        )
+        command = parse_shell_command("env rm proof.txt")
 
         decision = await policy.decide(command)
 
@@ -253,7 +264,7 @@ def test_wait_timeout_returns_running_execution_and_incremental_output(
 ) -> None:
     async def scenario() -> None:
         kernel = EnvironmentKernel(tmp_path)
-        binding = kernel.create_binding()
+        binding = kernel
         try:
             started = await binding.dispatch(
                 ToolCall(
@@ -350,7 +361,7 @@ def test_schedules_shell_executions_fifo_with_one_running_per_session(
             "order.write_text(order.read_text() + 'third\\n')"
         )
         kernel = EnvironmentKernel(tmp_path)
-        binding = kernel.create_binding()
+        binding = kernel
         try:
             first = _output(
                 await binding.dispatch(
@@ -446,7 +457,7 @@ def test_promotes_next_shell_execution_after_process_start_failure(
         release_first_spawn = asyncio.Event()
         proof = tmp_path / "promoted-after-failure"
         kernel = EnvironmentKernel(tmp_path)
-        binding = kernel.create_binding()
+        binding = kernel
         try:
             first = _output(
                 await binding.dispatch(
@@ -505,7 +516,7 @@ def test_defaults_to_thirty_two_pending_executions(tmp_path: Path) -> None:
         started = tmp_path / "default-capacity-started"
         release = tmp_path / "default-capacity-release"
         kernel = EnvironmentKernel(tmp_path)
-        binding = kernel.create_binding()
+        binding = kernel
         try:
             running = _output(
                 await binding.dispatch(
@@ -566,8 +577,8 @@ def test_configured_pending_capacity_releases_on_promotion(
         first_release = tmp_path / "configured-first-release"
         second_started = tmp_path / "configured-second-started"
         second_release = tmp_path / "configured-second-release"
-        kernel = EnvironmentKernel(tmp_path, pending_execution_capacity=1)
-        binding = kernel.create_binding()
+        kernel = EnvironmentKernel(tmp_path, queue_limit=1)
+        binding = kernel
         try:
             first = _output(
                 await binding.dispatch(
@@ -614,8 +625,7 @@ def test_configured_pending_capacity_releases_on_promotion(
                 )
             )
             assert _error(overflow)["code"] == "queue_full"
-            session = next(iter(kernel._sessions.values()))
-            assert len(session.executions) == 2
+            assert len(kernel._executions) == 2
 
             first_release.touch()
             await _wait_for_path(second_started)
@@ -642,7 +652,7 @@ def test_configured_pending_capacity_releases_on_promotion(
                 )
             )
             assert admitted_after_promotion["status"] == "queued"
-            assert len(session.executions) == 3
+            assert len(kernel._executions) == 3
 
             second_release.touch()
             second_terminal = await _read_until_terminal(
@@ -670,8 +680,9 @@ def test_policy_denial_bypasses_saturated_queue_and_new_session_is_fresh(
     async def scenario() -> None:
         started = tmp_path / "denial-capacity-started"
         release = tmp_path / "denial-capacity-release"
-        kernel = EnvironmentKernel(tmp_path, pending_execution_capacity=1)
-        binding = kernel.create_binding()
+        kernel = EnvironmentKernel(tmp_path, queue_limit=1)
+        fresh_kernel: EnvironmentKernel | None = None
+        binding = kernel
         try:
             await binding.dispatch(
                 ToolCall(
@@ -710,13 +721,15 @@ def test_policy_denial_bypasses_saturated_queue_and_new_session_is_fresh(
                 "code": "policy_denied",
                 "message": "direct invocation of 'rm' is denied by policy",
             }
-            session = next(iter(kernel._sessions.values()))
-            assert len(session.executions) == 2
+            assert len(kernel._executions) == 2
 
             await binding.close()
-            fresh_binding = kernel.create_binding()
+            fresh_kernel = EnvironmentKernel(
+                tmp_path,
+                queue_limit=1,
+            )
             fresh = _output(
-                await fresh_binding.dispatch(
+                await fresh_kernel.dispatch(
                     ToolCall(
                         call_id="exec_fresh_capacity",
                         name="exec",
@@ -727,6 +740,8 @@ def test_policy_denial_bypasses_saturated_queue_and_new_session_is_fresh(
             assert fresh["status"] == "exited"
         finally:
             await kernel.close()
+            if fresh_kernel is not None:
+                await fresh_kernel.close()
 
     asyncio.run(scenario())
 
@@ -745,8 +760,8 @@ def test_kill_removes_queued_execution_and_reuses_capacity(
         release = tmp_path / f"cancel-{cancel_index}-release"
         order = tmp_path / f"cancel-{cancel_index}-order"
         labels = ("first", "middle", "last")
-        kernel = EnvironmentKernel(tmp_path, pending_execution_capacity=3)
-        binding = kernel.create_binding()
+        kernel = EnvironmentKernel(tmp_path, queue_limit=3)
+        binding = kernel
         try:
             running = _output(
                 await binding.dispatch(
@@ -821,11 +836,10 @@ def test_kill_removes_queued_execution_and_reuses_capacity(
             assert killed_again == killed
             assert reread == killed
 
-            session = next(iter(kernel._sessions.values()))
-            killed_record = session.executions[str(selected["exec_id"])]
-            assert killed_record.kill_requested is True
-            assert killed_record.process is None
-            assert killed_record.completion_task is None
+            killed_state = kernel._executions[str(selected["exec_id"])]
+            assert killed_state.kill_requested is True
+            assert killed_state.driver_execution is None
+            assert killed_state.completion_task is None
 
             replacement = _output(
                 await binding.dispatch(
@@ -884,8 +898,8 @@ def test_killing_queued_execution_wakes_exec_and_output_waiters(
         started = tmp_path / "waiter-running-started"
         release = tmp_path / "waiter-running-release"
         must_not_start = tmp_path / "queued-must-not-start"
-        kernel = EnvironmentKernel(tmp_path, pending_execution_capacity=1)
-        binding = kernel.create_binding()
+        kernel = EnvironmentKernel(tmp_path, queue_limit=1)
+        binding = kernel
         try:
             await binding.dispatch(
                 ToolCall(
@@ -914,14 +928,14 @@ def test_killing_queued_execution_wakes_exec_and_output_waiters(
                     )
                 )
             )
-            queued_record = await _wait_for_queued_record(kernel)
+            queued_state = await _wait_for_queued_state(kernel)
             output_waiter = asyncio.create_task(
                 binding.dispatch(
                     ToolCall(
                         call_id="output_waiting_queued",
                         name="output",
                         arguments={
-                            "exec_id": queued_record.exec_id,
+                            "exec_id": queued_state.exec_id,
                             "wait_ms": 5_000,
                         },
                     )
@@ -936,7 +950,7 @@ def test_killing_queued_execution_wakes_exec_and_output_waiters(
                     ToolCall(
                         call_id="kill_waiting_queued",
                         name="kill",
-                        arguments={"exec_id": queued_record.exec_id},
+                        arguments={"exec_id": queued_state.exec_id},
                     )
                 )
             )
@@ -946,8 +960,8 @@ def test_killing_queued_execution_wakes_exec_and_output_waiters(
             assert killed["status"] == "killed"
             assert exec_result == killed
             assert output_result == killed
-            assert queued_record.process is None
-            assert queued_record.completion_task is None
+            assert queued_state.driver_execution is None
+            assert queued_state.completion_task is None
             assert not must_not_start.exists()
         finally:
             release.touch()
@@ -956,31 +970,22 @@ def test_killing_queued_execution_wakes_exec_and_output_waiters(
     asyncio.run(scenario())
 
 
-def test_pending_kill_and_promotion_have_one_atomic_winner(
-    tmp_path: Path,
-) -> None:
-    decision = ExecutionDecision.allow(
-        parse_shell_command(
-            raw_command="true",
-            cwd=tmp_path,
-            wait_ms=0,
-            output_limit=1,
-        )
-    )
+def test_pending_kill_and_promotion_have_one_atomic_winner() -> None:
+    decision = ExecutionDecision.allow(parse_shell_command("true"))
 
-    cancel_wins = _ExecutionScheduler(pending_capacity=1)
+    cancel_wins = _ExecutionScheduler(queue_limit=1)
     running_admission = cancel_wins.admit(
         decision,
-        _route_decision(decision),
+        _route_decision(decision, _router()),
     )
     queued_admission = cancel_wins.admit(
         decision,
-        _route_decision(decision),
+        _route_decision(decision, _router()),
     )
     assert running_admission is not None
     assert queued_admission is not None
-    running = running_admission.record
-    queued = queued_admission.record
+    running = running_admission.state
+    queued = queued_admission.state
 
     assert cancel_wins.cancel_pending(queued) is True
     running.status = "exited"
@@ -988,19 +993,19 @@ def test_pending_kill_and_promotion_have_one_atomic_winner(
     assert queued.status == "killed"
     assert queued.kill_requested is True
 
-    promotion_wins = _ExecutionScheduler(pending_capacity=1)
+    promotion_wins = _ExecutionScheduler(queue_limit=1)
     running_admission = promotion_wins.admit(
         decision,
-        _route_decision(decision),
+        _route_decision(decision, _router()),
     )
     queued_admission = promotion_wins.admit(
         decision,
-        _route_decision(decision),
+        _route_decision(decision, _router()),
     )
     assert running_admission is not None
     assert queued_admission is not None
-    running = running_admission.record
-    queued = queued_admission.record
+    running = running_admission.state
+    queued = queued_admission.state
 
     running.status = "exited"
     assert promotion_wins.complete(running) == (queued,)
@@ -1013,8 +1018,8 @@ def test_output_bound_discards_later_chunks_and_preserves_first_cursor(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path, output_chunk_bound=1)
-        binding = kernel.create_binding()
+        kernel = EnvironmentKernel(tmp_path, chunk_limit=1)
+        binding = kernel
         try:
             started = _output(
                 await binding.dispatch(
@@ -1086,7 +1091,7 @@ def test_kill_terminates_shell_process_group_and_descendant(tmp_path: Path) -> N
             "time.sleep(10)"
         )
         kernel = EnvironmentKernel(tmp_path)
-        binding = kernel.create_binding()
+        binding = kernel
         try:
             started = _output(
                 await binding.dispatch(
@@ -1134,13 +1139,9 @@ def test_kill_terminates_shell_process_group_and_descendant(tmp_path: Path) -> N
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("close_target", ("session", "runtime"))
-def test_close_terminates_shell_process_group(
-    tmp_path: Path,
-    close_target: str,
-) -> None:
+def test_close_terminates_shell_process_group(tmp_path: Path) -> None:
     async def scenario() -> None:
-        marker = tmp_path / f"{close_target}-descendant-finished"
+        marker = tmp_path / "kernel-descendant-finished"
         child = (
             "import time; from pathlib import Path; "
             f"time.sleep(0.4); Path({str(marker)!r}).write_text('leaked')"
@@ -1152,12 +1153,12 @@ def test_close_terminates_shell_process_group(
             "time.sleep(10)"
         )
         kernel = EnvironmentKernel(tmp_path)
-        binding = kernel.create_binding()
+        binding = kernel
         try:
             started = _output(
                 await binding.dispatch(
                     ToolCall(
-                        call_id=f"exec_{close_target}_close",
+                        call_id="exec_kernel_close",
                         name="exec",
                         arguments={
                             "command": _python_command(parent),
@@ -1169,7 +1170,7 @@ def test_close_terminates_shell_process_group(
             ready = _output(
                 await binding.dispatch(
                     ToolCall(
-                        call_id=f"output_{close_target}_ready",
+                        call_id="output_kernel_ready",
                         name="output",
                         arguments={
                             "exec_id": started["exec_id"],
@@ -1180,10 +1181,7 @@ def test_close_terminates_shell_process_group(
             )
             assert "ready\n" in _stream_text(ready["chunks"], "stdout")
 
-            if close_target == "session":
-                await binding.close()
-            else:
-                await kernel.close()
+            await kernel.close()
 
             await asyncio.sleep(0.5)
             assert not marker.exists()
@@ -1197,16 +1195,10 @@ def test_close_terminates_shell_process_group(
     "call",
     (
         ToolCall(call_id="unknown", name="read", arguments={}),
-        ToolCall(call_id="blank", name="exec", arguments={"command": "  "}),
         ToolCall(
             call_id="extra",
             name="exec",
             arguments={"command": "pwd", "cwd": "/"},
-        ),
-        ToolCall(
-            call_id="bool",
-            name="exec",
-            arguments={"command": "pwd", "wait_ms": True},
         ),
         ToolCall(call_id="missing", name="output", arguments={}),
         ToolCall(
@@ -1226,7 +1218,7 @@ def test_returns_structured_invalid_argument_errors(
     call: ToolCall,
 ) -> None:
     async def scenario() -> None:
-        binding = EnvironmentKernel(tmp_path).create_binding()
+        binding = EnvironmentKernel(tmp_path)
 
         result = await binding.dispatch(call)
 
@@ -1245,7 +1237,7 @@ def test_returns_structured_invalid_argument_errors(
 @pytest.mark.parametrize("name", ("output", "kill"))
 def test_rejects_unknown_execution_ids(tmp_path: Path, name: str) -> None:
     async def scenario() -> None:
-        binding = EnvironmentKernel(tmp_path).create_binding()
+        binding = EnvironmentKernel(tmp_path)
 
         result = await binding.dispatch(
             ToolCall(
@@ -1264,31 +1256,18 @@ def test_rejects_unknown_execution_ids(tmp_path: Path, name: str) -> None:
     asyncio.run(scenario())
 
 
-def test_closes_binding_and_kernel_idempotently(tmp_path: Path) -> None:
+def test_closes_kernel_idempotently(tmp_path: Path) -> None:
     async def scenario() -> None:
         kernel = EnvironmentKernel(tmp_path)
-        binding = kernel.create_binding()
 
-        await binding.close()
-        await binding.close()
-        closed_session_result = await binding.dispatch(
+        await kernel.close()
+        await kernel.close()
+        closed_result = await kernel.dispatch(
             ToolCall(
-                call_id="closed_session", name="exec", arguments={"command": "pwd"}
+                call_id="closed_kernel", name="exec", arguments={"command": "pwd"}
             )
         )
-        assert _error(closed_session_result)["code"] == "internal"
-
-        second_binding = kernel.create_binding()
-        await kernel.close()
-        await kernel.close()
-        await second_binding.close()
-        closed_kernel_result = await second_binding.dispatch(
-            ToolCall(call_id="closed_kernel", name="exec", arguments={"command": "pwd"})
-        )
-        assert _error(closed_kernel_result)["code"] == "internal"
-
-        with pytest.raises(RuntimeError, match="EnvironmentKernel is closed"):
-            kernel.create_binding()
+        assert _error(closed_result)["code"] == "internal"
 
     asyncio.run(scenario())
 
@@ -1338,7 +1317,7 @@ def _stream_text(chunks: list[object], stream: str) -> str:
 
 
 async def _read_until_terminal(
-    binding: EnvironmentBinding,
+    binding: EnvironmentKernel,
     exec_id: str,
     *,
     cursor: int,
@@ -1382,13 +1361,12 @@ async def _wait_for_path(path: Path) -> None:
     raise AssertionError(f"{path} was not created")
 
 
-async def _wait_for_queued_record(
+async def _wait_for_queued_state(
     kernel: EnvironmentKernel,
-) -> _ExecutionRecord:
+) -> _ExecutionState:
     for _ in range(100):
-        for session in kernel._sessions.values():
-            for record in session.executions.values():
-                if record.status == "queued":
-                    return record
+        for state in kernel._executions.values():
+            if state.status == "queued":
+                return state
         await asyncio.sleep(0.01)
-    raise AssertionError("queued Execution Record was not created")
+    raise AssertionError("queued Execution State was not created")

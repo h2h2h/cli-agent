@@ -15,28 +15,36 @@ active when the Tool Driver is introduced.
 The accepted scheduling context is documented in
 [`../discussions/driver-aware-execution-scheduler.md`](../discussions/driver-aware-execution-scheduler.md).
 
-A Session cwd/environment read-write barrier is deferred. The current Shell
-Driver starts an independent child shell for each Execution from the
-Runtime-selected Workspace cwd and process environment. A `cd` or `export`
-inside that child affects only that child process and does not mutate persistent
-Session state. Until persistent Session cwd or environment mutation exists,
-adding generations, immutable state snapshots, reader/writer coordination, or
-state barriers would protect state that the Runtime does not yet expose.
+A general Session cwd/environment read-write barrier remains deferred. The
+current Shell Driver starts an independent child shell for each Execution from
+the Runtime-selected Workspace cwd and process environment.
 
-While this is deferred:
+Milestone 05 deliberately adds one narrower exception modeled on AEP: a direct
+top-level `export KEY=VALUE ...` command mutates the current Environment
+Session's in-memory custom environment in the serial Shell lane. A standalone
+`cd` and an `export` nested inside another shell expression still affect only
+that child process.
 
-- the Runtime must not claim that a standalone `cd` or `export` persists across
-  Executions;
+While the general barrier is deferred:
+
+- the Runtime must not claim that a standalone `cd` or a nested Shell `export`
+  persists across Executions;
+- only the reserved top-level export grammar mutates Session state;
+- Shell-lane FIFO guarantees that a later Shell Execution sees a completed
+  earlier export;
+- each Shell Execution binds `dict(os.environ) | session.env` when it starts;
 - Shell Executions remain serial within one Session;
+- future Drivers in other lanes receive no global ordering guarantee relative
+  to a Shell-lane export unless a later milestone introduces one;
 - Tool concurrency must not infer safety from Agent-authored Tool metadata;
 - `output` and `kill` continue to address Session-private Execution records
   outside normal execution admission.
 
-Revisit the barrier before adding any operation that persistently mutates
-Session cwd or environment, or before concurrent Drivers consume mutable
-Session state. That design must decide and test:
+Revisit the barrier before adding persistent Session cwd mutation, broader
+Shell-state emulation, or a cross-lane ordering guarantee for mutable Session
+state. That design must decide and test:
 
-- when an Execution binds an immutable cwd/environment snapshot;
+- when a non-Shell Execution binds current cwd and Session environment state;
 - whether state mutations wait for earlier Executions to finish or only for
   earlier state snapshots to be bound;
 - how later Executions are prevented from overtaking a state mutation;

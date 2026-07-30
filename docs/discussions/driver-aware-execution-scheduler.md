@@ -1,6 +1,7 @@
 # Driver-aware per-Session Execution Scheduler
 
-Status: Accepted for specification on 2026-07-28.
+Status: superseded on 2026-07-29 by
+[AEP-aligned Custom dispatch and ordered parallel scheduling](./aep-aligned-custom-dispatch-and-parallel-scheduling.md).
 
 ## Question
 
@@ -175,15 +176,15 @@ the initial results and constructs one `ToolResultMessage` in original call
 order, regardless of completion order.
 
 `output` and `kill` do not enter normal execution admission. They address
-Session-private Execution Records directly through the Execution Supervisor.
+Session-private Execution States directly through the Session Kernel.
 
 ## Lifecycle
 
 - Killing a pending Execution removes it and marks it killed.
 - Killing a running Execution delegates cancellation to its Driver and releases
   its lane capacity after cleanup.
-- Session close cancels every pending Execution and asks the shared Execution
-  Supervisor to clean up all running Driver resources.
+- Session close cancels every pending Execution and asks its Kernel to clean up
+  all running Driver resources.
 - Runtime close performs the same operation for every Session.
 - Foreign and nonexistent Handles return the same not-found result.
 
