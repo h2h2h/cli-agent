@@ -316,8 +316,8 @@ class _ExecutionApprovalGate:
         timeout_seconds: float = _DEFAULT_APPROVAL_TIMEOUT_SECONDS,
     ) -> None:
         self._approver = approver
-        self._capacity = _validate_approval_capacity(capacity)
-        self._timeout_seconds = _validate_approval_timeout(timeout_seconds)
+        self._capacity = capacity
+        self._timeout_seconds = timeout_seconds
         self._active = 0
         self._lock = asyncio.Lock()
 
@@ -382,19 +382,3 @@ class _ExecutionApprovalGate:
         finally:
             async with self._lock:
                 self._active -= 1
-
-
-def _validate_approval_capacity(value: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ValueError("pending approval capacity must be an integer >= 1")
-    return value
-
-
-def _validate_approval_timeout(value: float) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or value <= 0
-    ):
-        raise ValueError("approval timeout must be a number > 0")
-    return float(value)

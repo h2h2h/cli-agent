@@ -52,8 +52,6 @@ from cli_agent.runtime._environment.scheduler import (
     _DEFAULT_PARALLEL_LIMIT,
     _DEFAULT_QUEUE_LIMIT,
     _ExecutionScheduler,
-    _validate_parallel_limit,
-    _validate_queue_limit,
 )
 from cli_agent.runtime._tool_catalog import _ToolCatalog
 from cli_agent.runtime._tool_commands import _ToolCommandClassifier
@@ -149,9 +147,6 @@ class EnvironmentKernel:
         self._policy = ExecutablePolicy() if policy is None else policy
         self._approval_gate = approval_gate
         self._approval_session_id = approval_session_id
-        queue_limit = _validate_queue_limit(queue_limit)
-        parallel_limit = _validate_parallel_limit(parallel_limit)
-        tool_parallel_limit = _validate_parallel_limit(tool_parallel_limit)
         self._chunk_limit = chunk_limit
         self._byte_limit = byte_limit
         registry = (
@@ -167,7 +162,7 @@ class EnvironmentKernel:
                 if tool_catalog is not None and tool_environment is not None
                 else None
             ),
-            parallel_shell_commands=frozenset(parallel_commands or ()),
+            parallel_commands=frozenset(parallel_commands or ()),
             parallel_tools=frozenset(parallel_tools or ()),
         )
         self._parser = ShlexCommandParser()

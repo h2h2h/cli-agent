@@ -175,7 +175,6 @@ def test_public_runtime_proves_concurrent_session_scheduling(
         runtime = await AgentRuntime.open(
             workspace=tmp_path,
             provider=default_provider,
-            pending_execution_capacity=1,
         )
         turn_a: asyncio.Task[tuple[ModelEvent, ...]] | None = None
         turn_b: asyncio.Task[tuple[ModelEvent, ...]] | None = None
@@ -216,11 +215,11 @@ def test_public_runtime_proves_concurrent_session_scheduling(
             initial_b = provider_b.initial_results
             foreign_a = provider_a.foreign_results
 
-            assert [_result_status(result) for result in initial_a[:2]] == [
+            assert [_result_status(result) for result in initial_a[:3]] == [
                 "running",
                 "queued",
+                "queued",
             ]
-            assert _result_error_code(initial_a[2]) == "queue_full"
             assert _result_error_code(initial_a[3]) == "policy_denied"
             assert [_result_status(result) for result in initial_b] == [
                 "running",

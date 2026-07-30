@@ -47,12 +47,12 @@ class _CommandRouter:
         shell_driver: _ExecutionDriver,
         custom_driver: _CustomDriver,
         tool_driver: _ToolDriver | None = None,
-        parallel_shell_commands: frozenset[str] = frozenset(),
+        parallel_commands: frozenset[str] = frozenset(),
         parallel_tools: frozenset[str] = frozenset(),
     ) -> None:
         invalid = sorted(
             name
-            for name in parallel_shell_commands
+            for name in parallel_commands
             if not name or name.strip() != name or "/" in name or "\\" in name
         )
         if invalid:
@@ -62,7 +62,7 @@ class _CommandRouter:
         self._shell_driver = shell_driver
         self._custom_driver = custom_driver
         self._tool_driver = tool_driver
-        self._parallel_shell_commands = parallel_shell_commands
+        self._parallel_commands = parallel_commands
         self._parallel_tools = parallel_tools
 
     def route(self, decision: ExecutionDecision) -> _ExecutionRoute:
@@ -125,7 +125,7 @@ class _CommandRouter:
     ) -> _SchedulingClass:
         if (
             command.tokenization_succeeded
-            and command.executable_basename in self._parallel_shell_commands
+            and command.executable_basename in self._parallel_commands
             and not command.contains_shell_composition
         ):
             return _SchedulingClass.PARALLEL_SAFE

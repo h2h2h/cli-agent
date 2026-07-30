@@ -49,7 +49,7 @@ def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> No
     router = _CommandRouter(
         shell_driver=_ShellDriver(),
         custom_driver=_CustomDriver(registry),
-        parallel_shell_commands=frozenset({"cat"}),
+        parallel_commands=frozenset({"cat"}),
     )
 
     export_route = router.route(

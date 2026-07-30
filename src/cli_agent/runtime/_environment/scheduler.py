@@ -17,18 +17,6 @@ _DEFAULT_QUEUE_LIMIT = 32
 _DEFAULT_PARALLEL_LIMIT = 4
 
 
-def _validate_queue_limit(value: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ValueError("pending_execution_capacity must be an integer >= 1")
-    return value
-
-
-def _validate_parallel_limit(value: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ValueError("parallel_execution_capacity must be an integer >= 1")
-    return value
-
-
 @dataclass(frozen=True, slots=True)
 class _SchedulerAdmission:
     state: _ExecutionState
@@ -40,13 +28,13 @@ class _ExecutionScheduler:
 
     def __init__(
         self,
-        queue_limit: int,
+        queue_limit: int = _DEFAULT_QUEUE_LIMIT,
         parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
         tool_parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
     ) -> None:
-        self._queue_limit = _validate_queue_limit(queue_limit)
-        self._parallel_limit = _validate_parallel_limit(parallel_limit)
-        self._tool_parallel_limit = _validate_parallel_limit(tool_parallel_limit)
+        self._queue_limit = queue_limit
+        self._parallel_limit = parallel_limit
+        self._tool_parallel_limit = tool_parallel_limit
         self._next_submission_sequence = 0
         self._pending: list[_ExecutionState] = []
         self._running: dict[str, _ExecutionState] = {}

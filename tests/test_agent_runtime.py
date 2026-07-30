@@ -61,17 +61,17 @@ def test_closes_runtime_context_manager(tmp_path: Path, monkeypatch) -> None:
     )
 
     async def scenario() -> None:
-        opener = AgentRuntime.open(
+        runtime = await AgentRuntime.open(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
         )
-        async with opener as runtime:
+        async with runtime:
             assert not runtime.closed
 
         assert runtime.closed
         assert _TrackingEnvironmentKernel.instances == []
         with pytest.raises(RuntimeClosedError, match="AgentRuntime is closed"):
-            async with opener:
+            async with runtime:
                 pass
 
     asyncio.run(scenario())
@@ -106,7 +106,7 @@ def test_host_configures_runtime_lifetime_executable_deny_set(
     )
 
     async def scenario() -> None:
-        async with AgentRuntime.open(
+        async with await AgentRuntime.open(
             workspace=tmp_path,
             provider=provider,
             execution_policy=ExecutablePolicy(
@@ -128,7 +128,7 @@ def test_host_configures_runtime_lifetime_executable_deny_set(
     asyncio.run(scenario())
 
 
-def test_passes_default_and_configured_limits_to_kernel(
+def test_passes_parallel_authorization_to_kernel(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -153,10 +153,7 @@ def test_passes_default_and_configured_limits_to_kernel(
         configured_runtime = await AgentRuntime.open(
             workspace=tmp_path,
             provider=configured_provider,
-            pending_execution_capacity=7,
-            parallel_execution_capacity=3,
-            parallel_tool_execution_capacity=2,
-            parallel_shell_commands=frozenset({"cat", "rg"}),
+            parallel_commands=frozenset({"cat", "rg"}),
             parallel_tools=frozenset({"search", "fetch"}),
         )
         await _collect_turn(
@@ -171,21 +168,9 @@ def test_passes_default_and_configured_limits_to_kernel(
         )
 
         assert [
-            kernel.queue_limit
-            for kernel in _TrackingEnvironmentKernel.instances
-        ] == [32, 7]
-        assert [
-            kernel.parallel_limit
-            for kernel in _TrackingEnvironmentKernel.instances
-        ] == [4, 3]
-        assert [
             kernel.parallel_commands
             for kernel in _TrackingEnvironmentKernel.instances
         ] == [frozenset(), frozenset({"cat", "rg"})]
-        assert [
-            kernel.tool_parallel_limit
-            for kernel in _TrackingEnvironmentKernel.instances
-        ] == [4, 2]
         assert [
             kernel.parallel_tools
             for kernel in _TrackingEnvironmentKernel.instances
@@ -201,101 +186,18 @@ def test_passes_default_and_configured_limits_to_kernel(
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize(
-    "capacity",
-    (True, False, 0, -1, 1.5, "2", None),
-)
-def test_rejects_invalid_pending_capacity_before_opening_environment(
+def test_rejects_invalid_parallel_tool_names_before_opening_environment(
     tmp_path: Path,
-    monkeypatch,
-    capacity: object,
 ) -> None:
-    _TrackingEnvironmentKernel.instances.clear()
-    monkeypatch.setattr(
-        runtime_module,
-        "EnvironmentKernel",
-        _TrackingEnvironmentKernel,
-    )
-
     with pytest.raises(
         ValueError,
-        match="pending_execution_capacity must be an integer >= 1",
+        match="parallel Tool names must be non-keyword Python identifiers",
     ):
         AgentRuntime.open(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            pending_execution_capacity=capacity,  # type: ignore[arg-type]
+            parallel_tools=frozenset({"class"}),
         )
-
-    assert _TrackingEnvironmentKernel.instances == []
-
-
-@pytest.mark.parametrize(
-    ("argument", "value", "message"),
-    (
-        (
-            "parallel_tool_execution_capacity",
-            0,
-            "parallel_execution_capacity must be an integer >= 1",
-        ),
-        (
-            "parallel_tools",
-            frozenset({"class"}),
-            "parallel Tool names must be non-keyword Python identifiers",
-        ),
-    ),
-)
-def test_rejects_invalid_tool_parallel_configuration(
-    tmp_path: Path,
-    argument: str,
-    value: object,
-    message: str,
-) -> None:
-    with pytest.raises(ValueError, match=message):
-        AgentRuntime.open(
-            workspace=tmp_path,
-            provider=ScriptedModelProvider(script=()),
-            **{argument: value},
-        )
-
-
-@pytest.mark.parametrize(
-    ("argument", "value", "message"),
-    (
-        (
-            "pending_approval_capacity",
-            0,
-            "pending approval capacity must be an integer >= 1",
-        ),
-        (
-            "approval_timeout_seconds",
-            0,
-            "approval timeout must be a number > 0",
-        ),
-    ),
-)
-def test_rejects_invalid_approval_limits_before_opening_environment(
-    tmp_path: Path,
-    monkeypatch,
-    argument: str,
-    value: object,
-    message: str,
-) -> None:
-    _TrackingEnvironmentKernel.instances.clear()
-    monkeypatch.setattr(
-        runtime_module,
-        "EnvironmentKernel",
-        _TrackingEnvironmentKernel,
-    )
-
-    with pytest.raises(ValueError, match=message):
-        AgentRuntime.open(
-            workspace=tmp_path,
-            provider=ScriptedModelProvider(script=()),
-            **{argument: value},
-        )
-
-    assert _TrackingEnvironmentKernel.instances == []
 
 
 def test_cleans_up_environment_when_open_fails(
@@ -557,9 +459,6 @@ class _TrackingEnvironmentKernel:
         tool_environment: object,
         approval_gate: object,
         approval_session_id: str,
-        queue_limit: int,
-        parallel_limit: int,
-        tool_parallel_limit: int,
         parallel_commands: frozenset[str],
         parallel_tools: frozenset[str],
     ) -> None:
@@ -571,9 +470,6 @@ class _TrackingEnvironmentKernel:
         self.tool_environment = tool_environment
         self.approval_gate = approval_gate
         self.approval_session_id = approval_session_id
-        self.queue_limit = queue_limit
-        self.parallel_limit = parallel_limit
-        self.tool_parallel_limit = tool_parallel_limit
         self.parallel_commands = parallel_commands
         self.parallel_tools = parallel_tools
         self.close_count = 0

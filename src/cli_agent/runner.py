@@ -31,7 +31,7 @@ async def run_agent(
 
     session_id = uuid4().hex
 
-    async with AgentRuntime.open(
+    async with await AgentRuntime.open(
         workspace=config.workspace,
         repertoire=config.repertoire,
         provider=provider,

@@ -166,7 +166,7 @@ def test_runs_an_openai_compatible_tool_round_trip(
     follow_up = UserMessage.text("Confirm the previous result is in History.")
 
     async def scenario() -> None:
-        async with AgentRuntime.open(
+        async with await AgentRuntime.open(
             workspace=tmp_path,
             provider=provider,
         ) as runtime:

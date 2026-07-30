@@ -76,7 +76,7 @@ def test_runs_the_smallest_deterministic_agent_loop(
     )
 
     async def scenario() -> None:
-        async with AgentRuntime.open(
+        async with await AgentRuntime.open(
             workspace=tmp_path,
             provider=provider,
         ) as runtime:
