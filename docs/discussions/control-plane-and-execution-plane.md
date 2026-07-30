@@ -15,14 +15,22 @@ This discussion records the rationale that was accepted for incorporation into
 the architecture specification. Where it differs from the normative
 architecture decision or RFC, those later records govern.
 
+[RFC-0001: Host-mediated execution approval](../rfcs/approved/RFC-0001-host-mediated-execution-approval.md)
+supersedes this discussion's immediate-only `ALLOW` / `DENY` Policy and its
+planned Agent-visible managed Workspace command grammar. Policy evaluation now
+supports `ALLOW`, `DENY`, and `ASK`; only a final allow-only
+`ExecutionDecision` may cross into routing and admission. Ordinary Workspace
+file mutations remain CLI operations, so optimistic conflict detection is not
+promised for arbitrary Shell writes.
+
 ## Question
 
 cli-agent is converging on one CLI-shaped environment surface:
 
 - the model submits commands through `exec`;
 - `output` and `kill` address accepted work through an Execution Handle;
-- Shell commands, built-in Tool commands, and managed Workspace commands use
-  different internal mechanisms while sharing one Execution lifecycle.
+- Shell commands and built-in Tool commands use different internal mechanisms
+  while sharing one Execution lifecycle.
 
 That common entry point is also the natural place to decide whether work may
 start. How should command routing, permission policy, immutable planning, and
@@ -45,10 +53,11 @@ Introduce two logical planes inside `EnvironmentKernel`:
 
 The boundary between the planes is an allowed immutable `ExecutionDecision`.
 
-The first implementation has only a Shell driver and a small host-owned
-`ExecutionPolicy`. That policy supports immediate `ALLOW` or `DENY` decisions
-and denies recognized direct invocations of configured executable names,
-initially including `rm`.
+The current implementation has a Shell driver and a small Host-owned
+`ExecutionPolicy`. Policy evaluates `ALLOW`, `DENY`, or `ASK`; `ASK` must be
+resolved by the Host before a final allow-only Decision exists. The default
+asks for a narrow set of recognized direct filesystem mutators and otherwise
+allows.
 
 This first policy is a command-admission guardrail. It is not a claim that the
 Runtime can detect or prevent every operation that deletes files, and it does
@@ -138,34 +147,32 @@ eventual side effects: arbitrary Shell commands and executable Tools can
 compute behavior dynamically. Parsing must not start a process, mutate the
 Workspace, import and execute a Tool, or allocate an Execution Handle.
 
-The first Policy intentionally uses only the executable basename. After an
-allowed Decision, the Router selects a Runtime-trusted lane and Driver. A
-future Policy that independently authorizes structured Tool or managed
+The first Policy intentionally uses only the executable basename. After a
+final allowed Decision, the Router selects a Runtime-trusted scheduling class
+and Driver. A future Policy that independently authorizes structured Tool
 operations must move their trusted semantic recognition before that Policy
 without changing the execution-plane contracts below.
 
-### ExecutionDecision
+### PolicyEvaluation and ExecutionDecision
 
-The first version has two decisions:
+Policy has three read-only evaluations:
 
 ```text
 ALLOW
 DENY
+ASK
 ```
 
-A denial contains a stable rule identifier and a safe reason suitable for the
-model-visible `policy_denied` error. Detailed Host diagnostics may contain more
-context but must not expose secrets.
+A denial or ask contains a stable rule identifier and a safe reason. `ASK`
+enters the bounded Host approval gate; it is not an Execution Decision and
+receives no Handle or Scheduler entry.
 
-An allowed `ExecutionDecision` contains the exact `CommandParseResult`, policy
-rule identifier, and any execution constraints selected by policy. It is the
-immutable authorization boundary: the execution plane must perform that exact
-decision and must not re-parse, substitute, or silently rewrite its command.
-A Decision for command A cannot be reused to execute command B.
-
-`ASK` is deferred until the Host callback, cancellation, timeout, and approval
-record semantics are designed. Adding `ASK` later must not add another
-model-visible syscall.
+A final allow-only `ExecutionDecision` contains the exact
+`CommandParseResult`, policy rule identifier, and optional one-time approval
+request identifier. It is the immutable authorization boundary: the execution
+plane must perform that exact decision and must not re-parse, substitute, or
+silently rewrite its command. A Decision for command A cannot be reused to
+execute command B.
 
 ### Execution
 
@@ -192,18 +199,18 @@ The control plane is read-only with respect to the requested operation until
 authorization succeeds. Its pipeline is:
 
 ```text
-parse -> decide -> route -> execute
+parse -> evaluate -> optional Host approval -> decide -> route -> execute
 ```
 
-`parse` produces `CommandParseResult`; `decide` produces an immutable
-`ExecutionDecision`; only an allowed Decision may be routed and admitted.
+`parse` produces `CommandParseResult`; evaluation produces `ALLOW`, `DENY`, or
+`ASK`; only an allowed evaluation or Host-approved ask produces the immutable
+`ExecutionDecision` that may be routed and admitted.
 
 ### Command routing
 
 Routing selects an internal command category:
 
 - ordinary commands use the Shell driver;
-- reserved managed Workspace commands later use a managed-command driver;
 - reserved `tools` commands later use a Tool driver.
 
 Milestone 03 does not require a general routing registry. With only the Shell
@@ -219,25 +226,24 @@ admission boundary. The Agent and Workspace may observe a safe denial reason
 but cannot modify or relax the effective policy.
 
 The effective policy is selected when the Runtime opens and remains fixed for
-that Runtime lifetime. The Runtime default is the direct dangerous-command
-guard below with `rm` in its deny set. An embedding Host may deliberately
-replace that default policy at open time; neither an Agent request nor a
+that Runtime lifetime. The Runtime default asks for a narrow set of recognized
+direct filesystem mutators and otherwise allows. An embedding Host may
+deliberately replace that policy at open time; neither an Agent request nor a
 Workspace mutation can do so.
 
 Conceptually:
 
 ```python
 class ExecutionPolicy(Protocol):
-    async def decide(
+    async def evaluate(
         self,
         command: CommandParseResult,
-        context: AuthorizationContext,
-    ) -> ExecutionDecision: ...
+    ) -> PolicyEvaluation: ...
 ```
 
-The interface may be asynchronous from the beginning so a later Host approval
-adapter does not require moving the enforcement seam. The first implementation
-returns immediately.
+The Policy evaluation and Host approver interfaces are asynchronous. Approval
+has a Runtime-wide active capacity and finite timeout and remains outside
+Execution admission.
 
 Policy rules should target stable operation facts where available:
 
@@ -246,9 +252,6 @@ shell.execute
 tool.list
 tool.inspect
 tool.run
-workspace.read
-workspace.write
-workspace.remove
 ```
 
 Rules may later constrain executable name, Tool name, Capability Provenance,
@@ -257,9 +260,10 @@ Managed Path, network profile, or other planned capabilities.
 ### Admission invariants
 
 1. No requested side effect occurs before `ALLOW`.
-2. `DENY` returns `policy_denied` without an `exec_id` or queue entry.
+2. `DENY` and unresolved or rejected `ASK` return `policy_denied` without an
+   `exec_id` or queue entry.
 3. A policy error fails closed and emits a safe internal diagnostic.
-4. Policy allows or denies; it never silently rewrites the requested command.
+4. Policy and approval never silently rewrite the requested command.
 5. The admitted Decision is the same Decision passed to the execution plane.
 6. Every driver is reachable only after the common policy gate.
 7. Session close, Runtime close, cancellation, and forced cleanup never require
@@ -322,14 +326,15 @@ Driver-specific fields do not leak into the Execution State or
 MCP Tools continue through the Tool driver. They do not introduce an
 MCP-specific execution or permission path.
 
-## First policy: direct dangerous-command guard
+## Executable-name policy
 
-The first policy is deliberately small. It denies positively recognized direct
-invocations whose executable basename is in a Host-configured deny set. The
-initial set includes:
+The first policy is deliberately small. It evaluates positively recognized
+direct invocations using disjoint Host-configured allow, deny, and ask sets
+plus one default action. The built-in ask set includes:
 
 ```text
-rm
+chmod  chown  cp  dd  install  ln  mkdir  mv
+patch  rm  rmdir  tee  touch  truncate  unlink
 ```
 
 Additional names such as `rmdir` or `unlink` may be configured after their
@@ -338,9 +343,9 @@ desired compatibility impact is decided.
 Minimum examples:
 
 ```text
-rm file                  -> DENY
-rm -rf build             -> DENY
-/bin/rm file             -> DENY
+rm file                  -> ASK
+rm -rf build             -> ASK
+/bin/rm file             -> ASK
 pytest -q                -> ALLOW
 ```
 
@@ -427,7 +432,7 @@ status.
 Control plane:
 
 - parse validated `exec` arguments into one Shell-only `CommandParseResult`;
-- call the immediate `ExecutionPolicy.decide`;
+- call the immediate `ExecutionPolicy.evaluate`;
 - return `policy_denied` for recognized denied commands;
 - return an allowed immutable `ExecutionDecision`;
 - pass only that Decision to the execution plane.
@@ -470,14 +475,15 @@ sandbox, persistent audit store, or public driver protocol in milestone 03.
   Provider credentials, is an accepted AEP-compatibility trade-off rather than
   a Secret-isolation guarantee.
 
-### Milestone 06: managed Workspace commands
+### Milestone 06: Host-mediated execution approval
 
-- define structured managed-command parse facts;
-- authorize `workspace.read`, `workspace.write`, and `workspace.remove`
-  independently;
-- evaluate Managed Paths before admission;
-- keep optimistic version comparison and mutation atomic inside the driver;
-- retain the distinction between managed guarantees and arbitrary Shell writes.
+- evaluate `ALLOW`, `DENY`, or `ASK`;
+- resolve `ASK` through a bounded Runtime-wide Host approver;
+- keep unresolved approvals outside Execution and Scheduler capacity;
+- cancel Session-owned approval waits during Session close;
+- provide an allow-once Reference CLI prompt;
+- leave ordinary Agent file mutations as Shell commands without optimistic
+  conflict guarantees.
 
 ### Milestone 10: Tool commands
 
@@ -493,11 +499,10 @@ sandbox, persistent audit store, or public driver protocol in milestone 03.
 
 ### Later work
 
-Only after the immediate allow/deny seam is proven:
+Possible later extensions:
 
 - structured Shell AST and wrapper analysis;
 - risk categories;
-- `ASK` with Host approval callbacks;
 - immutable approval records;
 - sandbox profiles and resource limits;
 - semantic failure categories;
@@ -505,7 +510,7 @@ Only after the immediate allow/deny seam is proven:
 - persisted output Artifacts and retention;
 - event-driven completion notifications.
 
-## Acceptance criteria for the first version
+## Historical acceptance criteria for the immediate-only first version
 
 1. Every `exec` request passes the common policy gate before process creation.
 2. A recognized direct `rm` invocation returns `policy_denied`.

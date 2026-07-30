@@ -53,6 +53,38 @@ commands can inspect or emit `CLI_AGENT_API_KEY` and any other exported value.
 Run the complete Runtime inside an external sandbox when that exposure is not
 acceptable.
 
+## Execution approval
+
+The default Runtime Policy asks the Host to approve recognized direct
+filesystem-mutating commands:
+
+```text
+chmod  chown  cp  dd  install  ln  mkdir  mv
+patch  rm  rmdir  tee  touch  truncate  unlink
+```
+
+Other executable names are allowed by default. The Reference CLI displays the
+exact command and reason on stderr:
+
+```text
+[approval] direct invocation of 'rm' requires Host approval
+  command: rm report.txt
+Allow once? [y/N]
+```
+
+Only `y` or `yes` allows that command once. Every other response, EOF, timeout,
+missing approver, callback failure, or invalid response fails closed without
+creating an Execution. An unresolved approval does not receive an `exec_id` or
+consume Execution queue capacity.
+
+Embedding Hosts can supply an `ExecutablePolicy` with disjoint allow, deny, and
+ask executable-name sets, a default `PolicyAction`, and an asynchronous
+`ExecutionApprover` through `AgentRuntime.open`. Executable-name inspection is
+a narrow admission guardrail: wrappers, scripts, interpreters, and arbitrary
+programs can perform effects that are not visible from the first executable
+name. It is not an operating-system sandbox or comprehensive modification
+detector.
+
 ## Workspace and Session environment
 
 `.workspace/env` is a dotenv file containing persistent Workspace custom

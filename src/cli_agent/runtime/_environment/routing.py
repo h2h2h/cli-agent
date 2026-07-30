@@ -54,9 +54,9 @@ class _CommandRouter:
         self._parallel_shell_commands = parallel_shell_commands
 
     def route(self, decision: ExecutionDecision) -> _ExecutionRoute:
-        """Resolve one allowed decision without performing its operation."""
+        """Resolve one final decision without performing its operation."""
 
-        command = _allowed_command(decision)
+        command = decision.parse_result
         custom = self._custom_driver.resolve(command)
         if custom is not None:
             return _ExecutionRoute(
@@ -95,9 +95,3 @@ def _route_decision(
     """Compatibility entrypoint for the Kernel's linear control path."""
 
     return router.route(decision)
-
-
-def _allowed_command(decision: ExecutionDecision) -> CommandParseResult:
-    if not decision.allowed:
-        raise RuntimeError("execution plane received a denied decision")
-    return decision.parse_result

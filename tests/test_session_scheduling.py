@@ -7,7 +7,7 @@ from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.command_parser import CommandParseResult
 from cli_agent.runtime._environment.execution import _ExecutionState
-from cli_agent.runtime._environment.policy import ExecutionDecision
+from cli_agent.runtime._environment.policy import PolicyEvaluation
 
 _UNKNOWN_EXECUTION = {
     "ok": False,
@@ -27,12 +27,12 @@ class _CountingPolicy:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def decide(
+    async def evaluate(
         self,
         command: CommandParseResult,
-    ) -> ExecutionDecision:
+    ) -> PolicyEvaluation:
         self.calls += 1
-        return ExecutionDecision.allow(command)
+        return PolicyEvaluation.allow(command)
 
 
 class _BlockingPolicy:
@@ -40,13 +40,13 @@ class _BlockingPolicy:
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def decide(
+    async def evaluate(
         self,
         command: CommandParseResult,
-    ) -> ExecutionDecision:
+    ) -> PolicyEvaluation:
         self.entered.set()
         await self.release.wait()
-        return ExecutionDecision.allow(command)
+        return PolicyEvaluation.allow(command)
 
 
 def test_foreign_and_missing_handles_are_indistinguishable(

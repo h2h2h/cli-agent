@@ -8,6 +8,7 @@ import cli_agent.runtime.runtime as runtime_module
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    ExecutablePolicy,
     ModelCompletion,
     ModelEvent,
     ModelProvider,
@@ -108,7 +109,9 @@ def test_host_configures_runtime_lifetime_executable_deny_set(
         async with AgentRuntime.open(
             workspace=tmp_path,
             provider=provider,
-            denied_executables=frozenset({"echo"}),
+            execution_policy=ExecutablePolicy(
+                denied_executables=frozenset({"echo"}),
+            ),
         ) as runtime:
             await _collect_turn(runtime, "session", UserMessage.text("Run echo"))
 
@@ -177,6 +180,10 @@ def test_passes_default_and_configured_limits_to_kernel(
             kernel.parallel_commands
             for kernel in _TrackingEnvironmentKernel.instances
         ] == [frozenset(), frozenset({"cat", "rg"})]
+        assert [
+            kernel.approval_session_id
+            for kernel in _TrackingEnvironmentKernel.instances
+        ] == ["default", "configured"]
 
         await default_runtime.close()
         await configured_runtime.close()
@@ -208,6 +215,45 @@ def test_rejects_invalid_pending_capacity_before_opening_environment(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             pending_execution_capacity=capacity,  # type: ignore[arg-type]
+        )
+
+    assert _TrackingEnvironmentKernel.instances == []
+
+
+@pytest.mark.parametrize(
+    ("argument", "value", "message"),
+    (
+        (
+            "pending_approval_capacity",
+            0,
+            "pending approval capacity must be an integer >= 1",
+        ),
+        (
+            "approval_timeout_seconds",
+            0,
+            "approval timeout must be a number > 0",
+        ),
+    ),
+)
+def test_rejects_invalid_approval_limits_before_opening_environment(
+    tmp_path: Path,
+    monkeypatch,
+    argument: str,
+    value: object,
+    message: str,
+) -> None:
+    _TrackingEnvironmentKernel.instances.clear()
+    monkeypatch.setattr(
+        runtime_module,
+        "EnvironmentKernel",
+        _TrackingEnvironmentKernel,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        AgentRuntime.open(
+            workspace=tmp_path,
+            provider=ScriptedModelProvider(script=()),
+            **{argument: value},
         )
 
     assert _TrackingEnvironmentKernel.instances == []
@@ -464,6 +510,8 @@ class _TrackingEnvironmentKernel:
         *,
         base_env: Mapping[str, str],
         policy: object,
+        approval_gate: object,
+        approval_session_id: str,
         queue_limit: int,
         parallel_limit: int,
         parallel_commands: frozenset[str],
@@ -471,6 +519,8 @@ class _TrackingEnvironmentKernel:
         self.workspace = Path(workspace)
         self.base_env = base_env
         self.policy = policy
+        self.approval_gate = approval_gate
+        self.approval_session_id = approval_session_id
         self.queue_limit = queue_limit
         self.parallel_limit = parallel_limit
         self.parallel_commands = parallel_commands

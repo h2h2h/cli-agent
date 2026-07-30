@@ -21,8 +21,10 @@ from cli_agent.runtime._environment.drivers.custom import _CustomDriver
 from cli_agent.runtime._environment.drivers.shell import _ShellDriver
 from cli_agent.runtime._environment.execution import _ExecutionState
 from cli_agent.runtime._environment.policy import (
-    DirectExecutableDenyPolicy,
+    ExecutablePolicy,
     ExecutionDecision,
+    PolicyAction,
+    PolicyEvaluation,
 )
 from cli_agent.runtime._environment.routing import _CommandRouter, _route_decision
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
@@ -143,7 +145,7 @@ def test_reports_nonzero_exit_as_terminal_execution(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "command", ("rm proof.txt", '"rm" proof.txt', "/bin/rm proof.txt")
 )
-def test_denies_recognized_direct_rm_before_execution(
+def test_asks_for_recognized_direct_rm_before_execution(
     tmp_path: Path,
     command: str,
 ) -> None:
@@ -163,7 +165,7 @@ def test_denies_recognized_direct_rm_before_execution(
         assert _error(result) == {
             "ok": False,
             "code": "policy_denied",
-            "message": "direct invocation of 'rm' is denied by policy",
+            "message": "execution requires approval but no approver is configured",
         }
         assert proof.read_text() == "preserved"
 
@@ -172,7 +174,7 @@ def test_denies_recognized_direct_rm_before_execution(
 
 def test_policy_failure_fails_closed_without_starting_command(tmp_path: Path) -> None:
     class FailingPolicy:
-        async def decide(
+        async def evaluate(
             self,
             command: CommandParseResult,
         ) -> object:
@@ -209,11 +211,11 @@ def test_policy_failure_fails_closed_without_starting_command(tmp_path: Path) ->
 
 def test_policy_cannot_replace_the_parsed_command(tmp_path: Path) -> None:
     class RewritingPolicy:
-        async def decide(
+        async def evaluate(
             self,
             command: CommandParseResult,
-        ) -> ExecutionDecision:
-            return ExecutionDecision.allow(
+        ) -> PolicyEvaluation:
+            return PolicyEvaluation.allow(
                 replace(
                     command,
                     raw_command=_python_command(
@@ -249,12 +251,12 @@ def test_policy_cannot_replace_the_parsed_command(tmp_path: Path) -> None:
 
 def test_direct_guard_documents_wrapper_noncoverage(tmp_path: Path) -> None:
     async def scenario() -> None:
-        policy = DirectExecutableDenyPolicy()
+        policy = ExecutablePolicy()
         command = parse_shell_command("env rm proof.txt")
 
-        decision = await policy.decide(command)
+        evaluation = await policy.evaluate(command)
 
-        assert decision.allowed is True
+        assert evaluation.action is PolicyAction.ALLOW
 
     asyncio.run(scenario())
 
@@ -680,7 +682,14 @@ def test_policy_denial_bypasses_saturated_queue_and_new_session_is_fresh(
     async def scenario() -> None:
         started = tmp_path / "denial-capacity-started"
         release = tmp_path / "denial-capacity-release"
-        kernel = EnvironmentKernel(tmp_path, queue_limit=1)
+        kernel = EnvironmentKernel(
+            tmp_path,
+            queue_limit=1,
+            policy=ExecutablePolicy(
+                denied_executables=frozenset({"rm"}),
+                asked_executables=frozenset(),
+            ),
+        )
         fresh_kernel: EnvironmentKernel | None = None
         binding = kernel
         try:

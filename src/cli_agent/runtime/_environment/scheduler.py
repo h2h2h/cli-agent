@@ -54,12 +54,10 @@ class _ExecutionScheduler:
         decision: ExecutionDecision,
         route: _ExecutionRoute,
     ) -> _SchedulerAdmission | None:
-        """Accept allowed work when its required pending capacity is available."""
+        """Accept authorized work when pending capacity is available."""
 
         if self._closed:
             raise RuntimeError("Execution Scheduler is closed")
-        if not decision.allowed:
-            raise RuntimeError("Execution Scheduler received a denied decision")
         if not self._can_start_immediately(route) and (
             len(self._pending) >= self._queue_limit
         ):

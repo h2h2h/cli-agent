@@ -30,9 +30,14 @@ from cli_agent.runtime._environment.execution import (
     _StateOutput,
 )
 from cli_agent.runtime._environment.policy import (
-    DirectExecutableDenyPolicy,
+    ApprovalResponse,
+    ExecutablePolicy,
     ExecutionDecision,
     ExecutionPolicy,
+    PolicyAction,
+    PolicyEvaluation,
+    _ApprovalResolutionError,
+    _ExecutionApprovalGate,
 )
 from cli_agent.runtime._environment.routing import (
     _CommandRouter,
@@ -118,6 +123,8 @@ class EnvironmentKernel:
         parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
         parallel_commands: frozenset[str] | None = None,
         registry: _CustomCommandRegistry | None = None,
+        approval_gate: _ExecutionApprovalGate | None = None,
+        approval_session_id: str | None = None,
     ) -> None:
         root = Path(workspace).resolve()
         if not root.is_dir():
@@ -128,9 +135,9 @@ class EnvironmentKernel:
             raise ValueError("byte_limit must be >= 1")
 
         self._workspace = root
-        self._policy = (
-            DirectExecutableDenyPolicy() if policy is None else policy
-        )
+        self._policy = ExecutablePolicy() if policy is None else policy
+        self._approval_gate = approval_gate
+        self._approval_session_id = approval_session_id
         queue_limit = _validate_queue_limit(queue_limit)
         parallel_limit = _validate_parallel_limit(parallel_limit)
         self._chunk_limit = chunk_limit
@@ -153,6 +160,7 @@ class EnvironmentKernel:
         self._env = dict(base_env or {})
         self._cwd = self._workspace
         self._executions: dict[str, _ExecutionState] = {}
+        self._approval_tasks: set[asyncio.Task[object]] = set()
         self._closed = False
 
     async def close(self) -> None:
@@ -161,6 +169,11 @@ class EnvironmentKernel:
         if self._closed:
             return
         self._closed = True
+        approval_tasks = tuple(self._approval_tasks)
+        for task in approval_tasks:
+            task.cancel()
+        if approval_tasks:
+            await asyncio.gather(*approval_tasks, return_exceptions=True)
         pending = self._scheduler.close()
         for state in pending:
             state.kill_requested = True
@@ -200,7 +213,7 @@ class EnvironmentKernel:
             return args
         command = self._parser.parse(args["command"])
         try:
-            decision = await self._policy.decide(command)
+            evaluation = await self._policy.evaluate(command)
         except Exception:
             return _protocol_error(
                 call.call_id,
@@ -208,20 +221,21 @@ class EnvironmentKernel:
                 message="execution policy failed closed",
             )
         if (
-            not isinstance(decision, ExecutionDecision)
-            or decision.parse_result != command
+            not isinstance(evaluation, PolicyEvaluation)
+            or evaluation.parse_result != command
         ):
             return _protocol_error(
                 call.call_id,
                 code="internal",
                 message="execution policy failed closed",
             )
-        if not decision.allowed:
-            return _protocol_error(
-                call.call_id,
-                code="policy_denied",
-                message=decision.reason or "execution denied by policy",
-            )
+        authorization = await self._authorize(
+            call.call_id,
+            evaluation,
+        )
+        if isinstance(authorization, ToolResult):
+            return authorization
+        decision = authorization
         if self._closed:
             return _protocol_error(
                 call.call_id,
@@ -257,6 +271,70 @@ class EnvironmentKernel:
         return ToolResult(
             call_id=call.call_id,
             output=_snapshot(state, cursor=0, limit=args["output_limit"]),
+        )
+
+    async def _authorize(
+        self,
+        call_id: str,
+        evaluation: PolicyEvaluation,
+    ) -> ExecutionDecision | ToolResult:
+        if evaluation.action is PolicyAction.DENY:
+            return _protocol_error(
+                call_id,
+                code="policy_denied",
+                message=evaluation.reason or "execution denied by policy",
+            )
+        if evaluation.action is PolicyAction.ALLOW:
+            return ExecutionDecision.allow(
+                evaluation.parse_result,
+                rule_id=evaluation.rule_id,
+            )
+
+        gate = self._approval_gate
+        if gate is None:
+            return _protocol_error(
+                call_id,
+                code="policy_denied",
+                message="execution requires approval but no approver is configured",
+            )
+
+        task = asyncio.create_task(
+            gate.request(
+                evaluation,
+                session_id=self._approval_session_id,
+            )
+        )
+        self._approval_tasks.add(task)
+        try:
+            try:
+                resolution = await task
+            except asyncio.CancelledError:
+                if self._closed:
+                    return _protocol_error(
+                        call_id,
+                        code="internal",
+                        message="environment session is closed",
+                    )
+                raise
+            except _ApprovalResolutionError as exc:
+                return _protocol_error(
+                    call_id,
+                    code="policy_denied",
+                    message=str(exc),
+                )
+        finally:
+            self._approval_tasks.discard(task)
+
+        if resolution.response is ApprovalResponse.DENY:
+            return _protocol_error(
+                call_id,
+                code="policy_denied",
+                message="execution approval was denied by the Host",
+            )
+        return ExecutionDecision.allow(
+            evaluation.parse_result,
+            rule_id=f"{evaluation.rule_id}.host-approved",
+            approval_request_id=resolution.request_id,
         )
 
     async def _output(self, call: ToolCall) -> ToolResult:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TextIO
 from uuid import uuid4
 
@@ -9,6 +10,8 @@ from cli_agent.config import CliConfig
 from cli_agent.presentation import render_event, render_prompt
 from cli_agent.runtime import (
     AgentRuntime,
+    ApprovalResponse,
+    ExecutionApprovalRequest,
     ModelCompletion,
     ModelProvider,
     TextDelta,
@@ -31,6 +34,10 @@ async def run_agent(
     async with AgentRuntime.open(
         workspace=config.workspace,
         provider=provider,
+        execution_approver=_TerminalExecutionApprover(
+            stdin=stdin,
+            stderr=stderr,
+        ),
     ) as runtime:
         try:
             if config.task is not None:
@@ -130,3 +137,34 @@ def _turn_exit_code(completed: bool, *, stderr: TextIO) -> int:
         )
         return 1
     return 0
+
+
+class _TerminalExecutionApprover:
+    """Resolve Runtime ASK evaluations through the Reference CLI streams."""
+
+    def __init__(self, *, stdin: TextIO, stderr: TextIO) -> None:
+        self._stdin = stdin
+        self._stderr = stderr
+
+    async def approve(
+        self,
+        request: ExecutionApprovalRequest,
+    ) -> ApprovalResponse:
+        print(
+            f"[approval] {request.reason}",
+            file=self._stderr,
+            flush=True,
+        )
+        print(
+            f"  command: {request.raw_command}",
+            file=self._stderr,
+            flush=True,
+        )
+        self._stderr.write("Allow once? [y/N] ")
+        self._stderr.flush()
+        response = await asyncio.to_thread(self._stdin.readline)
+        if not self._stdin.isatty():
+            print(file=self._stderr, flush=True)
+        if response.strip().casefold() in {"y", "yes"}:
+            return ApprovalResponse.ALLOW
+        return ApprovalResponse.DENY

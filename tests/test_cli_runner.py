@@ -216,6 +216,79 @@ def test_runs_multiple_interactive_turns_in_one_session(
     provider.assert_exhausted()
 
 
+@pytest.mark.parametrize(
+    ("approval_input", "expected_exists", "expected_error"),
+    (
+        ("yes\n", False, None),
+        ("\n", True, "execution approval was denied by the Host"),
+    ),
+)
+def test_reference_cli_resolves_execution_approval_once(
+    tmp_path: Path,
+    approval_input: str,
+    expected_exists: bool,
+    expected_error: str | None,
+) -> None:
+    proof = tmp_path / "approval-proof.txt"
+    proof.write_text("preserved", encoding="utf-8")
+    command = "rm approval-proof.txt"
+    call = ToolCall(
+        call_id="review_rm",
+        name="exec",
+        arguments={"command": command},
+    )
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                ToolCallReady(call=call),
+                ModelCompletion(
+                    message=AssistantMessage(content=(call,)),
+                    finish_reason="tool_calls",
+                ),
+            ),
+            (
+                ModelCompletion(
+                    message=AssistantMessage.text("Reviewed."),
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+    stderr = StringIO()
+
+    exit_code = asyncio.run(
+        run_agent(
+            _config(tmp_path),
+            provider,
+            stdin=StringIO(approval_input),
+            stdout=StringIO(),
+            stderr=stderr,
+        )
+    )
+
+    assert exit_code == 0
+    assert proof.exists() is expected_exists
+    assert stderr.getvalue() == (
+        f"[tool] exec: {command}\n"
+        "[approval] direct invocation of 'rm' requires Host approval\n"
+        f"  command: {command}\n"
+        "Allow once? [y/N] \n"
+        "[completion] reason=stop\n"
+    )
+    result_message = provider.requests[1].messages[-1]
+    assert isinstance(result_message, ToolResultMessage)
+    result = result_message.content[0]
+    if expected_error is None:
+        assert isinstance(result.output, dict)
+        assert result.output["status"] == "exited"
+        assert result.error is None
+    else:
+        assert result.output is None
+        assert isinstance(result.error, dict)
+        assert result.error["message"] == expected_error
+    provider.assert_exhausted()
+
+
 def test_interactive_terminal_prompts_until_quit(tmp_path: Path) -> None:
     class TerminalInput(StringIO):
         def isatty(self) -> bool:

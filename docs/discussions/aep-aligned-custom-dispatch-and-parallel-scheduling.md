@@ -62,12 +62,17 @@ but they are not separate public Execution categories.
 Policy remains between syntax parsing and routing:
 
 ```text
-CommandParseResult -> ExecutionDecision -> route
+CommandParseResult
+  -> PolicyEvaluation(ALLOW | DENY | ASK)
+  -> optional bounded Host approval
+  -> ExecutionDecision
+  -> route
 ```
 
-The current Policy may continue inspecting `executable_basename`. An allowed
-Decision remains bound to the exact parse result it authorized. A denial
-creates no Execution, Handle, queue entry, Driver resource, or side effect.
+The current Policy may continue inspecting `executable_basename`. Only a final
+allow-only Decision remains bound to the exact parse result it authorized.
+Denial and unresolved approval create no Execution, Handle, queue entry,
+Driver resource, or side effect.
 
 ## Scheduling
 

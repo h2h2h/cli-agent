@@ -30,6 +30,24 @@ def test_exposes_provider_neutral_model_types() -> None:
         )
 
 
+def test_exposes_host_execution_policy_contracts() -> None:
+    public_policy_names = {
+        "CommandParseResult",
+        "PolicyAction",
+        "PolicyEvaluation",
+        "ExecutablePolicy",
+        "ExecutionPolicy",
+        "ExecutionApprovalRequest",
+        "ApprovalResponse",
+        "ExecutionApprover",
+    }
+    for name in public_policy_names:
+        assert name in runtime.__all__, f"{name} missing from cli_agent.runtime.__all__"
+        assert hasattr(runtime, name), (
+            f"cli_agent.runtime missing public attribute: {name}"
+        )
+
+
 def test_exposes_official_provider_adapters() -> None:
     assert "OpenAICompatibleModelProvider" in runtime.__all__
     assert hasattr(runtime, "OpenAICompatibleModelProvider")

@@ -6,6 +6,10 @@ Normative follow-up: architecture decision 16
 
 The Custom dispatch and scheduling portions are refined by
 [AEP-aligned Custom dispatch and ordered parallel scheduling](./aep-aligned-custom-dispatch-and-parallel-scheduling.md).
+[RFC-0001: Host-mediated execution approval](../rfcs/approved/RFC-0001-host-mediated-execution-approval.md)
+supersedes this discussion's Agent-visible managed Workspace command plan.
+Runtime-owned filesystem work may still use private managed operations, while
+ordinary Agent mutations remain Shell commands subject to Host Policy.
 
 This discussion records the rationale that was accepted for incorporation into
 the architecture specification. Where it differs from the normative
@@ -230,12 +234,17 @@ discussion supersedes the earlier global at-most-one-running recommendation.
 Milestone 04 remains Shell-only, so its first observable scheduling behavior is
 still serial Shell execution.
 
-### Milestone 06: conflict-safe Workspace mutations
+### Milestone 06: Host-mediated execution approval
 
-Define the reserved managed-command grammar and add its internal driver when
-the command contract is known. Managed operations use the same Execution
-control envelope, but their optimistic version checks and atomic mutations
-remain Kernel-owned semantics.
+Extend Policy evaluation to `ALLOW`, `DENY`, and `ASK`. Resolve `ASK` through
+one bounded Runtime-wide Host approver before creating an Execution or
+consuming Scheduler capacity. The Reference CLI provides an allow-once prompt;
+the embedded Runtime remains headless.
+
+Do not add Agent-visible managed Workspace commands. Ordinary Shell writes do
+not receive optimistic conflict detection. Runtime-owned index, overlay, and
+reconciliation writes may still use Managed Paths and atomic replacement
+privately.
 
 ### Milestone 10: isolated Tool Environment
 
@@ -254,13 +263,12 @@ They do not introduce an MCP-specific execution driver or model-visible path.
 ## Questions assigned to implementing milestones
 
 - **Reserved command namespace.** Should Kernel commands retain the documented
-  `tools ...` and Workspace command heads, or use one explicit namespace to
-  avoid collisions with host executables? Milestones 06 and 10 must settle this
-  before adding their routes; it does not block the Shell-only milestone 03.
+  `tools ...` head, or use one explicit namespace to avoid collisions with host
+  executables? Milestone 10 must settle this before adding its route.
 - **Command grammar.** Which top-level quoting and argument forms are accepted?
   Are pipelines, redirections, `env` prefixes, and shell control operators
   intentionally unsupported for Kernel commands, or will a later proxy provide
-  composition? Milestones 06 and 10 own their reserved grammars. Milestone 03
+  composition? Milestone 10 owns its reserved grammar. Milestone 03
   treats the complete submitted string as an opaque Shell payload after the
   deliberately narrow inspection described by the companion discussion.
 - **Tool process model.** Does each `tools run` use a fresh worker, or does one
@@ -268,8 +276,7 @@ They do not introduce an MCP-specific execution driver or model-visible path.
   preserve cancellation, module-state isolation, and Workspace dependency
   isolation. Milestone 10 owns this choice.
 - **Canonical result encoding.** What JSON envelope and exit semantics represent
-  Tool success, Tool failure, managed-command success, and recoverable domain
-  conflicts in the shared output log?
-- **Cancellation boundary.** Which synchronous Kernel operations can be
-  cancelled before commit, and which become terminal once an atomic mutation
-  begins?
+  Tool success and Tool failure in the shared output log?
+- **Cancellation boundary.** Which Tool worker operations can be interrupted,
+  and which synchronous effects may already have completed when cancellation
+  is observed?

@@ -1,6 +1,16 @@
 """Provider-neutral building blocks for the cli-agent Runtime."""
 
 from cli_agent.runtime._builtin_tools import ToolSchema
+from cli_agent.runtime._environment.command_parser import CommandParseResult
+from cli_agent.runtime._environment.policy import (
+    ApprovalResponse,
+    ExecutablePolicy,
+    ExecutionApprovalRequest,
+    ExecutionApprover,
+    ExecutionPolicy,
+    PolicyAction,
+    PolicyEvaluation,
+)
 from cli_agent.runtime.model import (
     AssistantMessage,
     JSONValue,
@@ -27,7 +37,13 @@ from cli_agent.runtime.runtime import AgentRuntime, RuntimeClosedError
 
 __all__ = (
     "AgentRuntime",
+    "ApprovalResponse",
     "AssistantMessage",
+    "CommandParseResult",
+    "ExecutablePolicy",
+    "ExecutionApprover",
+    "ExecutionApprovalRequest",
+    "ExecutionPolicy",
     "JSONValue",
     "ModelCompletion",
     "ModelEvent",
@@ -36,6 +52,8 @@ __all__ = (
     "ModelRequest",
     "ModelUsage",
     "OpenAICompatibleModelProvider",
+    "PolicyAction",
+    "PolicyEvaluation",
     "RuntimeClosedError",
     "ScriptedModelProvider",
     "SystemMessage",

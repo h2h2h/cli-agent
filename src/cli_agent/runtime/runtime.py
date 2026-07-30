@@ -11,8 +11,14 @@ from typing import Any
 from cli_agent.runtime._agent_loop import AgentLoop
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.policy import (
-    DirectExecutableDenyPolicy,
+    _DEFAULT_APPROVAL_CAPACITY,
+    _DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+    ExecutablePolicy,
+    ExecutionApprover,
     ExecutionPolicy,
+    _ExecutionApprovalGate,
+    _validate_approval_capacity,
+    _validate_approval_timeout,
 )
 from cli_agent.runtime._environment.scheduler import (
     _DEFAULT_PARALLEL_LIMIT,
@@ -48,6 +54,7 @@ class AgentRuntime:
         workspace: Path,
         base_env: Mapping[str, str],
         policy: ExecutionPolicy,
+        approval_gate: _ExecutionApprovalGate | None,
         queue_limit: int,
         parallel_limit: int,
         parallel_commands: frozenset[str],
@@ -57,6 +64,7 @@ class AgentRuntime:
         self._workspace = workspace
         self._base_env = base_env
         self._policy = policy
+        self._approval_gate = approval_gate
         self._queue_limit = queue_limit
         self._parallel_limit = parallel_limit
         self._parallel_commands = parallel_commands
@@ -71,7 +79,10 @@ class AgentRuntime:
         workspace: str | Path,
         provider: ModelProvider,
         system_instruction: str | None = None,
-        denied_executables: frozenset[str] | None = None,
+        execution_policy: ExecutionPolicy | None = None,
+        execution_approver: ExecutionApprover | None = None,
+        pending_approval_capacity: int = _DEFAULT_APPROVAL_CAPACITY,
+        approval_timeout_seconds: float = _DEFAULT_APPROVAL_TIMEOUT_SECONDS,
         pending_execution_capacity: int = _DEFAULT_QUEUE_LIMIT,
         parallel_execution_capacity: int = _DEFAULT_PARALLEL_LIMIT,
         parallel_shell_commands: frozenset[str] | None = None,
@@ -79,8 +90,12 @@ class AgentRuntime:
         """Prepare to asynchronously open a Workspace-bound Runtime.
 
         ``system_instruction`` extends the canonical instruction assembled for
-        each new Agent Session. ``denied_executables`` replaces the default
-        direct-executable deny set containing ``rm`` for this Runtime lifetime.
+        each new Agent Session. ``execution_policy`` replaces the default
+        executable Policy, which asks for recognized direct filesystem
+        mutators and otherwise allows.
+        ``execution_approver`` resolves ASK evaluations for this Runtime.
+        Approval waits are bounded by ``pending_approval_capacity`` and
+        ``approval_timeout_seconds`` without consuming Execution capacity.
         ``pending_execution_capacity`` bounds queued Executions in each Session
         and defaults to 32. ``parallel_execution_capacity`` bounds a batch of
         trusted parallel-safe commands; ``parallel_shell_commands`` grants that
@@ -92,7 +107,10 @@ class AgentRuntime:
             workspace,
             provider,
             system_instruction,
-            denied_executables,
+            execution_policy,
+            execution_approver,
+            _validate_approval_capacity(pending_approval_capacity),
+            _validate_approval_timeout(approval_timeout_seconds),
             _validate_queue_limit(pending_execution_capacity),
             _validate_parallel_limit(parallel_execution_capacity),
             frozenset(parallel_shell_commands or ()),
@@ -104,23 +122,32 @@ class AgentRuntime:
         workspace: str | Path,
         provider: ModelProvider,
         instruction: str | None,
-        denied: frozenset[str] | None,
+        policy: ExecutionPolicy | None,
+        approver: ExecutionApprover | None,
+        approval_capacity: int,
+        approval_timeout: float,
         queue_limit: int,
         parallel_limit: int,
         parallel_commands: frozenset[str],
     ) -> AgentRuntime:
         paths = _prepare_workspace(workspace)
         base_env = _load_workspace_environment(paths.environment)
-        policy = (
-            DirectExecutableDenyPolicy()
-            if denied is None
-            else DirectExecutableDenyPolicy(denied)
+        effective_policy = ExecutablePolicy() if policy is None else policy
+        approval_gate = (
+            None
+            if approver is None
+            else _ExecutionApprovalGate(
+                approver,
+                capacity=approval_capacity,
+                timeout_seconds=approval_timeout,
+            )
         )
         return cls(
             provider=provider,
             workspace=paths.root,
             base_env=base_env,
-            policy=policy,
+            policy=effective_policy,
+            approval_gate=approval_gate,
             queue_limit=queue_limit,
             parallel_limit=parallel_limit,
             parallel_commands=parallel_commands,
@@ -164,7 +191,7 @@ class AgentRuntime:
                 self._workspace,
                 self._instruction,
             )
-            kernel = self._new_kernel()
+            kernel = self._new_kernel(session_id)
             try:
                 loop = AgentLoop(
                     bound_provider,
@@ -206,11 +233,13 @@ class AgentRuntime:
         if self._closed:
             raise RuntimeClosedError("AgentRuntime is closed")
 
-    def _new_kernel(self) -> EnvironmentKernel:
+    def _new_kernel(self, session_id: str) -> EnvironmentKernel:
         return EnvironmentKernel(
             self._workspace,
             base_env=self._base_env,
             policy=self._policy,
+            approval_gate=self._approval_gate,
+            approval_session_id=session_id,
             queue_limit=self._queue_limit,
             parallel_limit=self._parallel_limit,
             parallel_commands=self._parallel_commands,
@@ -226,7 +255,10 @@ class _AgentRuntimeOpener:
         workspace: str | Path,
         provider: ModelProvider,
         instruction: str | None,
-        denied: frozenset[str] | None,
+        policy: ExecutionPolicy | None,
+        approver: ExecutionApprover | None,
+        approval_capacity: int,
+        approval_timeout: float,
         queue_limit: int,
         parallel_limit: int,
         parallel_commands: frozenset[str],
@@ -235,7 +267,10 @@ class _AgentRuntimeOpener:
         self._workspace = workspace
         self._provider = provider
         self._instruction = instruction
-        self._denied = denied
+        self._policy = policy
+        self._approver = approver
+        self._approval_capacity = approval_capacity
+        self._approval_timeout = approval_timeout
         self._queue_limit = queue_limit
         self._parallel_limit = parallel_limit
         self._parallel_commands = parallel_commands
@@ -267,7 +302,10 @@ class _AgentRuntimeOpener:
                 self._workspace,
                 self._provider,
                 self._instruction,
-                self._denied,
+                self._policy,
+                self._approver,
+                self._approval_capacity,
+                self._approval_timeout,
                 self._queue_limit,
                 self._parallel_limit,
                 self._parallel_commands,
