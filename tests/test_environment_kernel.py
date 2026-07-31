@@ -8,6 +8,10 @@ from pathlib import Path
 import pytest
 
 from cli_agent.runtime import ToolCall, ToolResult
+from cli_agent.runtime._capability.command_parser import (
+    CommandParseResult,
+    parse_shell_command,
+)
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
@@ -23,10 +27,6 @@ from cli_agent.runtime._environment.policy import (
 )
 from cli_agent.runtime._environment.routing import _CommandRouter
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
-from cli_agent.runtime.capability.command_parser import (
-    CommandParseResult,
-    parse_shell_command,
-)
 
 
 def _router() -> _CommandRouter:

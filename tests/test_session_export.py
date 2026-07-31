@@ -4,8 +4,8 @@ import sys
 from pathlib import Path
 
 from cli_agent.runtime import ToolCall, ToolResult
+from cli_agent.runtime._capability.command_parser import parse_shell_command
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime.capability.command_parser import parse_shell_command
 
 
 def test_parser_reports_only_generic_shell_syntax_facts() -> None:

@@ -11,8 +11,8 @@ import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
-from cli_agent.runtime.capability.view import _CapabilityView
-from cli_agent.runtime.capability.workspace import (
+from cli_agent.runtime._capability.view import _CapabilityView
+from cli_agent.runtime._capability.workspace import (
     _atomic_write,
     _ensure_real_directory,
 )

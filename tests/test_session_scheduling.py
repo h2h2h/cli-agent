@@ -4,10 +4,10 @@ import sys
 from pathlib import Path
 
 from cli_agent.runtime import ToolCall, ToolResult
+from cli_agent.runtime._capability.command_parser import CommandParseResult
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.execution import _ExecutionState
 from cli_agent.runtime._environment.policy import PolicyEvaluation
-from cli_agent.runtime.capability.command_parser import CommandParseResult
 
 _UNKNOWN_EXECUTION = {
     "ok": False,

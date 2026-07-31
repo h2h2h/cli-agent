@@ -6,6 +6,7 @@ import asyncio
 import os
 from typing import TYPE_CHECKING
 
+from cli_agent.runtime._capability.command_parser import CommandParseResult
 from cli_agent.runtime._environment.drivers.base import (
     _DriverContext,
     _DriverExecution,
@@ -13,10 +14,9 @@ from cli_agent.runtime._environment.drivers.base import (
     _ExecutionOutput,
 )
 from cli_agent.runtime._environment.drivers.executions import _ProcessExecution
-from cli_agent.runtime.capability.command_parser import CommandParseResult
 
 if TYPE_CHECKING:
-    from cli_agent.runtime.capability.view import _CapabilityView
+    from cli_agent.runtime._capability.view import _CapabilityView
 
 
 class _ShellDriver:

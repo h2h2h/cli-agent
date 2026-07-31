@@ -7,6 +7,11 @@ from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 
+from cli_agent.runtime._capability.command_parser import parse_shell_command
+from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
+from cli_agent.runtime._capability.tools.grammar import classify_tool_command
+from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
     _CustomCommandRegistry,
@@ -36,11 +41,6 @@ from cli_agent.runtime._environment.scheduler import (
     _DEFAULT_QUEUE_LIMIT,
 )
 from cli_agent.runtime._environment.supervisor import _ExecutionSupervisor
-from cli_agent.runtime.capability.command_parser import parse_shell_command
-from cli_agent.runtime.capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime.capability.tools.environment import _ToolEnvironment
-from cli_agent.runtime.capability.tools.grammar import classify_tool_command
-from cli_agent.runtime.capability.view import _CapabilityView
 from cli_agent.runtime.model import ToolCall, ToolResult
 
 

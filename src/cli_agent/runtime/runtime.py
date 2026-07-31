@@ -10,6 +10,13 @@ from types import TracebackType
 from typing import Any
 
 from cli_agent.runtime._agent_loop import AgentLoop
+from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
+from cli_agent.runtime._capability.view import _CapabilityView
+from cli_agent.runtime._capability.workspace import (
+    _load_workspace_env,
+    _prepare_workspace,
+)
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.policy import (
     ExecutablePolicy,
@@ -18,13 +25,6 @@ from cli_agent.runtime._environment.policy import (
     _ExecutionApprovalGate,
 )
 from cli_agent.runtime._system_message import assemble_system_message
-from cli_agent.runtime.capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime.capability.tools.environment import _ToolEnvironment
-from cli_agent.runtime.capability.view import _CapabilityView
-from cli_agent.runtime.capability.workspace import (
-    _load_workspace_env,
-    _prepare_workspace,
-)
 from cli_agent.runtime.model import ModelEvent, ModelProvider, UserMessage
 
 

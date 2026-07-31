@@ -6,9 +6,9 @@ import ast
 import keyword
 from pathlib import Path
 
-from cli_agent.runtime.capability.tools.facts import ToolEntry
-from cli_agent.runtime.capability.view import _CapabilityView
-from cli_agent.runtime.capability.workspace import _atomic_write
+from cli_agent.runtime._capability.tools.facts import ToolEntry
+from cli_agent.runtime._capability.view import _CapabilityView
+from cli_agent.runtime._capability.workspace import _atomic_write
 
 
 class _ToolCatalog:

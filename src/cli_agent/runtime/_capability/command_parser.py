@@ -6,7 +6,7 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
-from cli_agent.runtime.capability.tools.facts import ToolCommand
+from cli_agent.runtime._capability.tools.facts import ToolCommand
 
 _DIRECT_MUTATORS = frozenset(
     {

@@ -13,9 +13,9 @@ from cli_agent.runtime import (
     ToolCall,
     ToolResult,
 )
+from cli_agent.runtime._capability.command_parser import parse_shell_command
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.policy import _ExecutionApprovalGate
-from cli_agent.runtime.capability.command_parser import parse_shell_command
 
 
 def test_executable_policy_evaluates_disjoint_sets_and_default() -> None:

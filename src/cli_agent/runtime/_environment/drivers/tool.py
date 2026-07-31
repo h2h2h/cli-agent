@@ -7,6 +7,9 @@ import json
 import os
 from importlib.resources import files
 
+from cli_agent.runtime._capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._environment.drivers.base import (
     _DriverContext,
     _DriverExecution,
@@ -17,9 +20,6 @@ from cli_agent.runtime._environment.drivers.executions import (
     _InlineExecution,
     _ProcessExecution,
 )
-from cli_agent.runtime.capability.command_parser import CommandParseResult
-from cli_agent.runtime.capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime.capability.tools.environment import _ToolEnvironment
 
 
 class _ToolDriver:
@@ -76,7 +76,7 @@ class _ToolDriver:
             ensure_ascii=False,
         ).encode("utf-8")
         python = self._environment.python
-        worker = files("cli_agent.runtime.capability.tools").joinpath("worker.py")
+        worker = files("cli_agent.runtime._capability.tools").joinpath("worker.py")
         child_env = dict(os.environ) | context.environment
         child_env["VIRTUAL_ENV"] = str(self._environment.root / ".venv")
         child_env["PYTHONNOUSERSITE"] = "1"

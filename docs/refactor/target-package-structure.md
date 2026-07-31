@@ -25,12 +25,12 @@ Two domains together form the platform presented to the model: a
 directory-based environment through which the Agent uniformly discovers and
 invokes capabilities (tools, skills, library).
 
-- **`capability/` is the content of the environment.** The capabilities
+- **`_capability/` is the content of the environment.** The capabilities
   themselves, organized by directory; the Capability View that mounts them;
   and the `.workspace` bootstrap that carries all of it. It answers "what can
   the model discover and invoke". Everything inside is reconciled once at
   Runtime open and shared by all Sessions.
-- **`environment/` is the machinery of the environment.** The Session-scoped
+- **`_environment/` is the machinery of the environment.** The Session-scoped
   Environment Kernel: the fixed AEP Syscalls (`exec`, `output`, `kill`) and
   the control and execution planes behind them. It answers "how the model
   invokes safely". It is not session management (the Runtime owns the Session
@@ -56,7 +56,7 @@ src/cli_agent/
     ├── _syscalls.py               # exec/output/kill schemas
     │                              #   (renamed from _builtin_tools.py)
     │
-    ├── capability/                # Workspace-lifetime capability domain
+    ├── _capability/                # Workspace-lifetime capability domain
     │   ├── workspace.py           # .workspace bootstrap + env loading
     │   │                          #   (from runtime/_workspace.py)
     │   ├── view.py                # Capability View overlay
@@ -75,7 +75,7 @@ src/cli_agent/
     │       └── worker.py          # worker script (from _tool_worker.py)
     │       # skills/  library/    # symmetric landing spots for M8 / M9
     │
-    └── environment/               # Session-lifetime Environment Kernel domain
+    └── _environment/            # Session-lifetime Environment Kernel domain
         ├── kernel.py              # Session state aggregate + control plane
         ├── protocol.py            # syscall argument validation and result
         │                          #   payload shapes (incl. _snapshot)
@@ -91,23 +91,23 @@ src/cli_agent/
 
 ## Component roles
 
-### `capability/`
+### `_capability/`
 
 Workspace-scoped capability knowledge. Reconciled once at Runtime open;
 Sessions receive references, never copies to mutate. Owns provenance,
 validation, whiteouts, generated indexes, and the Tool dependency venv.
 `tools/facts.py` is a pure-data leaf module: it imports nothing from
-`environment/`, which is what breaks the potential import cycle between
+`_environment/`, which is what breaks the potential import cycle between
 `grammar.py` (consumes `CommandParseResult`) and `parsing.py` (annotates
 `CommandParseResult.tool: ToolCommand | None`).
 
-### `environment/`
+### `_environment/`
 
 The Session-scoped Kernel domain. One Kernel per Session, owning cwd, the
 Session environment copy, the Scheduler, the Handle namespace, Execution
 States, and Driver lifecycle.
 
-### `environment/commands.py` — Runtime-owned command dispatch table
+### `_environment/commands.py` — Runtime-owned command dispatch table
 
 Answers "who defines this command's behavior", *before* routing. A registry
 mapping an exact command head to a Runtime-trusted `_CustomCommandSpec`
@@ -123,7 +123,7 @@ It knows nothing about policy, approval, scheduling, or output bounds. It
 grows along the *command vocabulary* dimension: a new Runtime-owned command
 (e.g. `unset`) is one new registry entry.
 
-### `environment/drivers/` — execution-plane backend seam
+### `_environment/drivers/` — execution-plane backend seam
 
 Answers "how an admitted Decision actually runs", *after* routing. The only
 place that performs side effects, consuming immutable Execution Decisions
@@ -160,32 +160,50 @@ Syscall".
 The refactor is complete when these hold and are enforced by review:
 
 ```
-cli layer      → runtime public surface
-_loop          → environment + model
-environment    → capability          (one-way; capability never imports environment)
-providers      → model
-capability/tools/facts.py            (imports nothing outside stdlib/typing)
+cli layer       → runtime public surface
+_loop           → _environment + model
+_environment    → _capability (one-way; _capability never imports _environment)
+providers       → model
+_capability/tools/facts.py      (imports nothing outside stdlib/typing)
 ```
 
-The test for a misplaced module: if anything under `capability/` reaches for
+The test for a misplaced module: if anything under `_capability/` reaches for
 a Session concept, it belongs elsewhere.
+
+## Module naming
+
+The underscore prefix marks "not part of the public API; direct imports are
+unsupported", following the httpx/pydantic/sklearn convention:
+
+- Public-backing modules at the `runtime/` root stay bare: `runtime.py`,
+  `model.py`, `providers/`.
+- Internal modules at the `runtime/` root carry the prefix: `_loop.py`,
+  `_system_message.py`, `_syscalls.py`.
+- Internal subpackages carry the prefix: `_environment/`, `_capability/`.
+- Modules inside an underscored package stay bare; the package prefix
+  already carries the signal (e.g. `_environment/kernel.py`,
+  `_capability/tools/facts.py`).
+
+A symbol may be public while living in an underscored module (e.g.
+`SyscallSchema` in `_syscalls.py`): the prefix constrains the module, not the
+symbol, which Hosts import from `cli_agent.runtime`.
 
 ### Amendment (recorded during step 2)
 
-`command_parser.py` lives under `capability/`, not `environment/`. The
-original layout placed the parser in `environment/parsing.py`, but two
+`command_parser.py` lives under `_capability/`, not `_environment/`. The
+original layout placed the parser in `_environment/parsing.py`, but two
 capability modules consume its products at runtime: `view.py` prepares
 mutations for a parsed command, and `tools/grammar.py` enriches one. Keeping
-the parser in `environment/` would have made `capability/` import
-`environment/` while `environment/` imported `capability.tools.facts` — a
+the parser in `_environment/` would have made `_capability/` import
+`_environment/` while `_environment/` imported `_capability.tools.facts` — a
 bidirectional package dependency, exactly what the invariant exists to
 prevent.
 
 The parser is pure command-language knowledge (immutable data + pure
 functions, no Session or Workspace state), so it belongs to the lower layer.
-With it under `capability/`, the runtime import graph is strictly one-way:
-`environment → capability → leaf modules`, verified mechanically by grep over
-`capability/`'s imports.
+With it under `_capability/`, the runtime import graph is strictly one-way:
+`_environment → _capability → leaf modules`, verified mechanically by grep over
+`_capability/`'s imports.
 
 ### Amendment (recorded during step 4)
 
@@ -213,9 +231,9 @@ Ordering moves leaves before roots so no module is reshaped twice.
 
 | Step | Content | Character |
 |---|---|---|
-| 1 | Move `ToolCommand`/`ToolReference` into `capability/tools/facts.py`; unify the three near-duplicate provenance dataclasses (`_ToolEntry`, `ToolReference`, `_CapabilityInspection`) onto one shared record with per-context additions | pure move, lowest risk |
-| 2 | Create `capability/`; move the Workspace-lifetime modules (`_workspace.py`, `_capability_view.py`, `_tool_catalog.py`, `_tool_commands.py`, `_tool_environment.py`, `_tool_worker.py`) plus `_environment/command_parser.py` (see amendment); replace the worker path computation in `drivers/tool.py` (`Path(__file__).parents[2]`) with `importlib.resources.files` | mechanical move |
-| 3 | Subtract inside `environment/` (and the moved parser): flatten `commands/` into one `commands.py`; delete `drivers/custom.py` (router calls `spec.prepare` directly); delete the `CommandParser` ABC and the `parse_shell_command` wrapper in `capability/command_parser.py` (one plain function); delete the `_route_decision` pass-through | pure subtraction |
+| 1 | Move `ToolCommand`/`ToolReference` into `_capability/tools/facts.py`; unify the three near-duplicate provenance dataclasses (`_ToolEntry`, `ToolReference`, `_CapabilityInspection`) onto one shared record with per-context additions | pure move, lowest risk |
+| 2 | Create `_capability/`; move the Workspace-lifetime modules (`_workspace.py`, `_capability_view.py`, `_tool_catalog.py`, `_tool_commands.py`, `_tool_environment.py`, `_tool_worker.py`) plus `_environment/command_parser.py` (see amendment); replace the worker path computation in `drivers/tool.py` (`Path(__file__).parents[2]`) with `importlib.resources.files` | mechanical move |
+| 3 | Subtract inside `_environment/` (and the moved parser): flatten `commands/` into one `commands.py`; delete `drivers/custom.py` (router calls `spec.prepare` directly); delete the `CommandParser` ABC and the `parse_shell_command` wrapper in `_capability/command_parser.py` (one plain function); delete the `_route_decision` pass-through | pure subtraction |
 | 4 | Split the Kernel God Class into `kernel.py` (Session state aggregate), `protocol.py` (syscall validation/snapshots), `supervisor.py` (Driver supervision + approval coordination) | structural, test-backed |
 | 5 | Rename `_builtin_tools.py` → `_syscalls.py`; narrow `runtime/__init__.py` to the true Host surface; unify the mutator fact source (`_DIRECT_MUTATORS` vs `_DEFAULT_ASKED_EXECUTABLES`, including the duplicated in-place-`sed` detectors); remove defensive checks and single-use constants per `AGENTS.override.md` | finishing pass |
 
@@ -243,7 +261,7 @@ the `BUILDIN` typo), with `_builtin_tools.py` renamed to `_syscalls.py`.
 Also completed under this step:
 
 - The recognized-mutator fact source was unified in
-  `capability/command_parser.py`: one `_DIRECT_MUTATORS` table (fifteen
+  `_capability/command_parser.py`: one `_DIRECT_MUTATORS` table (fifteen
   names, `sed` excluded) and one `_sed_is_in_place` helper now feed both the
   default Policy's asked set and the Capability View's mutation preparation.
   The pre-existing behavioral difference on `sed` was already reconciled by
@@ -260,4 +278,4 @@ Also completed under this step:
   `_CAPABILITY_DIRECTORIES`, `_EXECUTION_OUTPUT_SCHEMA`, the Tool environment
   state file names) were kept. The triplicated `_ensure_real_directory` and
   duplicated `_atomic_write` helpers converged into
-  `capability/workspace.py`.
+  `_capability/workspace.py`.

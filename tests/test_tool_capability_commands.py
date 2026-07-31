@@ -5,8 +5,15 @@ from pathlib import Path
 
 import pytest
 
-import cli_agent.runtime.capability.tools.environment as tool_environment_module
+import cli_agent.runtime._capability.tools.environment as tool_environment_module
 from cli_agent.runtime import ExecutablePolicy, ToolCall, ToolResult
+from cli_agent.runtime._capability.command_parser import parse_shell_command
+from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
+from cli_agent.runtime._capability.tools.facts import ToolCommand
+from cli_agent.runtime._capability.tools.grammar import classify_tool_command
+from cli_agent.runtime._capability.view import _CapabilityView
+from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.policy import PolicyEvaluation
 from cli_agent.runtime._environment.routing import (
@@ -14,13 +21,6 @@ from cli_agent.runtime._environment.routing import (
     _ExecutionLane,
     _SchedulingClass,
 )
-from cli_agent.runtime.capability.command_parser import parse_shell_command
-from cli_agent.runtime.capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime.capability.tools.environment import _ToolEnvironment
-from cli_agent.runtime.capability.tools.facts import ToolCommand
-from cli_agent.runtime.capability.tools.grammar import classify_tool_command
-from cli_agent.runtime.capability.view import _CapabilityView
-from cli_agent.runtime.capability.workspace import _prepare_workspace
 
 
 def test_catalog_generates_index_and_reports_actual_provenance(

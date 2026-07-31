@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from cli_agent.runtime._capability.command_parser import CommandParseResult
 from cli_agent.runtime._environment.drivers.base import (
     _DriverContext,
     _DriverExecution,
@@ -14,7 +15,6 @@ from cli_agent.runtime._environment.drivers.base import (
     _ExecutionOutput,
 )
 from cli_agent.runtime._environment.drivers.executions import _InlineExecution
-from cli_agent.runtime.capability.command_parser import CommandParseResult
 
 _CustomCommandPreparer = Callable[
     [CommandParseResult, _DriverContext],

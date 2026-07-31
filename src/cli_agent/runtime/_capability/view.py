@@ -14,13 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Literal
 
-from cli_agent.runtime.capability.command_parser import (
+from cli_agent.runtime._capability.command_parser import (
     _DIRECT_MUTATORS,
     CommandParseResult,
     _sed_is_in_place,
     _shell_output_redirection_targets,
 )
-from cli_agent.runtime.capability.workspace import _ensure_real_directory
+from cli_agent.runtime._capability.workspace import _ensure_real_directory
 
 _CAPABILITY_DIRECTORIES = ("tools", "skills", "library")
 

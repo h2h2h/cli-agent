@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 from typing import Literal
 
+from cli_agent.runtime._capability.command_parser import parse_shell_command
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
@@ -23,7 +24,6 @@ from cli_agent.runtime._environment.routing import (
     _ExecutionRoute,
     _SchedulingClass,
 )
-from cli_agent.runtime.capability.command_parser import parse_shell_command
 
 
 class _BufferOutput:

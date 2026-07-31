@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal, Protocol
 
-from cli_agent.runtime.capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.command_parser import CommandParseResult
 
 _TerminalStatus = Literal["exited", "failed", "killed"]
 

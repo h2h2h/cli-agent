@@ -6,9 +6,9 @@ import ast
 import re
 from dataclasses import replace
 
-from cli_agent.runtime.capability.command_parser import CommandParseResult
-from cli_agent.runtime.capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime.capability.tools.facts import ToolCommand
+from cli_agent.runtime._capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime._capability.tools.facts import ToolCommand
 
 _HEREDOC_PATTERN = re.compile(
     r"\Atools[ \t]+run[ \t]+PY<<[ \t]*\r?\n(?P<code>.*)\r?\nPY[ \t]*\Z",

@@ -1,5 +1,7 @@
 """Provider-neutral building blocks for the cli-agent Runtime."""
 
+from cli_agent.runtime._capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.tools.facts import ToolCommand
 from cli_agent.runtime._environment.policy import (
     ApprovalResponse,
     ExecutablePolicy,
@@ -10,8 +12,6 @@ from cli_agent.runtime._environment.policy import (
     PolicyEvaluation,
 )
 from cli_agent.runtime._syscalls import SyscallSchema
-from cli_agent.runtime.capability.command_parser import CommandParseResult
-from cli_agent.runtime.capability.tools.facts import ToolCommand
 from cli_agent.runtime.model import (
     AssistantMessage,
     JSONValue,

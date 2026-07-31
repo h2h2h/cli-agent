@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from cli_agent.runtime.capability.command_parser import (
+from cli_agent.runtime._capability.command_parser import (
     _DIRECT_MUTATORS,
     CommandParseResult,
     ToolCommand,
