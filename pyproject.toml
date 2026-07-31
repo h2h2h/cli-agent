@@ -6,6 +6,7 @@ dependencies = [
     "httpx",
     "jsonschema>=4.21",
     "python-dotenv>=1.2.2",
+    "strictyaml>=1.7.3",
 ]
 
 [project.scripts]
