@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import os
 import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
 
 from dotenv.parser import parse_stream
-
-_WORKSPACE_STATE_DIRECTORY = ".workspace"
-_WORKSPACE_ENVIRONMENT_FILE = "env"
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,10 +27,10 @@ def _prepare_workspace(workspace: str | Path) -> _WorkspacePaths:
     if not root.is_dir():
         raise ValueError(f"workspace must be an existing directory: {workspace}")
 
-    state = root / _WORKSPACE_STATE_DIRECTORY
+    state = root / ".workspace"
     _ensure_real_directory(state, label="workspace state path")
 
-    environment = state / _WORKSPACE_ENVIRONMENT_FILE
+    environment = state / "env"
     _ensure_real_file(environment, label="workspace environment file")
 
     return _WorkspacePaths(
@@ -45,39 +43,9 @@ def _prepare_workspace(workspace: str | Path) -> _WorkspacePaths:
 def _load_workspace_env(environment: Path) -> Mapping[str, str]:
     """Load one complete dotenv mapping without mutating ``os.environ``."""
 
-    try:
-        entry_stat = environment.lstat()
-    except OSError as exc:
-        raise ValueError(
-            f"cannot inspect workspace environment file: {environment}"
-        ) from exc
-    if not stat.S_ISREG(entry_stat.st_mode):
-        raise ValueError(
-            f"workspace environment path must be a regular dotenv file: {environment}"
-        )
-
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        descriptor = os.open(environment, flags)
-    except OSError as exc:
-        raise ValueError(
-            f"cannot open workspace environment file: {environment}"
-        ) from exc
-
     loaded: dict[str, str] = {}
     try:
-        with os.fdopen(descriptor, encoding="utf-8") as stream:
-            opened_stat = os.fstat(stream.fileno())
-            if not stat.S_ISREG(opened_stat.st_mode) or (
-                opened_stat.st_dev,
-                opened_stat.st_ino,
-            ) != (entry_stat.st_dev, entry_stat.st_ino):
-                raise ValueError(
-                    f"workspace environment file changed while opening: {environment}"
-                )
-
+        with open(environment, encoding="utf-8") as stream:
             for binding in parse_stream(stream):
                 if binding.error:
                     raise ValueError(
@@ -140,3 +108,20 @@ def _ensure_real_file(path: Path, *, label: str) -> None:
         raise ValueError(f"cannot inspect {label}: {path}") from exc
     if not stat.S_ISREG(mode):
         raise ValueError(f"{label} must be a real regular file: {path}")
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    """Replace one file atomically with the given content."""
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()

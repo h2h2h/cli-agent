@@ -6,9 +6,9 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Protocol, TypeAlias
 
-from cli_agent.runtime._builtin_tools import (
-    BUILDIN_TOOL_SCHEMA_DEFINITIONS,
-    ToolSchema,
+from cli_agent.runtime._syscalls import (
+    BUILT_IN_SYSCALL_SCHEMAS,
+    SyscallSchema,
 )
 
 JSONValue: TypeAlias = (
@@ -95,8 +95,8 @@ class ModelRequest:
     """The provider-neutral conversation and fixed environment protocol."""
 
     messages: tuple[ModelMessage, ...]
-    tools: tuple[ToolSchema, ...] = field(
-        default=BUILDIN_TOOL_SCHEMA_DEFINITIONS,
+    tools: tuple[SyscallSchema, ...] = field(
+        default=BUILT_IN_SYSCALL_SCHEMAS,
         init=False,
     )
 

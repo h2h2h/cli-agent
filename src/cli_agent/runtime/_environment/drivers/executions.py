@@ -14,9 +14,6 @@ from cli_agent.runtime._environment.drivers.base import (
     _ExecutionOutput,
 )
 
-_OUTPUT_CHUNK_SIZE = 4096
-_TERMINATE_GRACE_SECONDS = 0.5
-
 _InlineHandler = Callable[[_ExecutionOutput], Awaitable[_ExecutionOutcome]]
 _ProcessSpawner = Callable[[], Awaitable[asyncio.subprocess.Process]]
 
@@ -112,7 +109,7 @@ class _ProcessExecution:
         try:
             await asyncio.wait_for(
                 self._completed.wait(),
-                timeout=_TERMINATE_GRACE_SECONDS,
+                timeout=0.5,
             )
         except asyncio.TimeoutError:
             _signal_process(process, force=True)
@@ -125,7 +122,7 @@ class _ProcessExecution:
     ) -> None:
         if stream is None:
             return
-        while data := await stream.read(_OUTPUT_CHUNK_SIZE):
+        while data := await stream.read(4096):
             await output.write(stream_name, data)
 
 

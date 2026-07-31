@@ -11,17 +11,11 @@ from cli_agent.runtime import (
     ToolCallReady,
 )
 
-_RESET = "\033[0m"
-_PROMPT_STYLE = "\033[1;36m"
-_TOOL_STYLE = "\033[1;35m"
-_COMMAND_STYLE = "\033[33m"
-_COMPLETION_STYLE = "\033[2;32m"
-
 
 def render_prompt(*, stderr: TextIO) -> None:
     """Render the interactive prompt."""
 
-    prompt = _styled("cli-agent> ", _PROMPT_STYLE, stream=stderr)
+    prompt = _styled("cli-agent> ", "\033[1;36m", stream=stderr)
     stderr.write(prompt)
     stderr.flush()
 
@@ -42,12 +36,13 @@ def render_event(
     if isinstance(event, ToolCallReady):
         diagnostic = _styled(
             f"[tool] {event.call.name}",
-            _TOOL_STYLE,
+            "\033[1;35m",
             stream=stderr,
         )
         command = event.call.arguments.get("command")
         if event.call.name == "exec" and isinstance(command, str):
-            diagnostic += f": {_styled(command, _COMMAND_STYLE, stream=stderr)}"
+            styled_command = _styled(command, "\033[33m", stream=stderr)
+            diagnostic += f": {styled_command}"
         print(diagnostic, file=stderr, flush=True)
         return
 
@@ -60,7 +55,7 @@ def render_event(
                 f",total:{event.usage.total_tokens}"
             )
         print(
-            _styled(diagnostic, _COMPLETION_STYLE, stream=stderr),
+            _styled(diagnostic, "\033[2;32m", stream=stderr),
             file=stderr,
             flush=True,
         )
@@ -72,4 +67,4 @@ def render_event(
 def _styled(text: str, style: str, *, stream: TextIO) -> str:
     if not stream.isatty():
         return text
-    return f"{style}{text}{_RESET}"
+    return f"{style}{text}\033[0m"

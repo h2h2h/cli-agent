@@ -15,35 +15,14 @@ from pathlib import Path
 from typing import AsyncIterator, Literal
 
 from cli_agent.runtime.capability.command_parser import (
+    _DIRECT_MUTATORS,
     CommandParseResult,
+    _sed_is_in_place,
     _shell_output_redirection_targets,
 )
+from cli_agent.runtime.capability.workspace import _ensure_real_directory
 
 _CAPABILITY_DIRECTORIES = ("tools", "skills", "library")
-_VIEW_METADATA_DIRECTORY = ".capability-view"
-_WHITEOUT_DIRECTORY = "whiteouts"
-_DIRECT_MUTATORS = frozenset(
-    {
-        "chmod",
-        "chown",
-        "cp",
-        "dd",
-        "install",
-        "ln",
-        "mkdir",
-        "mv",
-        "patch",
-        "rm",
-        "rmdir",
-        "sed",
-        "tee",
-        "touch",
-        "truncate",
-        "unlink",
-    }
-)
-_DELETE_EXECUTABLES = frozenset({"rm", "rmdir", "unlink"})
-_SHELL_EXPANSION_CHARACTERS = frozenset("*?[{~$`")
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +50,7 @@ class _CapabilityView:
         self.workspace = workspace
         self.root = workspace / ".workspace"
         self.repertoire = repertoire
-        self._whiteouts = self.root / _VIEW_METADATA_DIRECTORY / _WHITEOUT_DIRECTORY
+        self._whiteouts = self.root / ".capability-view" / "whiteouts"
         self._mutation_lock = asyncio.Lock()
 
     @classmethod
@@ -172,7 +151,7 @@ class _CapabilityView:
     def _prepare_layout(self) -> None:
         _ensure_real_directory(self.root, label="workspace state path")
         _ensure_real_directory(
-            self.root / _VIEW_METADATA_DIRECTORY,
+            self.root / ".capability-view",
             label="Capability View metadata path",
         )
         _ensure_real_directory(
@@ -314,7 +293,7 @@ class _CapabilityView:
     ) -> tuple[Path, ...]:
         executable = command.executable_basename
         operands = _operands(command.tokens[1:])
-        if executable in _DELETE_EXECUTABLES:
+        if executable in {"rm", "rmdir", "unlink"}:
             return self._normalize_targets(operands, cwd)
         if executable == "mv" and len(operands) >= 2:
             return self._normalize_targets(operands[:-1], cwd)
@@ -329,7 +308,7 @@ class _CapabilityView:
         for target in targets:
             if not target or target == "-":
                 continue
-            if any(character in target for character in _SHELL_EXPANSION_CHARACTERS):
+            if any(character in target for character in "*?[{~$`"):
                 return tuple(
                     self.root / name for name in _CAPABILITY_DIRECTORIES
                 )
@@ -481,21 +460,6 @@ def _prepare_repertoire(repertoire: str | Path | None) -> Path:
     return root
 
 
-def _ensure_real_directory(path: Path, *, label: str) -> None:
-    try:
-        path.mkdir(mode=0o700)
-    except FileExistsError:
-        pass
-    except OSError as exc:
-        raise ValueError(f"cannot create {label}: {path}") from exc
-    try:
-        mode = path.lstat().st_mode
-    except OSError as exc:
-        raise ValueError(f"cannot inspect {label}: {path}") from exc
-    if not stat.S_ISDIR(mode):
-        raise ValueError(f"{label} must be a real directory: {path}")
-
-
 def _managed_capability_path(path: str | Path) -> Path:
     relative = Path(path)
     if (
@@ -547,10 +511,6 @@ def _may_mutate(command: CommandParseResult) -> bool:
             or _sed_is_in_place(command.tokens[1:])
         )
     )
-
-
-def _sed_is_in_place(tokens: tuple[str, ...]) -> bool:
-    return any(token == "-i" or token.startswith("-i") for token in tokens)
 
 
 def _operands(tokens: tuple[str, ...]) -> list[str]:

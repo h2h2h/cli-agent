@@ -10,31 +10,11 @@ from typing import Protocol
 from uuid import uuid4
 
 from cli_agent.runtime.capability.command_parser import (
+    _DIRECT_MUTATORS,
     CommandParseResult,
     ToolCommand,
+    _sed_is_in_place,
 )
-
-_DEFAULT_ASKED_EXECUTABLES = frozenset(
-    {
-        "chmod",
-        "chown",
-        "cp",
-        "dd",
-        "install",
-        "ln",
-        "mkdir",
-        "mv",
-        "patch",
-        "rm",
-        "rmdir",
-        "tee",
-        "touch",
-        "truncate",
-        "unlink",
-    }
-)
-_DEFAULT_APPROVAL_CAPACITY = 8
-_DEFAULT_APPROVAL_TIMEOUT_SECONDS = 60.0
 
 
 class PolicyAction(str, Enum):
@@ -53,16 +33,6 @@ class PolicyEvaluation:
     parse_result: CommandParseResult
     rule_id: str
     reason: str | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.action, PolicyAction):
-            raise ValueError("policy evaluation action must be a PolicyAction")
-        if not self.rule_id:
-            raise ValueError("policy evaluation rule_id must be non-empty")
-        if self.action is PolicyAction.ALLOW and self.reason is not None:
-            raise ValueError("an allowed policy evaluation cannot have a reason")
-        if self.action is not PolicyAction.ALLOW and not self.reason:
-            raise ValueError("a denied or asked policy evaluation needs a reason")
 
     @classmethod
     def allow(
@@ -116,10 +86,6 @@ class ExecutionDecision:
     rule_id: str
     approval_request_id: str | None = None
 
-    def __post_init__(self) -> None:
-        if not self.rule_id:
-            raise ValueError("execution decision rule_id must be non-empty")
-
     @classmethod
     def allow(
         cls,
@@ -153,7 +119,7 @@ class ExecutablePolicy:
         *,
         allowed_executables: frozenset[str] = frozenset(),
         denied_executables: frozenset[str] = frozenset(),
-        asked_executables: frozenset[str] = _DEFAULT_ASKED_EXECUTABLES,
+        asked_executables: frozenset[str] = _DIRECT_MUTATORS,
         default_action: PolicyAction = PolicyAction.ALLOW,
     ) -> None:
         if not isinstance(default_action, PolicyAction):
@@ -217,10 +183,7 @@ class ExecutablePolicy:
         if (
             not matched
             and executable == "sed"
-            and any(
-                token == "-i" or token.startswith("-i")
-                for token in command.tokens[1:]
-            )
+            and _sed_is_in_place(command.tokens[1:])
         ):
             return PolicyEvaluation.ask(
                 command,
@@ -312,8 +275,8 @@ class _ExecutionApprovalGate:
         self,
         approver: ExecutionApprover,
         *,
-        capacity: int = _DEFAULT_APPROVAL_CAPACITY,
-        timeout_seconds: float = _DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+        capacity: int = 8,
+        timeout_seconds: float = 60.0,
     ) -> None:
         self._approver = approver
         self._capacity = capacity

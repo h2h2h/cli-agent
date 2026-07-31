@@ -6,17 +6,17 @@ import asyncio
 import hashlib
 import os
 import signal
-import stat
-import tempfile
 import venv
 import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
 from cli_agent.runtime.capability.view import _CapabilityView
+from cli_agent.runtime.capability.workspace import (
+    _atomic_write,
+    _ensure_real_directory,
+)
 
-_STATE_DIRECTORY = ".tool-environment"
-_VENV_DIRECTORY = ".venv"
 _EFFECTIVE_REQUIREMENTS = "effective-requirements.txt"
 _REQUIREMENTS_DIGEST = "requirements.sha256"
 _RECONCILE_LOCKS: weakref.WeakKeyDictionary[
@@ -42,7 +42,7 @@ class _ToolEnvironment:
         cls,
         capability_view: _CapabilityView,
     ) -> _ToolEnvironment:
-        root = capability_view.root / _STATE_DIRECTORY
+        root = capability_view.root / ".tool-environment"
         loop = asyncio.get_running_loop()
         locks = _RECONCILE_LOCKS.setdefault(loop, {})
         lock = locks.setdefault(root, asyncio.Lock())
@@ -56,13 +56,16 @@ class _ToolEnvironment:
         root: Path,
     ) -> _ToolEnvironment:
         try:
-            _ensure_real_directory(root)
-            venv_directory = root / _VENV_DIRECTORY
+            _ensure_real_directory(root, label="Tool environment path")
+            venv_directory = root / ".venv"
             created = not venv_directory.exists()
             if created:
                 await asyncio.to_thread(_create_venv, venv_directory)
             else:
-                _ensure_real_directory(venv_directory)
+                _ensure_real_directory(
+                    venv_directory,
+                    label="Tool venv path",
+                )
 
             python = _venv_python(venv_directory)
             requirements = capability_view.root / "tools" / "requirements.txt"
@@ -170,28 +173,3 @@ async def _sync_requirements(
             "dependency synchronization failed"
             + (f": {detail}" if detail else "")
         )
-
-
-def _ensure_real_directory(path: Path) -> None:
-    try:
-        path.mkdir(mode=0o700)
-    except FileExistsError:
-        pass
-    mode = path.lstat().st_mode
-    if not stat.S_ISDIR(mode):
-        raise ValueError(f"Tool environment path must be a real directory: {path}")
-
-
-def _atomic_write(path: Path, content: bytes) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()

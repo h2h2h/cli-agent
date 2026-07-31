@@ -8,6 +8,32 @@ from pathlib import Path
 
 from cli_agent.runtime.capability.tools.facts import ToolCommand
 
+_DIRECT_MUTATORS = frozenset(
+    {
+        "chmod",
+        "chown",
+        "cp",
+        "dd",
+        "install",
+        "ln",
+        "mkdir",
+        "mv",
+        "patch",
+        "rm",
+        "rmdir",
+        "tee",
+        "touch",
+        "truncate",
+        "unlink",
+    }
+)
+
+
+def _sed_is_in_place(tokens: tuple[str, ...]) -> bool:
+    """Return whether the operand tokens request an in-place sed edit."""
+
+    return any(token.startswith("-i") for token in tokens)
+
 
 @dataclass(frozen=True, slots=True)
 class CommandParseResult:

@@ -43,9 +43,6 @@ from cli_agent.runtime.capability.tools.grammar import classify_tool_command
 from cli_agent.runtime.capability.view import _CapabilityView
 from cli_agent.runtime.model import ToolCall, ToolResult
 
-_DEFAULT_CHUNK_LIMIT = 2_000
-_DEFAULT_BYTE_LIMIT = 1_048_576
-
 
 class EnvironmentKernel:
     """Own one Agent Session's stateful Workspace execution environment."""
@@ -56,8 +53,8 @@ class EnvironmentKernel:
         *,
         base_env: Mapping[str, str] | None = None,
         policy: ExecutionPolicy | None = None,
-        chunk_limit: int = _DEFAULT_CHUNK_LIMIT,
-        byte_limit: int = _DEFAULT_BYTE_LIMIT,
+        chunk_limit: int = 2_000,
+        byte_limit: int = 1_048_576,
         queue_limit: int = _DEFAULT_QUEUE_LIMIT,
         parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
         tool_parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
@@ -70,15 +67,7 @@ class EnvironmentKernel:
         tool_catalog: _ToolCatalog | None = None,
         tool_environment: _ToolEnvironment | None = None,
     ) -> None:
-        root = Path(workspace).resolve()
-        if not root.is_dir():
-            raise ValueError(f"workspace must be an existing directory: {workspace}")
-        if chunk_limit < 1:
-            raise ValueError("chunk_limit must be >= 1")
-        if byte_limit < 1:
-            raise ValueError("byte_limit must be >= 1")
-
-        self._workspace = root
+        self._workspace = Path(workspace).resolve()
         self._policy = ExecutablePolicy() if policy is None else policy
         self._approval_gate = approval_gate
         self._approval_session_id = approval_session_id
@@ -141,7 +130,7 @@ class EnvironmentKernel:
             return _protocol_error(
                 call.call_id,
                 code="invalid_argument",
-                message=f"unknown built-in tool: {call.name}",
+                message=f"unknown syscall: {call.name}",
             )
 
         if call.name == "exec":

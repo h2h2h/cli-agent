@@ -226,3 +226,38 @@ types, the Host injection points (`ExecutionPolicy`, `ExecutablePolicy`,
 `PolicyAction`), and the two Providers. Control-plane internals
 (`CommandParseResult`, `ToolCommand`, `ToolReference`, `PolicyEvaluation`,
 `ToolSchema`) stop being re-exported; tests import internal modules directly.
+
+### Amendment (recorded during step 5)
+
+The public-surface audit reversed the narrowing plan. Every type appearing in
+the signature of a Host-implemented interface is public by definition:
+`ExecutionPolicy.evaluate` receives a `CommandParseResult` (whose `tool`
+field exposes `ToolCommand`) and returns a `PolicyEvaluation`, and a custom
+`ModelProvider` receives a `ModelRequest` carrying `SyscallSchema` entries.
+The export list therefore maps exactly onto the three Host seams (Runtime
+lifecycle, model, policy) and no members were removed. The only change is
+terminology: `ToolSchema` → `SyscallSchema` and
+`BUILDIN_TOOL_SCHEMA_DEFINITIONS` → `BUILT_IN_SYSCALL_SCHEMAS` (also fixing
+the `BUILDIN` typo), with `_builtin_tools.py` renamed to `_syscalls.py`.
+
+Also completed under this step:
+
+- The recognized-mutator fact source was unified in
+  `capability/command_parser.py`: one `_DIRECT_MUTATORS` table (fifteen
+  names, `sed` excluded) and one `_sed_is_in_place` helper now feed both the
+  default Policy's asked set and the Capability View's mutation preparation.
+  The pre-existing behavioral difference on `sed` was already reconciled by
+  both sides gating on in-place detection, so the unification changes no
+  behavior.
+- Defensive checks re-verifying invariants already guaranteed by their own
+  constructors were removed per `AGENTS.override.md`: the dotenv
+  `O_NOFOLLOW`/`fstat` TOCTOU dance, `PolicyEvaluation.__post_init__`,
+  `ExecutionDecision.__post_init__`, and the Kernel constructor's duplicate
+  workspace/limit validations. Checks on genuinely external input (Host
+  configuration, Provider-reported usage, dotenv file format) remain.
+- Single-use module constants were inlined; constants shared across
+  signatures or call sites (`_DEFAULT_QUEUE_LIMIT`, `_DEFAULT_PARALLEL_LIMIT`,
+  `_CAPABILITY_DIRECTORIES`, `_EXECUTION_OUTPUT_SCHEMA`, the Tool environment
+  state file names) were kept. The triplicated `_ensure_real_directory` and
+  duplicated `_atomic_write` helpers converged into
+  `capability/workspace.py`.

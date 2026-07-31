@@ -5,13 +5,13 @@ from inspect import signature
 import pytest
 
 from cli_agent.runtime import ModelRequest, UserMessage
-from cli_agent.runtime._builtin_tools import BUILDIN_TOOL_SCHEMA_DEFINITIONS
+from cli_agent.runtime._syscalls import BUILT_IN_SYSCALL_SCHEMAS
 
 
 def test_model_request_exposes_the_exact_fixed_builtin_tools() -> None:
     request = ModelRequest(messages=(UserMessage.text("inspect the workspace"),))
 
-    assert request.tools is BUILDIN_TOOL_SCHEMA_DEFINITIONS
+    assert request.tools is BUILT_IN_SYSCALL_SCHEMAS
     assert len(request.tools) == 3
     assert tuple(schema.name for schema in request.tools) == (
         "exec",

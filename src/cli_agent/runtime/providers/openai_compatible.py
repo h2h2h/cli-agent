@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from cli_agent.runtime._builtin_tools import ToolSchema
+from cli_agent.runtime._syscalls import SyscallSchema
 from cli_agent.runtime.model import (
     AssistantMessage,
     ModelCompletion,
@@ -242,7 +242,7 @@ def _text_content(content: tuple[TextBlock, ...]) -> str:
     return "".join(block.text for block in content)
 
 
-def _tool_payload(tool: ToolSchema) -> dict[str, object]:
+def _tool_payload(tool: SyscallSchema) -> dict[str, object]:
     return {
         "type": "function",
         "function": {

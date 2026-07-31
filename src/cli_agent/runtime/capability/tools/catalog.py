@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import ast
 import keyword
-import os
-import tempfile
 from pathlib import Path
 
 from cli_agent.runtime.capability.tools.facts import ToolEntry
 from cli_agent.runtime.capability.view import _CapabilityView
-
-_INDEX_NAME = "index.md"
+from cli_agent.runtime.capability.workspace import _atomic_write
 
 
 class _ToolCatalog:
@@ -38,7 +35,10 @@ class _ToolCatalog:
             )
         )
         catalog = cls(entries)
-        _write_index(tools_directory / _INDEX_NAME, catalog.render_index())
+        _atomic_write(
+            tools_directory / "index.md",
+            catalog.render_index().encode("utf-8"),
+        )
         return catalog
 
     def get(self, name: str) -> ToolEntry | None:
@@ -201,21 +201,6 @@ def _read_companion_documentation(path: Path) -> str | None:
         return documentation.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError):
         return None
-
-
-def _write_index(path: Path, content: str) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=".cli-agent-tool-index-",
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(content)
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
 
 
 def _markdown_cell(value: str) -> str:

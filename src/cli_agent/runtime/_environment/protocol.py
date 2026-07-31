@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import jsonschema
 
-from cli_agent.runtime._builtin_tools import BUILDIN_TOOL_SCHEMA_DEFINITIONS
 from cli_agent.runtime._environment.execution import _ExecutionState
+from cli_agent.runtime._syscalls import BUILT_IN_SYSCALL_SCHEMAS
 from cli_agent.runtime.model import JSONValue, ToolCall, ToolResult
 
 _SCHEMA_BY_NAME = {
-    schema.name: schema.input_schema for schema in BUILDIN_TOOL_SCHEMA_DEFINITIONS
+    schema.name: schema.input_schema for schema in BUILT_IN_SYSCALL_SCHEMAS
 }
 
 
@@ -42,7 +42,7 @@ def _validate_arguments(
         return _protocol_error(
             call.call_id,
             code="internal",
-            message="built-in tool schema is broken",
+            message="syscall schema is broken",
         )
     return args
 

@@ -17,7 +17,7 @@ def test_exposes_provider_neutral_model_types() -> None:
         "ModelEvent",
         "ModelProvider",
         "JSONValue",
-        "ToolSchema",
+        "SyscallSchema",
         "ToolCall",
         "ToolCallReady",
         "ToolResult",
