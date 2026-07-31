@@ -212,14 +212,14 @@ def test_kernel_runs_and_cancels_driver_execution_without_driver_branch(
             byte_limit=1_000,
         )
         decision = ExecutionDecision.allow(parse_shell_command("fake command"))
-        state = kernel._admit(
+        state = kernel._supervisor.admit(
             decision,
             _shell_route(driver),
         )
         assert state is not None
         await execution.started.wait()
 
-        await kernel._terminate(state)
+        await kernel._supervisor.terminate(state)
 
         assert driver.prepared == [("fake command", tmp_path, {"SESSION": "value"})]
         assert state.status == "killed"
@@ -244,11 +244,11 @@ def test_driver_preparation_failure_releases_lane_for_queued_execution(
             byte_limit=1_000,
         )
         decision = ExecutionDecision.allow(parse_shell_command("fake command"))
-        failed = kernel._admit(
+        failed = kernel._supervisor.admit(
             decision,
             _shell_route(_FailingDriver()),
         )
-        queued = kernel._admit(
+        queued = kernel._supervisor.admit(
             decision,
             _shell_route(_SuccessfulDriver()),
         )

@@ -1,4 +1,4 @@
-"""Environment Kernel control and execution pipeline."""
+"""Environment Kernel: Session state aggregate and execution control plane."""
 
 from __future__ import annotations
 
@@ -7,27 +7,13 @@ from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 
-import jsonschema
-
-from cli_agent.runtime._builtin_tools import BUILDIN_TOOL_SCHEMA_DEFINITIONS
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
     _CustomCommandRegistry,
 )
-from cli_agent.runtime._environment.drivers.base import (
-    _DriverContext,
-    _ExecutionOutcome,
-    _ExecutionOutput,
-)
-from cli_agent.runtime._environment.drivers.executions import _InlineExecution
 from cli_agent.runtime._environment.drivers.shell import _ShellDriver
 from cli_agent.runtime._environment.drivers.tool import _ToolDriver
-from cli_agent.runtime._environment.execution import (
-    _ExecutionState,
-    _notify_changed,
-    _snapshot,
-    _StateOutput,
-)
+from cli_agent.runtime._environment.execution import _ExecutionState
 from cli_agent.runtime._environment.policy import (
     ApprovalResponse,
     ExecutablePolicy,
@@ -38,76 +24,27 @@ from cli_agent.runtime._environment.policy import (
     _ApprovalResolutionError,
     _ExecutionApprovalGate,
 )
-from cli_agent.runtime._environment.routing import (
-    _CommandRouter,
-    _DriverKind,
-    _ExecutionRoute,
-    _SchedulingClass,
+from cli_agent.runtime._environment.protocol import (
+    _SCHEMA_BY_NAME,
+    _protocol_error,
+    _snapshot,
+    _validate_arguments,
 )
+from cli_agent.runtime._environment.routing import _CommandRouter
 from cli_agent.runtime._environment.scheduler import (
     _DEFAULT_PARALLEL_LIMIT,
     _DEFAULT_QUEUE_LIMIT,
-    _ExecutionScheduler,
 )
+from cli_agent.runtime._environment.supervisor import _ExecutionSupervisor
 from cli_agent.runtime.capability.command_parser import parse_shell_command
 from cli_agent.runtime.capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime.capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime.capability.tools.grammar import classify_tool_command
 from cli_agent.runtime.capability.view import _CapabilityView
-from cli_agent.runtime.model import JSONValue, ToolCall, ToolResult
+from cli_agent.runtime.model import ToolCall, ToolResult
 
 _DEFAULT_CHUNK_LIMIT = 2_000
 _DEFAULT_BYTE_LIMIT = 1_048_576
-
-_SCHEMA_BY_NAME = {
-    schema.name: schema.input_schema for schema in BUILDIN_TOOL_SCHEMA_DEFINITIONS
-}
-
-
-def _protocol_error(
-    call_id: str,
-    *,
-    code: str,
-    message: str,
-) -> ToolResult:
-    return ToolResult(
-        call_id=call_id,
-        error={"ok": False, "code": code, "message": message},
-    )
-
-
-def _apply_defaults(
-    arguments: dict[str, JSONValue],
-    schema: dict[str, object],
-) -> dict[str, JSONValue]:
-    """Apply default values to missing arguments in a tool call."""
-    filled = dict(arguments)
-    for key, prop in schema.get("properties", {}).items():
-        if key not in filled and isinstance(prop, dict) and "default" in prop:
-            filled[key] = prop["default"]
-    return filled
-
-
-def _validate_arguments(
-    call: ToolCall,
-    schema: dict[str, object],
-) -> dict[str, JSONValue] | ToolResult:
-    args = _apply_defaults(call.arguments, schema)
-    try:
-        jsonschema.validate(args, schema)
-    except jsonschema.ValidationError as err:
-        return _protocol_error(
-            call.call_id,
-            code="invalid_argument",
-            message=err.message,
-        )
-    except jsonschema.SchemaError:
-        return _protocol_error(
-            call.call_id,
-            code="internal",
-            message="built-in tool schema is broken",
-        )
-    return args
 
 
 class EnvironmentKernel:
@@ -145,8 +82,6 @@ class EnvironmentKernel:
         self._policy = ExecutablePolicy() if policy is None else policy
         self._approval_gate = approval_gate
         self._approval_session_id = approval_session_id
-        self._chunk_limit = chunk_limit
-        self._byte_limit = byte_limit
         registry = (
             _CustomCommandRegistry(_builtin_custom_commands())
             if registry is None
@@ -164,16 +99,19 @@ class EnvironmentKernel:
             parallel_tools=frozenset(parallel_tools or ()),
         )
         self._tool_catalog = tool_catalog
-        self._scheduler = _ExecutionScheduler(
-            queue_limit,
-            parallel_limit,
-            tool_parallel_limit,
-        )
         self._env = dict(base_env or {})
         self._cwd = self._workspace
         self._executions: dict[str, _ExecutionState] = {}
         self._approval_tasks: set[asyncio.Task[object]] = set()
         self._closed = False
+        self._supervisor = _ExecutionSupervisor(
+            self,
+            queue_limit=queue_limit,
+            parallel_limit=parallel_limit,
+            tool_parallel_limit=tool_parallel_limit,
+            chunk_limit=chunk_limit,
+            byte_limit=byte_limit,
+        )
 
     async def close(self) -> None:
         """Close this Session-scoped Kernel idempotently."""
@@ -186,14 +124,7 @@ class EnvironmentKernel:
             task.cancel()
         if approval_tasks:
             await asyncio.gather(*approval_tasks, return_exceptions=True)
-        pending = self._scheduler.close()
-        for state in pending:
-            state.kill_requested = True
-            state.status = "killed"
-            await _notify_changed(state)
-        for state in tuple(self._executions.values()):
-            await self._terminate(state)
-        self._executions.clear()
+        await self._supervisor.close()
         self._env.clear()
 
     async def dispatch(self, call: ToolCall) -> ToolResult:
@@ -294,7 +225,7 @@ class EnvironmentKernel:
                 message="execution route is not supported",
             )
 
-        state = self._admit(decision, route)
+        state = self._supervisor.admit(decision, route)
         if state is None:
             return _protocol_error(
                 call.call_id,
@@ -425,7 +356,7 @@ class EnvironmentKernel:
                 code="unknown_execution",
                 message="execution not found",
             )
-        await self._wait_for_output(
+        await self._supervisor.wait_for_output(
             state,
             cursor=args["cursor"],
             wait_ms=args["wait_ms"],
@@ -450,7 +381,7 @@ class EnvironmentKernel:
                 code="unknown_execution",
                 message="execution not found",
             )
-        await self._terminate(state)
+        await self._supervisor.terminate(state)
         return ToolResult(
             call_id=call.call_id,
             output=_snapshot(
@@ -460,105 +391,5 @@ class EnvironmentKernel:
             ),
         )
 
-    def _admit(
-        self,
-        decision: ExecutionDecision,
-        route: _ExecutionRoute,
-    ) -> _ExecutionState | None:
-        admission = self._scheduler.admit(decision, route)
-        if admission is None:
-            return None
-
-        state = admission.state
-        self._executions[state.exec_id] = state
-        for runnable in admission.runnable:
-            self._start_execution(runnable)
-        return state
-
-    async def _wait_for_output(
-        self,
-        state: _ExecutionState,
-        *,
-        cursor: int,
-        wait_ms: int,
-    ) -> None:
-        if wait_ms <= 0 or cursor < len(state.chunks) or state.is_terminal:
-            return
-        with suppress(asyncio.TimeoutError):
-            async with state.changed:
-                await asyncio.wait_for(
-                    state.changed.wait_for(
-                        lambda: cursor < len(state.chunks) or state.is_terminal
-                    ),
-                    timeout=wait_ms / 1000,
-                )
-
-    async def _terminate(self, state: _ExecutionState) -> None:
-        async with state.termination_lock:
-            if state.is_terminal:
-                return
-
-            if state.status == "queued" and self._scheduler.cancel_pending(state):
-                await _notify_changed(state)
-                return
-
-            state.kill_requested = True
-            execution = state.driver_execution
-            if execution is None:
-                raise RuntimeError("running Execution has no Driver Execution")
-            await execution.cancel()
-            if state.completion_task is not None:
-                with suppress(Exception):
-                    await state.completion_task
-
-    def _start_execution(self, state: _ExecutionState) -> None:
-        isolate_context = (
-            state.route.scheduling is _SchedulingClass.PARALLEL_SAFE
-            or state.route.driver_kind is _DriverKind.TOOL
-        )
-        context = _DriverContext(
-            workspace=self._workspace,
-            cwd=self._cwd,
-            environment=dict(self._env) if isolate_context else self._env,
-            set_cwd=None if isolate_context else self._set_cwd,
-        )
-        try:
-            execution = state.route.driver.prepare(
-                state.decision.parse_result,
-                context,
-            )
-        except Exception:
-            execution = _InlineExecution(_preparation_failed)
-        state.driver_execution = execution
-        state.completion_task = asyncio.create_task(self._run_execution(state))
-
     def _set_cwd(self, cwd: Path) -> None:
         self._cwd = cwd
-
-    async def _run_execution(self, state: _ExecutionState) -> None:
-        execution = state.driver_execution
-        if execution is None:
-            raise RuntimeError("running Execution has no Driver Execution")
-        output = _StateOutput(
-            state,
-            chunk_bound=self._chunk_limit,
-            byte_bound=self._byte_limit,
-        )
-        try:
-            outcome = await execution.run(output)
-        except Exception:
-            outcome = (
-                _ExecutionOutcome.killed()
-                if state.kill_requested
-                else _ExecutionOutcome.failed()
-            )
-        state.status = outcome.status
-        state.exit_code = outcome.exit_code
-        for runnable in self._scheduler.complete(state):
-            self._start_execution(runnable)
-        await _notify_changed(state)
-
-
-async def _preparation_failed(output: _ExecutionOutput) -> _ExecutionOutcome:
-    del output
-    return _ExecutionOutcome.failed()

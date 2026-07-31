@@ -37,27 +37,6 @@ class _ExecutionState:
         return self.status in _TERMINAL_STATUSES
 
 
-def _snapshot(
-    state: _ExecutionState,
-    *,
-    cursor: int,
-    limit: int,
-) -> dict[str, JSONValue]:
-    chunks = list(state.chunks[cursor : cursor + limit])
-    next_cursor = cursor + len(chunks)
-    return {
-        "ok": True,
-        "exec_id": state.exec_id,
-        "status": state.status,
-        "exit_code": state.exit_code,
-        "chunks": chunks,
-        "next_cursor": next_cursor,
-        "is_terminal": state.is_terminal,
-        "truncated": state.truncated,
-        "available_from": 0,
-    }
-
-
 class _StateOutput:
     """Bound and publish Driver output for one live Execution State."""
 

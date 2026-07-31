@@ -76,11 +76,11 @@ src/cli_agent/
     │       # skills/  library/    # symmetric landing spots for M8 / M9
     │
     └── environment/               # Session-lifetime Environment Kernel domain
-        ├── kernel.py              # Session state aggregate (after split)
-        ├── protocol.py            # syscall validation/snapshots
-        │                          #   (split from kernel, mostly pure)
-        ├── supervisor.py          # Driver supervision + approval
-        │                          #   coordination (split from kernel)
+        ├── kernel.py              # Session state aggregate + control plane
+        ├── protocol.py            # syscall argument validation and result
+        │                          #   payload shapes (incl. _snapshot)
+        ├── supervisor.py          # Execution supervision: scheduling,
+        │                          #   Driver lifecycle, cancellation
         ├── policy.py  routing.py  scheduler.py  execution.py
         ├── drivers/               # kept as a subpackage: real polymorphic
         │   │                      #   seam, grows with MCP
@@ -186,6 +186,25 @@ functions, no Session or Workspace state), so it belongs to the lower layer.
 With it under `capability/`, the runtime import graph is strictly one-way:
 `environment → capability → leaf modules`, verified mechanically by grep over
 `capability/`'s imports.
+
+### Amendment (recorded during step 4)
+
+Two placements differ from the original split sketch:
+
+- **Approval stays in the Kernel.** `_authorize` consumes a PolicyEvaluation
+  and produces an ExecutionDecision without touching the Scheduler, the
+  Execution registry, or Drivers — it is control-plane, not supervision. The
+  `_approval_tasks` set exists only so `close()` can cancel in-flight
+  approvals, so it follows the Kernel lifecycle.
+- **`_snapshot` moved to `protocol.py`.** Its only callers assemble syscall
+  result payloads, and its output shape mirrors the
+  `_EXECUTION_OUTPUT_SCHEMA` in `_builtin_tools.py`; the protocol module owns
+  every model-visible payload shape.
+
+The supervisor reaches Session state (workspace, cwd, env, the Execution
+registry) through a `session` back-reference to its Kernel, annotated under
+`TYPE_CHECKING`. The Kernel remains the single owner of Session state, which
+keeps the white-box tests (`kernel._executions`, `kernel._env`) valid.
 
 ## Migration sequence
 
