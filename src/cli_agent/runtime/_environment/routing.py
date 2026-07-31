@@ -32,8 +32,8 @@ class _SchedulingClass(Enum):
 class _ExecutionRoute:
     """One per-command route selected after Policy allows the exact command."""
 
-    driver_kind: _DriverKind
-    scheduling: _SchedulingClass
+    driver_kind: _DriverKind # CUSTOM / SHELL / TOOL
+    scheduling: _SchedulingClass # SERIAL / PARALLEL_SAFE
     driver: _ExecutionDriver
 
     @property

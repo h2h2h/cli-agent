@@ -172,6 +172,8 @@ class EnvironmentKernel:
         if isinstance(args, ToolResult):
             return args
         command = parse_shell_command(args["command"])
+        # command.tool (`CommandParseResult`) is always `None` when parsed from a raw command string.
+        # _tool_catalog is used to judge if it is a tool command and enrich the `CommandParseResult`.
         if self._tool_catalog is not None:
             command = classify_tool_command(command, self._tool_catalog)
         try:
@@ -191,6 +193,8 @@ class EnvironmentKernel:
                 code="internal",
                 message="execution policy failed closed",
             )
+        # evaluation is one of `allow`, `deny`, or `ask`
+        # if `ask`, the approver_gate will be used in _authroze 
         authorization = await self._authorize(
             call.call_id,
             evaluation,
