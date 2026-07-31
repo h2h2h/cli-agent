@@ -42,7 +42,7 @@ def _prepare_workspace(workspace: str | Path) -> _WorkspacePaths:
     )
 
 
-def _load_workspace_environment(environment: Path) -> Mapping[str, str]:
+def _load_workspace_env(environment: Path) -> Mapping[str, str]:
     """Load one complete dotenv mapping without mutating ``os.environ``."""
 
     try:

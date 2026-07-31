@@ -22,7 +22,7 @@ from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime._tool_catalog import _ToolCatalog
 from cli_agent.runtime._tool_environment import _ToolEnvironment
 from cli_agent.runtime._workspace import (
-    _load_workspace_environment,
+    _load_workspace_env,
     _prepare_workspace,
 )
 from cli_agent.runtime.model import ModelEvent, ModelProvider, UserMessage
@@ -150,7 +150,7 @@ class AgentRuntime:
         """Prepare Workspace-scoped resources and construct the Runtime."""
 
         paths = _prepare_workspace(workspace)
-        base_env = _load_workspace_environment(paths.environment)
+        base_env = _load_workspace_env(paths.environment)
         capability_view = _CapabilityView.open(paths.root, repertoire)
         tool_catalog = _ToolCatalog.reconcile(capability_view)
         tool_environment = await _ToolEnvironment.reconcile(capability_view)
