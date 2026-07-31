@@ -8,8 +8,8 @@ import os
 import tempfile
 from pathlib import Path
 
-from cli_agent.runtime._capability_view import _CapabilityView
 from cli_agent.runtime.capability.tools.facts import ToolEntry
+from cli_agent.runtime.capability.view import _CapabilityView
 
 _INDEX_NAME = "index.md"
 

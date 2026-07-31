@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from cli_agent.runtime._environment.command_parser import CommandParseResult
 from cli_agent.runtime._environment.drivers.base import _ExecutionDriver
 from cli_agent.runtime._environment.drivers.custom import _CustomDriver
 from cli_agent.runtime._environment.drivers.tool import _ToolDriver
 from cli_agent.runtime._environment.policy import ExecutionDecision
+from cli_agent.runtime.capability.command_parser import CommandParseResult
 
 
 class _DriverKind(Enum):

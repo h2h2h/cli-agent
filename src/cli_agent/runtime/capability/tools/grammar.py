@@ -6,8 +6,8 @@ import ast
 import re
 from dataclasses import replace
 
-from cli_agent.runtime._environment.command_parser import CommandParseResult
-from cli_agent.runtime._tool_catalog import _ToolCatalog
+from cli_agent.runtime.capability.command_parser import CommandParseResult
+from cli_agent.runtime.capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime.capability.tools.facts import ToolCommand
 
 _HEREDOC_PATTERN = re.compile(

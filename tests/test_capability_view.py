@@ -11,15 +11,15 @@ from cli_agent.runtime import (
     ToolCall,
     ToolResult,
 )
-from cli_agent.runtime._capability_view import _CapabilityView
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._environment.command_parser import parse_shell_command
 from cli_agent.runtime._environment.drivers.base import (
     _DriverContext,
     _ExecutionOutcome,
 )
 from cli_agent.runtime._environment.drivers.shell import _ShellDriver
 from cli_agent.runtime._environment.policy import _ExecutionApprovalGate
+from cli_agent.runtime.capability.command_parser import parse_shell_command
+from cli_agent.runtime.capability.view import _CapabilityView
 
 
 def test_attach_exposes_lower_files_and_preserves_workspace_overrides(

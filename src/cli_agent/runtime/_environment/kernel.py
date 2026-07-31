@@ -10,8 +10,6 @@ from pathlib import Path
 import jsonschema
 
 from cli_agent.runtime._builtin_tools import BUILDIN_TOOL_SCHEMA_DEFINITIONS
-from cli_agent.runtime._capability_view import _CapabilityView
-from cli_agent.runtime._environment.command_parser import ShlexCommandParser
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
     _CustomCommandRegistry,
@@ -53,9 +51,11 @@ from cli_agent.runtime._environment.scheduler import (
     _DEFAULT_QUEUE_LIMIT,
     _ExecutionScheduler,
 )
-from cli_agent.runtime._tool_catalog import _ToolCatalog
-from cli_agent.runtime._tool_commands import classify_tool_command
-from cli_agent.runtime._tool_environment import _ToolEnvironment
+from cli_agent.runtime.capability.command_parser import ShlexCommandParser
+from cli_agent.runtime.capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime.capability.tools.environment import _ToolEnvironment
+from cli_agent.runtime.capability.tools.grammar import classify_tool_command
+from cli_agent.runtime.capability.view import _CapabilityView
 from cli_agent.runtime.model import JSONValue, ToolCall, ToolResult
 
 _DEFAULT_CHUNK_LIMIT = 2_000

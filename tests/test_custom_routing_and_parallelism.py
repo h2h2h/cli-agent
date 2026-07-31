@@ -5,7 +5,6 @@ from pathlib import Path
 
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._environment.command_parser import parse_shell_command
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
     _CustomCommandRegistry,
@@ -24,6 +23,7 @@ from cli_agent.runtime._environment.routing import (
     _DriverKind,
     _SchedulingClass,
 )
+from cli_agent.runtime.capability.command_parser import parse_shell_command
 
 
 def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> None:

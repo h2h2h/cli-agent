@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from cli_agent.runtime._environment.command_parser import CommandParseResult
 from cli_agent.runtime._environment.commands.registry import (
     _CustomCommandRegistry,
     _CustomCommandSpec,
@@ -11,6 +10,7 @@ from cli_agent.runtime._environment.drivers.base import (
     _DriverContext,
     _DriverExecution,
 )
+from cli_agent.runtime.capability.command_parser import CommandParseResult
 
 
 class _CustomDriver:

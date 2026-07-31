@@ -61,6 +61,10 @@ src/cli_agent/
     │   │                          #   (from runtime/_workspace.py)
     │   ├── view.py                # Capability View overlay
     │   │                          #   (from runtime/_capability_view.py)
+    │   ├── command_parser.py      # command language: CommandParseResult,
+    │   │                          #   parser, syntax helpers (from
+    │   │                          #   _environment/command_parser.py;
+    │   │                          #   see amendment below)
     │   └── tools/
     │       ├── facts.py           # ToolCommand / ToolReference / unified
     │       │                      #   provenance record (pure-data leaf)
@@ -77,8 +81,6 @@ src/cli_agent/
         │                          #   (split from kernel, mostly pure)
         ├── supervisor.py          # Driver supervision + approval
         │                          #   coordination (split from kernel)
-        ├── parsing.py             # from command_parser.py: ABC removed,
-        │                          #   Tool types removed
         ├── policy.py  routing.py  scheduler.py  execution.py
         ├── drivers/               # kept as a subpackage: real polymorphic
         │   │                      #   seam, grows with MCP
@@ -168,6 +170,23 @@ capability/tools/facts.py            (imports nothing outside stdlib/typing)
 The test for a misplaced module: if anything under `capability/` reaches for
 a Session concept, it belongs elsewhere.
 
+### Amendment (recorded during step 2)
+
+`command_parser.py` lives under `capability/`, not `environment/`. The
+original layout placed the parser in `environment/parsing.py`, but two
+capability modules consume its products at runtime: `view.py` prepares
+mutations for a parsed command, and `tools/grammar.py` enriches one. Keeping
+the parser in `environment/` would have made `capability/` import
+`environment/` while `environment/` imported `capability.tools.facts` — a
+bidirectional package dependency, exactly what the invariant exists to
+prevent.
+
+The parser is pure command-language knowledge (immutable data + pure
+functions, no Session or Workspace state), so it belongs to the lower layer.
+With it under `capability/`, the runtime import graph is strictly one-way:
+`environment → capability → leaf modules`, verified mechanically by grep over
+`capability/`'s imports.
+
 ## Migration sequence
 
 Each step is independently committable and leaves the test suite green.
@@ -176,8 +195,8 @@ Ordering moves leaves before roots so no module is reshaped twice.
 | Step | Content | Character |
 |---|---|---|
 | 1 | Move `ToolCommand`/`ToolReference` into `capability/tools/facts.py`; unify the three near-duplicate provenance dataclasses (`_ToolEntry`, `ToolReference`, `_CapabilityInspection`) onto one shared record with per-context additions | pure move, lowest risk |
-| 2 | Create `capability/`; move the five Workspace-lifetime modules (`_workspace.py`, `_capability_view.py`, `_tool_catalog.py`, `_tool_commands.py`, `_tool_environment.py`, `_tool_worker.py`); fix the worker path computation in `drivers/tool.py` that currently hardcodes `Path(__file__).parents[2]` | mechanical move |
-| 3 | Subtract inside `environment/`: flatten `commands/` into one `commands.py`; delete `drivers/custom.py` (router calls `spec.prepare` directly); delete the `CommandParser` ABC and the `parse_shell_command` wrapper (one plain function); delete the `_route_decision` pass-through | pure subtraction |
+| 2 | Create `capability/`; move the Workspace-lifetime modules (`_workspace.py`, `_capability_view.py`, `_tool_catalog.py`, `_tool_commands.py`, `_tool_environment.py`, `_tool_worker.py`) plus `_environment/command_parser.py` (see amendment); replace the worker path computation in `drivers/tool.py` (`Path(__file__).parents[2]`) with `importlib.resources.files` | mechanical move |
+| 3 | Subtract inside `environment/` (and the moved parser): flatten `commands/` into one `commands.py`; delete `drivers/custom.py` (router calls `spec.prepare` directly); delete the `CommandParser` ABC and the `parse_shell_command` wrapper in `capability/command_parser.py` (one plain function); delete the `_route_decision` pass-through | pure subtraction |
 | 4 | Split the Kernel God Class into `kernel.py` (Session state aggregate), `protocol.py` (syscall validation/snapshots), `supervisor.py` (Driver supervision + approval coordination) | structural, test-backed |
 | 5 | Rename `_builtin_tools.py` → `_syscalls.py`; narrow `runtime/__init__.py` to the true Host surface; unify the mutator fact source (`_DIRECT_MUTATORS` vs `_DEFAULT_ASKED_EXECUTABLES`, including the duplicated in-place-`sed` detectors); remove defensive checks and single-use constants per `AGENTS.override.md` | finishing pass |
 

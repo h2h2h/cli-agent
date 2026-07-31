@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-from cli_agent.runtime._environment.command_parser import CommandParseResult
+from cli_agent.runtime.capability.command_parser import CommandParseResult
 
 if TYPE_CHECKING:
     from cli_agent.runtime._environment.drivers.base import (

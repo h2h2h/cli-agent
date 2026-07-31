@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Literal
 
-from cli_agent.runtime._environment.command_parser import (
+from cli_agent.runtime.capability.command_parser import (
     CommandParseResult,
     _shell_output_redirection_targets,
 )

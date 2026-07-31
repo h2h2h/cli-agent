@@ -13,7 +13,7 @@ import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
-from cli_agent.runtime._capability_view import _CapabilityView
+from cli_agent.runtime.capability.view import _CapabilityView
 
 _STATE_DIRECTORY = ".tool-environment"
 _VENV_DIRECTORY = ".venv"

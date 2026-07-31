@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from pathlib import Path
+from importlib.resources import files
 
-from cli_agent.runtime._environment.command_parser import CommandParseResult
 from cli_agent.runtime._environment.drivers.base import (
     _DriverContext,
     _DriverExecution,
@@ -18,8 +17,9 @@ from cli_agent.runtime._environment.drivers.executions import (
     _InlineExecution,
     _ProcessExecution,
 )
-from cli_agent.runtime._tool_catalog import _ToolCatalog
-from cli_agent.runtime._tool_environment import _ToolEnvironment
+from cli_agent.runtime.capability.command_parser import CommandParseResult
+from cli_agent.runtime.capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime.capability.tools.environment import _ToolEnvironment
 
 
 class _ToolDriver:
@@ -76,7 +76,7 @@ class _ToolDriver:
             ensure_ascii=False,
         ).encode("utf-8")
         python = self._environment.python
-        worker = Path(__file__).parents[2] / "_tool_worker.py"
+        worker = files("cli_agent.runtime.capability.tools").joinpath("worker.py")
         child_env = dict(os.environ) | context.environment
         child_env["VIRTUAL_ENV"] = str(self._environment.root / ".venv")
         child_env["PYTHONNOUSERSITE"] = "1"

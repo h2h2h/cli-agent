@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from cli_agent.runtime._environment.command_parser import CommandParseResult
 from cli_agent.runtime._environment.commands.registry import _CustomCommandSpec
 from cli_agent.runtime._environment.drivers.base import (
     _DriverContext,
@@ -13,6 +12,7 @@ from cli_agent.runtime._environment.drivers.base import (
     _ExecutionOutput,
 )
 from cli_agent.runtime._environment.drivers.executions import _InlineExecution
+from cli_agent.runtime.capability.command_parser import CommandParseResult
 
 
 def _builtin_custom_commands() -> tuple[_CustomCommandSpec, ...]:
