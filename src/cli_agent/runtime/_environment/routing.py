@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from cli_agent.runtime._environment.commands import _CustomCommandRegistry
 from cli_agent.runtime._environment.drivers.base import _ExecutionDriver
-from cli_agent.runtime._environment.drivers.custom import _CustomDriver
 from cli_agent.runtime._environment.drivers.tool import _ToolDriver
 from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime.capability.command_parser import CommandParseResult
@@ -35,7 +35,14 @@ class _ExecutionRoute:
     driver_kind: _DriverKind
     scheduling: _SchedulingClass
     driver: _ExecutionDriver
-    lane: _ExecutionLane = _ExecutionLane.DEFAULT
+
+    @property
+    def lane(self) -> _ExecutionLane:
+        return (
+            _ExecutionLane.TOOL
+            if self.driver_kind is _DriverKind.TOOL
+            else _ExecutionLane.DEFAULT
+        )
 
 
 class _CommandRouter:
@@ -45,7 +52,7 @@ class _CommandRouter:
         self,
         *,
         shell_driver: _ExecutionDriver,
-        custom_driver: _CustomDriver,
+        custom_registry: _CustomCommandRegistry,
         tool_driver: _ToolDriver | None = None,
         parallel_commands: frozenset[str] = frozenset(),
         parallel_tools: frozenset[str] = frozenset(),
@@ -60,7 +67,7 @@ class _CommandRouter:
                 "parallel Shell command names must be non-empty executable basenames"
             )
         self._shell_driver = shell_driver
-        self._custom_driver = custom_driver
+        self._custom_registry = custom_registry
         self._tool_driver = tool_driver
         self._parallel_commands = parallel_commands
         self._parallel_tools = parallel_tools
@@ -76,19 +83,18 @@ class _CommandRouter:
                 driver_kind=_DriverKind.TOOL,
                 scheduling=self._tool_scheduling(command),
                 driver=self._tool_driver,
-                lane=_ExecutionLane.TOOL,
             )
 
-        custom = self._custom_driver.resolve(command)
+        custom = self._custom_registry.resolve(command)
         if custom is not None:
             return _ExecutionRoute(
                 driver_kind=_DriverKind.CUSTOM,
                 scheduling=(
                     _SchedulingClass.PARALLEL_SAFE
-                    if custom.is_parallel_safe(command)
+                    if custom.parallel_safe
                     else _SchedulingClass.SERIAL
                 ),
-                driver=self._custom_driver.bind(custom),
+                driver=custom,
             )
 
         return _ExecutionRoute(
@@ -130,12 +136,3 @@ class _CommandRouter:
         ):
             return _SchedulingClass.PARALLEL_SAFE
         return _SchedulingClass.SERIAL
-
-
-def _route_decision(
-    decision: ExecutionDecision,
-    router: _CommandRouter,
-) -> _ExecutionRoute:
-    """Compatibility entrypoint for the Kernel's linear control path."""
-
-    return router.route(decision)

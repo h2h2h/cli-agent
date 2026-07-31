@@ -12,7 +12,6 @@ from cli_agent.runtime._environment.drivers.base import (
     _ExecutionOutcome,
     _ExecutionOutput,
 )
-from cli_agent.runtime._environment.drivers.custom import _CustomDriver
 from cli_agent.runtime._environment.drivers.executions import (
     _InlineExecution,
     _ProcessExecution,
@@ -49,14 +48,12 @@ def test_custom_driver_prepares_export_and_shell_driver_prepares_process(
             cwd=tmp_path,
             environment=environment,
         )
-        custom_driver = _CustomDriver(
-            _CustomCommandRegistry(_builtin_custom_commands())
-        )
+        registry = _CustomCommandRegistry(_builtin_custom_commands())
 
         export = parse_shell_command("export A=1 MESSAGE='two words'")
-        export_spec = custom_driver.resolve(export)
+        export_spec = registry.resolve(export)
         assert export_spec is not None
-        execution = custom_driver.bind(export_spec).prepare(export, context)
+        execution = export_spec.prepare(export, context)
 
         assert isinstance(execution, _InlineExecution)
         assert environment == {}
@@ -78,13 +75,11 @@ def test_inline_export_cancelled_before_run_does_not_mutate_session(
 ) -> None:
     async def scenario() -> None:
         environment: dict[str, str] = {}
-        driver = _CustomDriver(
-            _CustomCommandRegistry(_builtin_custom_commands())
-        )
+        registry = _CustomCommandRegistry(_builtin_custom_commands())
         command = parse_shell_command("export CANCELLED=yes")
-        spec = driver.resolve(command)
+        spec = registry.resolve(command)
         assert spec is not None
-        execution = driver.bind(spec).prepare(
+        execution = spec.prepare(
             command,
             _DriverContext(
                 workspace=tmp_path,
@@ -127,13 +122,11 @@ def test_invalid_inline_export_reports_failure_without_mutation(
     async def scenario() -> None:
         environment = {"PRESERVED": "yes"}
         output = _BufferOutput()
-        driver = _CustomDriver(
-            _CustomCommandRegistry(_builtin_custom_commands())
-        )
+        registry = _CustomCommandRegistry(_builtin_custom_commands())
         command = parse_shell_command("export VALID=value BROKEN")
-        spec = driver.resolve(command)
+        spec = registry.resolve(command)
         assert spec is not None
-        execution = driver.bind(spec).prepare(
+        execution = spec.prepare(
             command,
             _DriverContext(
                 workspace=tmp_path,

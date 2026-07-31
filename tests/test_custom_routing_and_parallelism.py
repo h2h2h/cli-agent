@@ -14,7 +14,6 @@ from cli_agent.runtime._environment.drivers.base import (
     _ExecutionOutcome,
     _ExecutionOutput,
 )
-from cli_agent.runtime._environment.drivers.custom import _CustomDriver
 from cli_agent.runtime._environment.drivers.executions import _InlineExecution
 from cli_agent.runtime._environment.drivers.shell import _ShellDriver
 from cli_agent.runtime._environment.policy import ExecutionDecision
@@ -48,7 +47,7 @@ def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> No
     )
     router = _CommandRouter(
         shell_driver=_ShellDriver(),
-        custom_driver=_CustomDriver(registry),
+        custom_registry=registry,
         parallel_commands=frozenset({"cat"}),
     )
 

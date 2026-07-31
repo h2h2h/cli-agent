@@ -13,7 +13,6 @@ from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
     _CustomCommandRegistry,
 )
-from cli_agent.runtime._environment.drivers.custom import _CustomDriver
 from cli_agent.runtime._environment.drivers.shell import _ShellDriver
 from cli_agent.runtime._environment.execution import _ExecutionState
 from cli_agent.runtime._environment.policy import (
@@ -22,7 +21,7 @@ from cli_agent.runtime._environment.policy import (
     PolicyAction,
     PolicyEvaluation,
 )
-from cli_agent.runtime._environment.routing import _CommandRouter, _route_decision
+from cli_agent.runtime._environment.routing import _CommandRouter
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
 from cli_agent.runtime.capability.command_parser import (
     CommandParseResult,
@@ -34,7 +33,7 @@ def _router() -> _CommandRouter:
     registry = _CustomCommandRegistry(_builtin_custom_commands())
     return _CommandRouter(
         shell_driver=_ShellDriver(),
-        custom_driver=_CustomDriver(registry),
+        custom_registry=registry,
     )
 
 
@@ -985,11 +984,11 @@ def test_pending_kill_and_promotion_have_one_atomic_winner() -> None:
     cancel_wins = _ExecutionScheduler(queue_limit=1)
     running_admission = cancel_wins.admit(
         decision,
-        _route_decision(decision, _router()),
+        _router().route(decision),
     )
     queued_admission = cancel_wins.admit(
         decision,
-        _route_decision(decision, _router()),
+        _router().route(decision),
     )
     assert running_admission is not None
     assert queued_admission is not None
@@ -1005,11 +1004,11 @@ def test_pending_kill_and_promotion_have_one_atomic_winner() -> None:
     promotion_wins = _ExecutionScheduler(queue_limit=1)
     running_admission = promotion_wins.admit(
         decision,
-        _route_decision(decision, _router()),
+        _router().route(decision),
     )
     queued_admission = promotion_wins.admit(
         decision,
-        _route_decision(decision, _router()),
+        _router().route(decision),
     )
     assert running_admission is not None
     assert queued_admission is not None

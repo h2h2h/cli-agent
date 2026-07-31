@@ -19,7 +19,6 @@ from cli_agent.runtime._environment.drivers.base import (
     _ExecutionOutcome,
     _ExecutionOutput,
 )
-from cli_agent.runtime._environment.drivers.custom import _CustomDriver
 from cli_agent.runtime._environment.drivers.executions import _InlineExecution
 from cli_agent.runtime._environment.drivers.shell import _ShellDriver
 from cli_agent.runtime._environment.drivers.tool import _ToolDriver
@@ -43,7 +42,6 @@ from cli_agent.runtime._environment.routing import (
     _CommandRouter,
     _DriverKind,
     _ExecutionRoute,
-    _route_decision,
     _SchedulingClass,
 )
 from cli_agent.runtime._environment.scheduler import (
@@ -51,7 +49,7 @@ from cli_agent.runtime._environment.scheduler import (
     _DEFAULT_QUEUE_LIMIT,
     _ExecutionScheduler,
 )
-from cli_agent.runtime.capability.command_parser import ShlexCommandParser
+from cli_agent.runtime.capability.command_parser import parse_shell_command
 from cli_agent.runtime.capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime.capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime.capability.tools.grammar import classify_tool_command
@@ -156,7 +154,7 @@ class EnvironmentKernel:
         )
         self._router = _CommandRouter(
             shell_driver=_ShellDriver(capability_view),
-            custom_driver=_CustomDriver(registry),
+            custom_registry=registry,
             tool_driver=(
                 _ToolDriver(tool_catalog, tool_environment)
                 if tool_catalog is not None and tool_environment is not None
@@ -165,7 +163,6 @@ class EnvironmentKernel:
             parallel_commands=frozenset(parallel_commands or ()),
             parallel_tools=frozenset(parallel_tools or ()),
         )
-        self._parser = ShlexCommandParser()
         self._tool_catalog = tool_catalog
         self._scheduler = _ExecutionScheduler(
             queue_limit,
@@ -254,7 +251,7 @@ class EnvironmentKernel:
         args = _validate_arguments(call, _SCHEMA_BY_NAME["exec"])
         if isinstance(args, ToolResult):
             return args
-        command = self._parser.parse(args["command"])
+        command = parse_shell_command(args["command"])
         if self._tool_catalog is not None:
             command = classify_tool_command(command, self._tool_catalog)
         try:
@@ -289,7 +286,7 @@ class EnvironmentKernel:
             )
 
         try:
-            route = _route_decision(decision, self._router)
+            route = self._router.route(decision)
         except RuntimeError:
             return _protocol_error(
                 call.call_id,
