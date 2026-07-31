@@ -6,42 +6,18 @@ import ast
 import keyword
 import os
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from cli_agent.runtime._capability_view import _CapabilityView
+from cli_agent.runtime.capability.tools.facts import ToolEntry
 
 _INDEX_NAME = "index.md"
-
-
-@dataclass(frozen=True, slots=True)
-class _ToolEntry:
-    """One Tool candidate and its trusted Runtime-open facts."""
-
-    name: str
-    path: Path
-    provenance: Literal["repertoire", "workspace"] | None
-    shadows_repertoire: bool
-    valid: bool
-    validation_error: str | None
-    documentation: str | None
-
-    @property
-    def summary(self) -> str:
-        if not self.documentation:
-            return ""
-        for line in self.documentation.splitlines():
-            text = line.strip().lstrip("#").strip()
-            if text:
-                return text
-        return ""
 
 
 class _ToolCatalog:
     """Immutable lookup and generated projections for effective Tool files."""
 
-    def __init__(self, entries: tuple[_ToolEntry, ...]) -> None:
+    def __init__(self, entries: tuple[ToolEntry, ...]) -> None:
         self.entries = entries
         self._by_name = {entry.name: entry for entry in entries}
 
@@ -65,11 +41,11 @@ class _ToolCatalog:
         _write_index(tools_directory / _INDEX_NAME, catalog.render_index())
         return catalog
 
-    def get(self, name: str) -> _ToolEntry | None:
+    def get(self, name: str) -> ToolEntry | None:
         return self._by_name.get(name)
 
     @property
-    def valid_entries(self) -> tuple[_ToolEntry, ...]:
+    def valid_entries(self) -> tuple[ToolEntry, ...]:
         return tuple(entry for entry in self.entries if entry.valid)
 
     def render_index(self) -> str:
@@ -132,7 +108,7 @@ class _ToolCatalog:
         return "\n".join(lines).rstrip() + "\n", True
 
 
-def _inspect_tool(path: Path, capability_view: _CapabilityView) -> _ToolEntry:
+def _inspect_tool(path: Path, capability_view: _CapabilityView) -> ToolEntry:
     name = path.stem
     relative = Path("tools") / path.name
     try:
@@ -151,7 +127,7 @@ def _inspect_tool(path: Path, capability_view: _CapabilityView) -> _ToolEntry:
         "shadows_repertoire": inspection.shadows_repertoire,
     }
     if not name.isidentifier() or keyword.iskeyword(name):
-        return _ToolEntry(
+        return ToolEntry(
             **common,
             valid=False,
             validation_error=(
@@ -160,14 +136,14 @@ def _inspect_tool(path: Path, capability_view: _CapabilityView) -> _ToolEntry:
             documentation=None,
         )
     if not inspection.valid:
-        return _ToolEntry(
+        return ToolEntry(
             **common,
             valid=False,
             validation_error=inspection.validation_error,
             documentation=None,
         )
     if not path.is_file():
-        return _ToolEntry(
+        return ToolEntry(
             **common,
             valid=False,
             validation_error="Tool path must be a regular file",
@@ -177,7 +153,7 @@ def _inspect_tool(path: Path, capability_view: _CapabilityView) -> _ToolEntry:
     try:
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
-        return _ToolEntry(
+        return ToolEntry(
             **common,
             valid=False,
             validation_error=f"Tool source is not readable UTF-8: {exc}",
@@ -187,7 +163,7 @@ def _inspect_tool(path: Path, capability_view: _CapabilityView) -> _ToolEntry:
         tree = ast.parse(source, filename=str(path))
     except SyntaxError as exc:
         location = f"line {exc.lineno}" if exc.lineno is not None else "unknown line"
-        return _ToolEntry(
+        return ToolEntry(
             **common,
             valid=False,
             validation_error=f"Python syntax error at {location}: {exc.msg}",
@@ -197,7 +173,7 @@ def _inspect_tool(path: Path, capability_view: _CapabilityView) -> _ToolEntry:
     documentation = _read_companion_documentation(path)
     if documentation is None:
         documentation = ast.get_docstring(tree, clean=False)
-    return _ToolEntry(
+    return ToolEntry(
         **common,
         valid=True,
         validation_error=None,
@@ -205,8 +181,8 @@ def _inspect_tool(path: Path, capability_view: _CapabilityView) -> _ToolEntry:
     )
 
 
-def _invalid_entry(name: str, path: Path, error: str) -> _ToolEntry:
-    return _ToolEntry(
+def _invalid_entry(name: str, path: Path, error: str) -> ToolEntry:
+    return ToolEntry(
         name=name,
         path=path,
         provenance=None,

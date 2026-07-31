@@ -9,10 +9,7 @@ import cli_agent.runtime._tool_environment as tool_environment_module
 from cli_agent.runtime import ExecutablePolicy, ToolCall, ToolResult
 from cli_agent.runtime._capability_view import _CapabilityView
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._environment.command_parser import (
-    ShlexCommandParser,
-    ToolCommand,
-)
+from cli_agent.runtime._environment.command_parser import ShlexCommandParser
 from cli_agent.runtime._environment.policy import PolicyEvaluation
 from cli_agent.runtime._environment.routing import (
     _DriverKind,
@@ -20,9 +17,10 @@ from cli_agent.runtime._environment.routing import (
     _SchedulingClass,
 )
 from cli_agent.runtime._tool_catalog import _ToolCatalog
-from cli_agent.runtime._tool_commands import _ToolCommandClassifier
+from cli_agent.runtime._tool_commands import classify_tool_command
 from cli_agent.runtime._tool_environment import _ToolEnvironment
 from cli_agent.runtime._workspace import _prepare_workspace
+from cli_agent.runtime.capability.tools.facts import ToolCommand
 
 
 def test_catalog_generates_index_and_reports_actual_provenance(
@@ -71,7 +69,7 @@ def test_default_policy_allows_every_reserved_tool_form(tmp_path: Path) -> None:
     )
     _prepare_workspace(tmp_path)
     view = _CapabilityView.open(tmp_path, repertoire)
-    classifier = _ToolCommandClassifier(_ToolCatalog.reconcile(view))
+    catalog = _ToolCatalog.reconcile(view)
     parser = ShlexCommandParser()
 
     async def scenario() -> None:
@@ -85,7 +83,7 @@ def test_default_policy_allows_every_reserved_tool_form(tmp_path: Path) -> None:
         )
         operations = ("list", "inspect", "run", "run", "invalid")
         for raw, operation in zip(commands, operations, strict=True):
-            command = classifier.classify(parser.parse(raw))
+            command = classify_tool_command(parser.parse(raw), catalog)
             assert isinstance(command.tool, ToolCommand)
             assert command.tool.operation == operation
             evaluation = await policy.evaluate(command)
@@ -121,9 +119,11 @@ def test_reserved_tool_grammar_cannot_fall_through_to_shell(
     repertoire = _repertoire(tmp_path)
     _prepare_workspace(tmp_path)
     view = _CapabilityView.open(tmp_path, repertoire)
-    classifier = _ToolCommandClassifier(_ToolCatalog.reconcile(view))
+    catalog = _ToolCatalog.reconcile(view)
 
-    command = classifier.classify(ShlexCommandParser().parse(raw))
+    command = classify_tool_command(
+        ShlexCommandParser().parse(raw), catalog
+    )
 
     assert (command.tool is not None) is reserved
     if command.tool is not None:
@@ -136,8 +136,10 @@ def test_host_can_override_default_tool_allow_by_executable_name(
     repertoire = _repertoire(tmp_path)
     _prepare_workspace(tmp_path)
     view = _CapabilityView.open(tmp_path, repertoire)
-    classifier = _ToolCommandClassifier(_ToolCatalog.reconcile(view))
-    command = classifier.classify(ShlexCommandParser().parse("tools list"))
+    catalog = _ToolCatalog.reconcile(view)
+    command = classify_tool_command(
+        ShlexCommandParser().parse("tools list"), catalog
+    )
 
     async def scenario() -> None:
         evaluation = await ExecutablePolicy(

@@ -6,32 +6,8 @@ import shlex
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
-
-@dataclass(frozen=True, slots=True)
-class ToolReference:
-    """Trusted Catalog facts for one statically referenced Tool."""
-
-    name: str
-    provenance: Literal["repertoire", "workspace"] | None
-    shadows_repertoire: bool
-    valid: bool
-    validation_error: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ToolCommand:
-    """Trusted classification of one reserved top-level ``tools`` command."""
-
-    operation: Literal["list", "inspect", "run", "invalid"]
-    valid: bool
-    validation_error: str | None = None
-    name: str | None = None
-    code: str | None = None
-    code_syntax: Literal["quoted", "heredoc"] | None = None
-    references: tuple[ToolReference, ...] = ()
-    has_dynamic_references: bool = False
+from cli_agent.runtime.capability.tools.facts import ToolCommand
 
 
 @dataclass(frozen=True, slots=True)

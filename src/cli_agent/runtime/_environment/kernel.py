@@ -54,7 +54,7 @@ from cli_agent.runtime._environment.scheduler import (
     _ExecutionScheduler,
 )
 from cli_agent.runtime._tool_catalog import _ToolCatalog
-from cli_agent.runtime._tool_commands import _ToolCommandClassifier
+from cli_agent.runtime._tool_commands import classify_tool_command
 from cli_agent.runtime._tool_environment import _ToolEnvironment
 from cli_agent.runtime.model import JSONValue, ToolCall, ToolResult
 
@@ -166,11 +166,7 @@ class EnvironmentKernel:
             parallel_tools=frozenset(parallel_tools or ()),
         )
         self._parser = ShlexCommandParser()
-        self._tool_classifier = (
-            _ToolCommandClassifier(tool_catalog)
-            if tool_catalog is not None
-            else None
-        )
+        self._tool_catalog = tool_catalog
         self._scheduler = _ExecutionScheduler(
             queue_limit,
             parallel_limit,
@@ -259,8 +255,8 @@ class EnvironmentKernel:
         if isinstance(args, ToolResult):
             return args
         command = self._parser.parse(args["command"])
-        if self._tool_classifier is not None:
-            command = self._tool_classifier.classify(command)
+        if self._tool_catalog is not None:
+            command = classify_tool_command(command, self._tool_catalog)
         try:
             evaluation = await self._policy.evaluate(command)
         except Exception:
