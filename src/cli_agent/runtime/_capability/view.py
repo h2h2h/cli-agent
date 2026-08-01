@@ -23,6 +23,7 @@ from cli_agent.runtime._capability.command_parser import (
 from cli_agent.runtime._capability.workspace import _ensure_real_directory
 
 _CAPABILITY_DIRECTORIES = ("tools", "skills", "library")
+_MCP_DIRECTORY = "_mcp"
 
 
 @dataclass(frozen=True, slots=True)
@@ -457,6 +458,10 @@ def _prepare_repertoire(repertoire: str | Path | None) -> Path:
             root / name,
             label=f"Repertoire {name} capability path",
         )
+    _ensure_real_directory(
+        root / _MCP_DIRECTORY,
+        label="Repertoire MCP configuration path",
+    )
     return root
 
 

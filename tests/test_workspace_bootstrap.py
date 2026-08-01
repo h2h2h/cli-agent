@@ -30,7 +30,7 @@ def test_runtime_open_bootstraps_and_preserves_workspace_state(
         )
         assert {
             path.name for path in default_repertoire.iterdir()
-        } == {"library", "skills", "tools"}
+        } == {"library", "skills", "tools", "_mcp"}
         if os.name == "posix":
             assert stat.S_IMODE(workspace_state.stat().st_mode) & 0o077 == 0
             assert stat.S_IMODE(workspace_environment.stat().st_mode) & 0o077 == 0
