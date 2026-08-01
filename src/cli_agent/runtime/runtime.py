@@ -10,6 +10,7 @@ from types import TracebackType
 from typing import Any
 
 from cli_agent.runtime._agent_loop import AgentLoop
+from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
@@ -52,6 +53,7 @@ class AgentRuntime:
         tool_catalog: _ToolCatalog,
         tool_environment: _ToolEnvironment,
         skill_catalog: _SkillCatalog,
+        mcp_catalog: _MCPCatalog,
         base_env: Mapping[str, str],
         policy: ExecutionPolicy,
         approval_gate: _ExecutionApprovalGate | None,
@@ -66,6 +68,7 @@ class AgentRuntime:
         self._tool_catalog = tool_catalog
         self._tool_environment = tool_environment
         self._skill_catalog = skill_catalog
+        self._mcp_catalog = mcp_catalog
         self._base_env = base_env
         self._policy = policy
         self._approval_gate = approval_gate
@@ -165,6 +168,10 @@ class AgentRuntime:
         paths = _prepare_workspace(workspace)
         base_env = _load_workspace_env(paths.environment)
         capability_view = _CapabilityView.open(paths.root, repertoire)
+        mcp_catalog = await _MCPCatalog.reconcile(
+            capability_view,
+            on_diagnostic=on_diagnostic,
+        )
         tool_catalog = _ToolCatalog.reconcile(capability_view)
         tool_environment = await _ToolEnvironment.reconcile(capability_view)
         skill_catalog = _SkillCatalog.reconcile(capability_view)
@@ -179,6 +186,7 @@ class AgentRuntime:
             tool_catalog=tool_catalog,
             tool_environment=tool_environment,
             skill_catalog=skill_catalog,
+            mcp_catalog=mcp_catalog,
             base_env=base_env,
             policy=effective_policy,
             approval_gate=approval_gate,
