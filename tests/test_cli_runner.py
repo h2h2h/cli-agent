@@ -7,13 +7,14 @@ from pathlib import Path
 import pytest
 
 from cli_agent.config import CliConfig
-from cli_agent.presentation import render_event
+from cli_agent.presentation import render_diagnostic, render_event
 from cli_agent.runner import run_agent
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
     ModelCompletion,
     ModelUsage,
+    RuntimeDiagnostic,
     ScriptedModelProvider,
     SystemMessage,
     TextBlock,
@@ -438,6 +439,22 @@ def test_renderer_colors_terminal_tool_and_completion_diagnostics() -> None:
     assert stderr.getvalue() == (
         "\033[1;35m[tool] exec\033[0m: \033[33mpytest -q\033[0m\n"
         "\033[2;32m[completion] reason=stop\033[0m\n"
+    )
+
+
+def test_renderer_presents_a_runtime_diagnostic() -> None:
+    stderr = StringIO()
+
+    render_diagnostic(
+        RuntimeDiagnostic(
+            kind="mcp.discovery_failed",
+            message="could not contact github",
+        ),
+        stderr=stderr,
+    )
+
+    assert stderr.getvalue() == (
+        "[mcp.discovery_failed] could not contact github\n"
     )
 
 

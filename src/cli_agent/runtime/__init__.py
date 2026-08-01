@@ -12,6 +12,7 @@ from cli_agent.runtime._environment.policy import (
     PolicyEvaluation,
 )
 from cli_agent.runtime._syscalls import SyscallSchema
+from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     AssistantMessage,
     JSONValue,
@@ -56,6 +57,7 @@ __all__ = (
     "PolicyAction",
     "PolicyEvaluation",
     "RuntimeClosedError",
+    "RuntimeDiagnostic",
     "ScriptedModelProvider",
     "SystemMessage",
     "SyscallSchema",

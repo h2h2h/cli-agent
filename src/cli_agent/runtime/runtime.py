@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import keyword
-from collections.abc import AsyncIterator, Coroutine, Mapping
+from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -26,6 +26,7 @@ from cli_agent.runtime._environment.policy import (
     _ExecutionApprovalGate,
 )
 from cli_agent.runtime._system_message import assemble_system_message
+from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import ModelEvent, ModelProvider, UserMessage
 
 
@@ -57,6 +58,7 @@ class AgentRuntime:
         parallel_commands: frozenset[str],
         parallel_tools: frozenset[str],
         instruction: str | None,
+        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
     ) -> None:
         self._provider = provider
         self._workspace = workspace
@@ -70,6 +72,7 @@ class AgentRuntime:
         self._parallel_commands = parallel_commands
         self._parallel_tools = parallel_tools
         self._instruction = instruction
+        self._on_diagnostic = on_diagnostic
         self._sessions: dict[str, _Session] = {}
         self._closed = False
 
@@ -85,6 +88,7 @@ class AgentRuntime:
         execution_approver: ExecutionApprover | None = None,
         parallel_commands: frozenset[str] | None = None,
         parallel_tools: frozenset[str] | None = None,
+        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> Coroutine[Any, None, AgentRuntime]:
         """Validate arguments and return a coroutine that opens the Runtime.
 
@@ -115,6 +119,10 @@ class AgentRuntime:
             parallel_tools (`frozenset[str] | None`):
                 Tool names trusted to run in parallel Tool batches; each name
                 must be a non-keyword Python identifier.
+            on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
+                Optional Host callback receiving structured Runtime
+                Diagnostics, such as MCP discovery exhaustion, without blocking
+                Runtime open. Omitted callbacks keep today's silent behavior.
 
         Returns:
             A coroutine resolving to the opened :class:`AgentRuntime`.
@@ -135,6 +143,7 @@ class AgentRuntime:
             parallel_tools=_validate_parallel_tool_names(
                 parallel_tools or frozenset()
             ),
+            on_diagnostic=on_diagnostic,
         )
 
     @classmethod
@@ -149,6 +158,7 @@ class AgentRuntime:
         approver: ExecutionApprover | None,
         parallel_commands: frozenset[str],
         parallel_tools: frozenset[str],
+        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
     ) -> AgentRuntime:
         """Prepare Workspace-scoped resources and construct the Runtime."""
 
@@ -175,6 +185,7 @@ class AgentRuntime:
             parallel_commands=parallel_commands,
             parallel_tools=parallel_tools,
             instruction=instruction,
+            on_diagnostic=on_diagnostic,
         )
 
     @property
@@ -281,6 +292,35 @@ class AgentRuntime:
             approval_session_id=session_id,
             parallel_commands=self._parallel_commands,
             parallel_tools=self._parallel_tools,
+        )
+
+    def _emit_diagnostic(
+        self,
+        kind: str,
+        message: str,
+        detail: Mapping[str, object] | None = None,
+    ) -> None:
+        """Emit one structured notice when a Host callback is configured.
+
+        Args:
+            kind (`str`):
+                Stable diagnostic category, for example
+                ``mcp.discovery_failed``.
+            message (`str`):
+                Human-readable summary for the Host to log or present.
+            detail (`Mapping[str, object] | None`):
+                Optional structured detail; never contains env values,
+                credentials, or Secret References.
+        """
+
+        if self._on_diagnostic is None:
+            return
+        self._on_diagnostic(
+            RuntimeDiagnostic(
+                kind=kind,
+                message=message,
+                detail=detail or {},
+            )
         )
 
 

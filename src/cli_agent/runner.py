@@ -7,7 +7,7 @@ from typing import TextIO
 from uuid import uuid4
 
 from cli_agent.config import CliConfig
-from cli_agent.presentation import render_event, render_prompt
+from cli_agent.presentation import render_diagnostic, render_event, render_prompt
 from cli_agent.runtime import (
     AgentRuntime,
     ApprovalResponse,
@@ -37,6 +37,10 @@ async def run_agent(
         provider=provider,
         execution_approver=_TerminalExecutionApprover(
             stdin=stdin,
+            stderr=stderr,
+        ),
+        on_diagnostic=lambda diagnostic: render_diagnostic(
+            diagnostic,
             stderr=stderr,
         ),
     ) as runtime:

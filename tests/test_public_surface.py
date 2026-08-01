@@ -61,6 +61,8 @@ def test_exposes_host_facing_runtime_lifecycle() -> None:
     assert hasattr(runtime, "AgentRuntime")
     assert "RuntimeClosedError" in runtime.__all__
     assert hasattr(runtime, "RuntimeClosedError")
+    assert "RuntimeDiagnostic" in runtime.__all__
+    assert hasattr(runtime, "RuntimeDiagnostic")
 
 
 def test_keeps_runtime_internals_private() -> None:

@@ -7,6 +7,7 @@ from typing import TextIO
 from cli_agent.runtime import (
     ModelCompletion,
     ModelEvent,
+    RuntimeDiagnostic,
     TextDelta,
     ToolCallReady,
 )
@@ -18,6 +19,17 @@ def render_prompt(*, stderr: TextIO) -> None:
     prompt = _styled("cli-agent> ", "\033[1;36m", stream=stderr)
     stderr.write(prompt)
     stderr.flush()
+
+
+def render_diagnostic(
+    diagnostic: RuntimeDiagnostic,
+    *,
+    stderr: TextIO,
+) -> None:
+    """Render one Runtime Diagnostic to a Host stream."""
+
+    text = f"[{diagnostic.kind}] {diagnostic.message}"
+    print(_styled(text, "\033[1;33m", stream=stderr), file=stderr, flush=True)
 
 
 def render_event(
