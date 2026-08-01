@@ -26,6 +26,10 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = "-m 'not live_sync'"
+markers = [
+    "live_sync: run a real uv dependency synchronization instead of mocking it",
+]
 
 [tool.ruff]
 target-version = "py311"

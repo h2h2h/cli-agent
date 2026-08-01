@@ -1,6 +1,6 @@
 # feat(mcp): reconcile MCP projections at Runtime open / 在 Runtime open 时调和 MCP 投影
 
-**Status / 状态：** pending
+**Status / 状态：** pass
 
 ## English
 

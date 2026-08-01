@@ -1,5 +1,6 @@
 import asyncio
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -362,7 +363,7 @@ def test_unavailable_tool_environment_fails_run_without_host_fallback(
     asyncio.run(scenario())
 
 
-def test_tool_environment_syncs_changed_requirements_once_at_runtime_open(
+def test_tool_environment_syncs_user_requirements_plus_runtime_base(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -371,35 +372,37 @@ def test_tool_environment_syncs_changed_requirements_once_at_runtime_open(
     view = _CapabilityView.open(tmp_path, repertoire)
     requirements = view.root / "tools" / "requirements.txt"
 
+    calls: list[tuple[Path, Path, Path]] = []
+
+    async def record_sync(
+        *,
+        python: Path,
+        requirements: Path,
+        working_directory: Path,
+    ) -> None:
+        calls.append((python, requirements, working_directory))
+
+    monkeypatch.setattr(
+        tool_environment_module,
+        "_sync_requirements",
+        record_sync,
+    )
+
     async def scenario() -> None:
         initial = await _ToolEnvironment.reconcile(view)
         assert initial.available
+        assert len(calls) == 1
+        assert calls[0][1].read_text() == "mcp\n"
 
-        calls: list[tuple[Path, Path, Path]] = []
-
-        async def record_sync(
-            *,
-            python: Path,
-            requirements: Path,
-            working_directory: Path,
-        ) -> None:
-            calls.append((python, requirements, working_directory))
-
-        monkeypatch.setattr(
-            tool_environment_module,
-            "_sync_requirements",
-            record_sync,
-        )
         requirements.write_text("example-package==1.2.3\n")
-
         changed = await _ToolEnvironment.reconcile(view)
         unchanged = await _ToolEnvironment.reconcile(view)
 
         assert changed.available and unchanged.available
-        assert len(calls) == 1
+        assert len(calls) == 2
         assert calls[0][0] == changed.python
-        assert calls[0][1].read_text() == "example-package==1.2.3\n"
-        assert calls[0][2] == view.root / "tools"
+        assert calls[1][1].read_text() == "example-package==1.2.3\nmcp\n"
+        assert calls[1][2] == view.root / "tools"
         assert changed.root == tmp_path / ".workspace" / ".tool-environment"
 
         other_workspace = tmp_path / "other"
@@ -410,6 +413,65 @@ def test_tool_environment_syncs_changed_requirements_once_at_runtime_open(
         other = await _ToolEnvironment.reconcile(other_view)
         assert other.root != changed.root
         assert other.python != changed.python
+
+    asyncio.run(scenario())
+
+
+def test_effective_requirements_do_not_duplicate_user_declared_base(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repertoire = _repertoire(tmp_path)
+    _prepare_workspace(tmp_path)
+    view = _CapabilityView.open(tmp_path, repertoire)
+    requirements = view.root / "tools" / "requirements.txt"
+    requirements.write_text("requests\nmcp\n")
+
+    async def record_sync(
+        *,
+        python: Path,
+        requirements: Path,
+        working_directory: Path,
+    ) -> None:
+        del python, requirements, working_directory
+
+    monkeypatch.setattr(
+        tool_environment_module,
+        "_sync_requirements",
+        record_sync,
+    )
+
+    async def scenario() -> None:
+        await _ToolEnvironment.reconcile(view)
+        effective = (
+            view.root / ".tool-environment" / "effective-requirements.txt"
+        ).read_text(encoding="utf-8")
+        assert effective == "requests\nmcp\n"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.live_sync
+def test_mcp_is_importable_in_the_worker_venv(tmp_path: Path) -> None:
+    repertoire = _repertoire(tmp_path)
+    _prepare_workspace(tmp_path)
+    view = _CapabilityView.open(tmp_path, repertoire)
+
+    async def scenario() -> None:
+        environment = await _ToolEnvironment.reconcile(view)
+        assert environment.available, environment.error
+        assert environment.python is not None
+        result = subprocess.run(
+            [
+                str(environment.python),
+                "-c",
+                "import mcp; import mcp_types",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
 
     asyncio.run(scenario())
 

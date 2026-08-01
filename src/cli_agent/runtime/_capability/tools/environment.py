@@ -19,6 +19,7 @@ from cli_agent.runtime._capability.workspace import (
 
 _EFFECTIVE_REQUIREMENTS = "effective-requirements.txt"
 _REQUIREMENTS_DIGEST = "requirements.sha256"
+_RUNTIME_BASE_REQUIREMENTS = "mcp"
 _RECONCILE_LOCKS: weakref.WeakKeyDictionary[
     asyncio.AbstractEventLoop,
     dict[Path, asyncio.Lock],
@@ -70,17 +71,18 @@ class _ToolEnvironment:
             python = _venv_python(venv_directory)
             requirements = capability_view.root / "tools" / "requirements.txt"
             content = requirements.read_bytes() if requirements.is_file() else b""
-            digest = hashlib.sha256(content).hexdigest()
+            effective_content = _effective_requirements(content)
+            digest = hashlib.sha256(effective_content).hexdigest()
             effective = root / _EFFECTIVE_REQUIREMENTS
             marker = root / _REQUIREMENTS_DIGEST
-            _atomic_write(effective, content)
+            _atomic_write(effective, effective_content)
             previous = (
                 marker.read_text(encoding="ascii").strip()
                 if marker.is_file()
                 else None
             )
             if previous != digest:
-                if content or not created:
+                if effective_content or not created:
                     await _sync_requirements(
                         python=python,
                         requirements=effective,
@@ -96,6 +98,22 @@ class _ToolEnvironment:
                 python=None,
                 error=f"Tool environment is unavailable: {exc}",
             )
+
+
+def _effective_requirements(content: bytes) -> bytes:
+    """Combine user requirements with the Runtime-owned base dependency.
+
+    The base dependency is appended unless the user already declares it, so a
+    M13 self-connecting stub can import ``mcp`` in the worker venv. M14 removes
+    the worker's need for ``mcp`` (stubs switch to the IPC shim).
+    """
+
+    lines = content.decode("utf-8").splitlines()
+    if any(line.strip() == _RUNTIME_BASE_REQUIREMENTS for line in lines):
+        effective = lines
+    else:
+        effective = [*lines, _RUNTIME_BASE_REQUIREMENTS]
+    return ("\n".join(effective) + "\n").encode("utf-8")
 
 
 def _create_venv(path: Path) -> None:
@@ -126,18 +144,42 @@ async def _sync_requirements(
     requirements: Path,
     working_directory: Path,
 ) -> None:
-    argv = [
-        "uv",
-        "pip",
-        "sync",
-        "--python",
-        str(python),
-        "--no-progress",
-        "--allow-empty-requirements",
-    ]
-    argv.append(str(requirements))
+    lockfile = requirements.parent / ".requirements.lock"
+    await _run_uv(
+        [
+            "pip",
+            "compile",
+            "--python",
+            str(python),
+            "--no-progress",
+            "--output-file",
+            str(lockfile),
+            str(requirements),
+        ],
+        working_directory=working_directory,
+    )
+    await _run_uv(
+        [
+            "pip",
+            "sync",
+            "--python",
+            str(python),
+            "--no-progress",
+            "--allow-empty-requirements",
+            str(lockfile),
+        ],
+        working_directory=working_directory,
+    )
+
+
+async def _run_uv(
+    argv: list[str],
+    *,
+    working_directory: Path,
+) -> None:
     try:
         process = await asyncio.create_subprocess_exec(
+            "uv",
             *argv,
             cwd=working_directory,
             stdout=asyncio.subprocess.PIPE,

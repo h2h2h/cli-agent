@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pytest
 
+import cli_agent.runtime._capability.tools.environment as tool_environment_module
+
 
 @pytest.fixture(autouse=True)
 def _isolate_default_repertoire(
@@ -12,3 +14,34 @@ def _isolate_default_repertoire(
 
     home = tmp_path.parent / f"{tmp_path.name}-home"
     monkeypatch.setenv("HOME", str(home))
+
+
+@pytest.fixture(autouse=True)
+def _fast_tool_environment_sync(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Avoid real dependency resolution in ordinary tests.
+
+    Each test normally gets a fresh temporary Workspace, so a real
+    ``uv pip compile``/``sync`` would repeatedly resolve and install the
+    Runtime-owned Tool dependencies. The explicit ``live_sync`` test remains
+    available for validating the real worker environment.
+    """
+
+    if request.node.get_closest_marker("live_sync") is not None:
+        return
+
+    async def _noop_sync(
+        *,
+        python: Path,
+        requirements: Path,
+        working_directory: Path,
+    ) -> None:
+        del python, requirements, working_directory
+
+    monkeypatch.setattr(
+        tool_environment_module,
+        "_sync_requirements",
+        _noop_sync,
+    )
