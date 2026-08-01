@@ -21,6 +21,7 @@ from cli_agent.runtime._environment.routing import (
     _ExecutionLane,
     _SchedulingClass,
 )
+from cli_agent.runtime._system_message import assemble_system_message
 
 
 def test_catalog_generates_index_and_reports_actual_provenance(
@@ -60,6 +61,44 @@ def test_catalog_generates_index_and_reports_actual_provenance(
     assert found is True
     assert "Provenance: repertoire" in text
     assert "Lower arithmetic Tool." in text
+
+
+def test_system_message_embeds_only_compact_tools_catalog(
+    tmp_path: Path,
+) -> None:
+    repertoire = _repertoire(tmp_path)
+    lower = repertoire / "tools" / "lower.py"
+    lower.write_text('"""Lower arithmetic Tool."""\n\ndef add(a, b):\n    return a + b\n')
+
+    _prepare_workspace(tmp_path)
+    view = _CapabilityView.open(tmp_path, repertoire)
+    local = view.root / "tools" / "local.py"
+    local.write_text('"""Workspace Tool."""\nVALUE = 7\n')
+    broken = view.root / "tools" / "broken.py"
+    broken.write_text("def broken(:\n")
+
+    catalog = _ToolCatalog.reconcile(view)
+    message = assemble_system_message(tmp_path, None, tool_catalog=catalog)
+    body = "\n".join(block.text for block in message.content)
+
+    assert "Tools" in body
+    assert "lower (valid): Lower arithmetic Tool." in body
+    assert "local (valid): Workspace Tool." in body
+    assert "broken (invalid:" in body
+    assert "tools info <name>" in body
+    assert "def add(a, b)" not in body
+    assert "repertoire" not in body
+    assert "Shadows Repertoire" not in body
+
+
+def test_system_message_tools_section_omitted_without_catalog(
+    tmp_path: Path,
+) -> None:
+    message = assemble_system_message(tmp_path, None)
+    body = "\n".join(block.text for block in message.content)
+
+    assert "compact Tool catalog lists" not in body
+    assert "No Tools are currently discovered." not in body
 
 
 def test_default_policy_allows_every_reserved_tool_form(tmp_path: Path) -> None:

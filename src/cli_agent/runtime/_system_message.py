@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime.model import SystemMessage
 
 
@@ -12,6 +13,7 @@ def assemble_system_message(
     workspace: Path,
     system_instruction: str | None,
     *,
+    tool_catalog: _ToolCatalog | None = None,
     skill_catalog: _SkillCatalog | None = None,
 ) -> SystemMessage:
     """Build the stable instruction snapshot for a new Agent Session.
@@ -21,6 +23,10 @@ def assemble_system_message(
             The bound Workspace root.
         system_instruction (`str | None`):
             Optional Host instruction appended to the canonical message.
+        tool_catalog (`_ToolCatalog | None`):
+            Optional Runtime-open Tool Catalog; when present, a compact
+            Tools section advertises discovered Tools by name, status, and
+            summary without embedding any full Tool file body.
         skill_catalog (`_SkillCatalog | None`):
             Optional Runtime-open Skill Catalog; when present, a compact
             Skills section advertises discovered Skills by name, status, and
@@ -51,12 +57,39 @@ Working method
 - Make only changes required by the task.
 - Verify the result, then report the outcome concisely.""",
     ]
+    if tool_catalog is not None:
+        sections.append(_render_tools_section(tool_catalog))
     if skill_catalog is not None:
         sections.append(_render_skills_section(skill_catalog))
     if system_instruction is not None:
         sections.append(f"Host instruction\n{system_instruction}")
 
     return SystemMessage.text("\n\n".join(sections))
+
+
+def _render_tools_section(tool_catalog: _ToolCatalog) -> str:
+    lines = [
+        "Tools",
+        (
+            "- The compact Tool catalog lists each discovered Tool by name, "
+            "status, and summary only."
+        ),
+    ]
+    if tool_catalog.entries:
+        for entry in tool_catalog.entries:
+            status = (
+                "valid"
+                if entry.valid
+                else f"invalid: {entry.validation_error or 'unknown error'}"
+            )
+            lines.append(f"- {entry.name} ({status}): {entry.summary}")
+    else:
+        lines.append("- No Tools are currently discovered.")
+    lines.append(
+        "- Full documentation stays in the Tool files and is read on demand "
+        'with `tools info <name>`.'
+    )
+    return "\n".join(lines)
 
 
 def _render_skills_section(skill_catalog: _SkillCatalog) -> str:

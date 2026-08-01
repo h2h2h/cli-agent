@@ -224,6 +224,7 @@ class AgentRuntime:
             system = assemble_system_message(
                 self._workspace,
                 self._instruction,
+                tool_catalog=self._tool_catalog,
                 skill_catalog=self._skill_catalog,
             )
             kernel = self._new_kernel(session_id)
