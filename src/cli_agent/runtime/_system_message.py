@@ -4,14 +4,28 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime.model import SystemMessage
 
 
 def assemble_system_message(
     workspace: Path,
     system_instruction: str | None,
+    *,
+    skill_catalog: _SkillCatalog | None = None,
 ) -> SystemMessage:
-    """Build the stable instruction snapshot for a new Agent Session."""
+    """Build the stable instruction snapshot for a new Agent Session.
+
+    Args:
+        workspace (`Path`):
+            The bound Workspace root.
+        system_instruction (`str | None`):
+            Optional Host instruction appended to the canonical message.
+        skill_catalog (`_SkillCatalog | None`):
+            Optional Runtime-open Skill Catalog; when present, a compact
+            Skills section advertises discovered Skills by name, status, and
+            summary without embedding any full SKILL.md body.
+    """
 
     sections = [
         f"""You are cli-agent, an agent that completes tasks in a bound Workspace.
@@ -37,7 +51,34 @@ Working method
 - Make only changes required by the task.
 - Verify the result, then report the outcome concisely.""",
     ]
+    if skill_catalog is not None:
+        sections.append(_render_skills_section(skill_catalog))
     if system_instruction is not None:
         sections.append(f"Host instruction\n{system_instruction}")
 
     return SystemMessage.text("\n\n".join(sections))
+
+
+def _render_skills_section(skill_catalog: _SkillCatalog) -> str:
+    lines = [
+        "Skills",
+        (
+            "- The compact Skill catalog lists each discovered Skill by name, "
+            "status, and summary only."
+        ),
+    ]
+    if skill_catalog.entries:
+        for entry in skill_catalog.entries:
+            status = (
+                "valid"
+                if entry.valid
+                else f"invalid: {entry.validation_error or 'unknown error'}"
+            )
+            lines.append(f"- {entry.name} ({status}): {entry.summary}")
+    else:
+        lines.append("- No Skills are currently discovered.")
+    lines.append(
+        "- Full instructions stay in the Skill files and are read on demand "
+        'with exec("cat .workspace/skills/<name>/SKILL.md").'
+    )
+    return "\n".join(lines)

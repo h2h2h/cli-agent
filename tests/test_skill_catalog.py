@@ -3,6 +3,7 @@ from pathlib import Path
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
+from cli_agent.runtime._system_message import assemble_system_message
 
 
 def _skill(directory: Path, name: str, description: str = "d") -> None:
@@ -209,3 +210,34 @@ def test_catalog_render_info_reports_missing_skill(tmp_path: Path) -> None:
     text, found = catalog.render_info("missing")
     assert found is False
     assert text == "Skill not found: missing\n"
+
+
+def test_system_message_embeds_only_compact_skills_catalog(
+    tmp_path: Path,
+) -> None:
+    repertoire = _repertoire(tmp_path)
+    _skill(repertoire / "skills" / "banner-skill", "banner-skill", "Banner helper.")
+    _skill(repertoire / "skills" / "broken-skill", "wrong-name")
+
+    _prepare_workspace(tmp_path)
+    view = _CapabilityView.open(tmp_path, repertoire)
+    catalog = _SkillCatalog.reconcile(view)
+
+    message = assemble_system_message(tmp_path, None, skill_catalog=catalog)
+    body = "\n".join(block.text for block in message.content)
+
+    assert "Skills" in body
+    assert "banner-skill (valid): Banner helper." in body
+    assert "broken-skill (invalid:" in body
+    assert "cat .workspace/skills/<name>/SKILL.md" in body
+    assert "name: banner-skill" not in body
+    assert "---" not in body
+
+
+def test_system_message_skill_section_omitted_without_catalog(
+    tmp_path: Path,
+) -> None:
+    message = assemble_system_message(tmp_path, None)
+    body = "\n".join(block.text for block in message.content)
+
+    assert "Skills" not in body
