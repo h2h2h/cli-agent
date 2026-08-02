@@ -1,4 +1,4 @@
-"""Session-scoped Execution supervision: scheduling and Driver lifecycle."""
+"""Session-scoped Execution supervision and prepared command lifecycle."""
 
 from __future__ import annotations
 
@@ -6,21 +6,19 @@ import asyncio
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from cli_agent.runtime._environment.drivers.base import (
-    _DriverContext,
-    _ExecutionOutcome,
-    _ExecutionOutput,
-)
-from cli_agent.runtime._environment.drivers.executions import _InlineExecution
 from cli_agent.runtime._environment.execution import (
     _ExecutionState,
     _notify_changed,
     _StateOutput,
 )
-from cli_agent.runtime._environment.policy import ExecutionDecision
-from cli_agent.runtime._environment.routing import (
-    _ExecutionRoute,
+from cli_agent.runtime._environment.handlers.base import (
+    _CommandContext,
+    _ExecutionOutcome,
+    _ExecutionOutput,
 )
+from cli_agent.runtime._environment.handlers.executions import _InlineExecution
+from cli_agent.runtime._environment.policy import ExecutionDecision
+from cli_agent.runtime._environment.routing import _ExecutionRoute
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
 
 if TYPE_CHECKING:
@@ -28,7 +26,7 @@ if TYPE_CHECKING:
 
 
 class _ExecutionSupervisor:
-    """Own one Session's admitted Executions and their Driver lifecycles.
+    """Own one Session's admitted Executions and command lifecycles.
 
     The supervisor is an organ of its Session Kernel: it reads the Kernel's
     workspace, cwd, environment, and Execution registry through the ``session``
@@ -99,9 +97,9 @@ class _ExecutionSupervisor:
                 return
 
             state.kill_requested = True
-            execution = state.driver_execution
+            execution = state.prepared_execution
             if execution is None:
-                raise RuntimeError("running Execution has no Driver Execution")
+                raise RuntimeError("running Execution has no prepared Execution")
             await execution.cancel()
             if state.completion_task is not None:
                 with suppress(Exception):
@@ -125,7 +123,7 @@ class _ExecutionSupervisor:
             state.route.parallel_safe
             or state.route.command.isolated
         )
-        context = _DriverContext(
+        context = _CommandContext(
             workspace=session._workspace,
             cwd=session._cwd,
             environment=dict(session._env) if isolate_context else session._env,
@@ -138,13 +136,13 @@ class _ExecutionSupervisor:
             )
         except Exception:
             execution = _InlineExecution(_preparation_failed)
-        state.driver_execution = execution
+        state.prepared_execution = execution
         state.completion_task = asyncio.create_task(self._run_execution(state))
 
     async def _run_execution(self, state: _ExecutionState) -> None:
-        execution = state.driver_execution
+        execution = state.prepared_execution
         if execution is None:
-            raise RuntimeError("running Execution has no Driver Execution")
+            raise RuntimeError("running Execution has no prepared Execution")
         output = _StateOutput(
             state,
             chunk_bound=self._chunk_limit,

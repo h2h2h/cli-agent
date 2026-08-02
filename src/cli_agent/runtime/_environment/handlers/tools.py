@@ -1,4 +1,4 @@
-"""Reserved Tool command Driver backed by a fresh isolated worker."""
+"""Reserved Tool command handler backed by a fresh isolated worker."""
 
 from __future__ import annotations
 
@@ -10,19 +10,19 @@ from importlib.resources import files
 from cli_agent.runtime._capability.command_parser import CommandParseResult
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
-from cli_agent.runtime._environment.drivers.base import (
-    _DriverContext,
-    _DriverExecution,
+from cli_agent.runtime._environment.handlers.base import (
+    _CommandContext,
     _ExecutionOutcome,
     _ExecutionOutput,
+    _PreparedExecution,
 )
-from cli_agent.runtime._environment.drivers.executions import (
+from cli_agent.runtime._environment.handlers.executions import (
     _InlineExecution,
     _ProcessExecution,
 )
 
 
-class _ToolDriver:
+class _ToolHandler:
     """Prepare list, info, and run operations from trusted Tool facts."""
 
     def __init__(
@@ -36,11 +36,11 @@ class _ToolDriver:
     def prepare(
         self,
         command: CommandParseResult,
-        context: _DriverContext,
-    ) -> _DriverExecution:
+        context: _CommandContext,
+    ) -> _PreparedExecution:
         facts = command.tool
         if facts is None:
-            raise RuntimeError("Tool Driver received an ordinary command")
+            raise RuntimeError("Tool handler received an ordinary command")
         if facts.operation == "list":
             return _text_execution(self._catalog.render_index(), success=True)
         if facts.operation == "inspect" and facts.name is not None:

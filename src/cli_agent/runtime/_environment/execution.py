@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
-from cli_agent.runtime._environment.drivers.base import _DriverExecution
+from cli_agent.runtime._environment.handlers.base import _PreparedExecution
 from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime._environment.routing import _ExecutionRoute
 from cli_agent.runtime.model import JSONValue
@@ -27,7 +27,7 @@ class _ExecutionState:
     retained_bytes: int = 0
     truncated: bool = False
     kill_requested: bool = False
-    driver_execution: _DriverExecution | None = None
+    prepared_execution: _PreparedExecution | None = None
     completion_task: asyncio.Task[None] | None = None
     changed: asyncio.Condition = field(default_factory=asyncio.Condition)
     termination_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -38,7 +38,7 @@ class _ExecutionState:
 
 
 class _StateOutput:
-    """Bound and publish Driver output for one live Execution State."""
+    """Bound and publish command output for one live Execution State."""
 
     def __init__(
         self,

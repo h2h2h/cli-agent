@@ -12,7 +12,7 @@ from cli_agent.runtime._environment.commands import (
     _CustomCommandRegistry,
     _ShellCommand,
 )
-from cli_agent.runtime._environment.drivers.tool import _ToolDriver
+from cli_agent.runtime._environment.handlers.tools import _ToolHandler
 from cli_agent.runtime._environment.policy import ExecutionDecision
 
 
@@ -58,17 +58,17 @@ class _CommandRouter:
         *,
         shell_command: _ShellCommand,
         custom_registry: _CustomCommandRegistry,
-        tool_driver: _ToolDriver | None = None,
+        tool_handler: _ToolHandler | None = None,
         parallel_tools: frozenset[str] = frozenset(),
     ) -> None:
         self._shell_command = shell_command
         self._custom_registry = custom_registry
         self._tool_command = (
             None
-            if tool_driver is None
+            if tool_handler is None
             else _CustomCommand(
                 name="tools",
-                prepare=tool_driver.prepare,
+                prepare=tool_handler.prepare,
                 parallel_safe=self._tool_parallel_safe,
                 isolated=True,
             )

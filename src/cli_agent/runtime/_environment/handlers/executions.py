@@ -1,4 +1,4 @@
-"""Reusable in-process and subprocess Driver Executions."""
+"""Reusable in-process and subprocess prepared Executions."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Literal
 
-from cli_agent.runtime._environment.drivers.base import (
+from cli_agent.runtime._environment.handlers.base import (
     _ExecutionOutcome,
     _ExecutionOutput,
 )

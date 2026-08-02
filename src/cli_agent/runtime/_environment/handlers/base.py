@@ -1,4 +1,4 @@
-"""Shared contracts for Runtime-trusted execution drivers."""
+"""Shared contracts for Runtime-trusted command handlers."""
 
 from __future__ import annotations
 
@@ -6,14 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal, Protocol
 
-from cli_agent.runtime._capability.command_parser import CommandParseResult
-
 _TerminalStatus = Literal["exited", "failed", "killed"]
 
 
 @dataclass(frozen=True, slots=True)
-class _DriverContext:
-    """Session state available to a Driver when an Execution starts."""
+class _CommandContext:
+    """Session state available to a command when an Execution starts."""
 
     workspace: Path
     cwd: Path
@@ -23,7 +21,7 @@ class _DriverContext:
 
 @dataclass(frozen=True, slots=True)
 class _ExecutionOutcome:
-    """Backend-neutral terminal result returned by one Driver Execution."""
+    """Backend-neutral terminal result returned by one prepared Execution."""
 
     status: _TerminalStatus
     exit_code: int | None
@@ -42,13 +40,13 @@ class _ExecutionOutcome:
 
 
 class _ExecutionOutput(Protocol):
-    """Append normalized Driver output to one Execution."""
+    """Append normalized command output to one Execution."""
 
     async def write(self, stream: Literal["stdout", "stderr"], data: bytes) -> None:
         """Append one output chunk or record that it was truncated."""
 
 
-class _DriverExecution(Protocol):
+class _PreparedExecution(Protocol):
     """Own the resources and cancellation of one concrete execution."""
 
     async def run(self, output: _ExecutionOutput) -> _ExecutionOutcome:
@@ -56,14 +54,3 @@ class _DriverExecution(Protocol):
 
     async def cancel(self) -> None:
         """Request cancellation idempotently."""
-
-
-class _ExecutionDriver(Protocol):
-    """Prepare concrete Executions for one trusted command family."""
-
-    def prepare(
-        self,
-        command: CommandParseResult,
-        context: _DriverContext,
-    ) -> _DriverExecution:
-        """Prepare an Execution without starting work or mutating Session state."""

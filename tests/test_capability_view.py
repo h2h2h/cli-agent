@@ -14,11 +14,11 @@ from cli_agent.runtime import (
 from cli_agent.runtime._capability.command_parser import parse_shell_command
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._environment.drivers.base import (
-    _DriverContext,
+from cli_agent.runtime._environment.handlers.base import (
+    _CommandContext,
     _ExecutionOutcome,
 )
-from cli_agent.runtime._environment.drivers.shell import _ShellDriver
+from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.policy import _ExecutionApprovalGate
 
 
@@ -308,9 +308,9 @@ def test_cancelled_shell_execution_does_not_copy_up(tmp_path: Path) -> None:
     visible = workspace / ".workspace" / "tools" / "cancelled.txt"
 
     async def scenario() -> None:
-        execution = _ShellDriver(view).prepare(
+        execution = _ShellHandler(view).prepare(
             parse_shell_command("touch .workspace/tools/cancelled.txt"),
-            _DriverContext(
+            _CommandContext(
                 workspace=workspace,
                 cwd=workspace,
                 environment={},

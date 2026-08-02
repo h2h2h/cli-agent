@@ -12,12 +12,12 @@ from cli_agent.runtime._environment.commands import (
     _CustomCommandRegistry,
     _ShellCommand,
 )
-from cli_agent.runtime._environment.drivers.base import (
+from cli_agent.runtime._environment.handlers.base import (
     _ExecutionOutcome,
     _ExecutionOutput,
 )
-from cli_agent.runtime._environment.drivers.executions import _InlineExecution
-from cli_agent.runtime._environment.drivers.shell import _ShellDriver
+from cli_agent.runtime._environment.handlers.executions import _InlineExecution
+from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime._environment.routing import (
     _CommandRouter,
@@ -46,7 +46,7 @@ def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> No
     )
     router = _CommandRouter(
         shell_command=_ShellCommand(
-            prepare=_ShellDriver().prepare,
+            prepare=_ShellHandler().prepare,
             parallel_commands=frozenset({"cat"}),
         ),
         custom_registry=registry,

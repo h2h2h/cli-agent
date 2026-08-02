@@ -9,16 +9,16 @@ from cli_agent.runtime._environment.commands import (
     _CustomCommandRegistry,
     _ShellCommand,
 )
-from cli_agent.runtime._environment.drivers.base import (
-    _DriverContext,
+from cli_agent.runtime._environment.handlers.base import (
+    _CommandContext,
     _ExecutionOutcome,
     _ExecutionOutput,
 )
-from cli_agent.runtime._environment.drivers.executions import (
+from cli_agent.runtime._environment.handlers.executions import (
     _InlineExecution,
     _ProcessExecution,
 )
-from cli_agent.runtime._environment.drivers.shell import _ShellDriver
+from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime._environment.routing import (
     _ExecutionRoute,
@@ -37,12 +37,12 @@ class _BufferOutput:
         self.chunks.append((stream, data))
 
 
-def test_custom_driver_prepares_export_and_shell_driver_prepares_process(
+def test_custom_command_prepares_export_and_shell_handler_prepares_process(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
         environment: dict[str, str] = {}
-        context = _DriverContext(
+        context = _CommandContext(
             workspace=tmp_path,
             cwd=tmp_path,
             environment=environment,
@@ -60,7 +60,7 @@ def test_custom_driver_prepares_export_and_shell_driver_prepares_process(
         assert outcome == _ExecutionOutcome.exited()
         assert environment == {"A": "1", "MESSAGE": "two words"}
 
-        process_execution = _ShellDriver().prepare(
+        process_execution = _ShellHandler().prepare(
             parse_shell_command("pwd"),
             context,
         )
@@ -80,7 +80,7 @@ def test_inline_export_cancelled_before_run_does_not_mutate_session(
         assert spec is not None
         execution = spec.prepare(
             command,
-            _DriverContext(
+            _CommandContext(
                 workspace=tmp_path,
                 cwd=tmp_path,
                 environment=environment,
@@ -127,7 +127,7 @@ def test_invalid_inline_export_reports_failure_without_mutation(
         assert spec is not None
         execution = spec.prepare(
             command,
-            _DriverContext(
+            _CommandContext(
                 workspace=tmp_path,
                 cwd=tmp_path,
                 environment=environment,
@@ -160,7 +160,7 @@ class _FakeExecution:
         self.cancelled.set()
 
 
-class _FakeDriver:
+class _FakeHandler:
     def __init__(self, execution: _FakeExecution) -> None:
         self.execution = execution
         self.prepared: list[tuple[str, Path, dict[str, str]]] = []
@@ -168,7 +168,7 @@ class _FakeDriver:
     def prepare(
         self,
         command,
-        context: _DriverContext,
+        context: _CommandContext,
     ) -> _FakeExecution:
         self.prepared.append(
             (command.raw_command, context.cwd, dict(context.environment))
@@ -176,8 +176,8 @@ class _FakeDriver:
         return self.execution
 
 
-class _FailingDriver:
-    def prepare(self, command, context: _DriverContext):
+class _FailingHandler:
+    def prepare(self, command, context: _CommandContext):
         del command, context
         raise RuntimeError("preparation failed")
 
@@ -191,18 +191,18 @@ class _SuccessfulExecution:
         return
 
 
-class _SuccessfulDriver:
-    def prepare(self, command, context: _DriverContext) -> _SuccessfulExecution:
+class _SuccessfulHandler:
+    def prepare(self, command, context: _CommandContext) -> _SuccessfulExecution:
         del command, context
         return _SuccessfulExecution()
 
 
-def test_kernel_runs_and_cancels_driver_execution_without_driver_branch(
+def test_kernel_runs_and_cancels_prepared_execution_without_branch(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
         execution = _FakeExecution()
-        driver = _FakeDriver(execution)
+        handler = _FakeHandler(execution)
         kernel = EnvironmentKernel(
             tmp_path,
             base_env={"SESSION": "value"},
@@ -213,17 +213,17 @@ def test_kernel_runs_and_cancels_driver_execution_without_driver_branch(
         decision = ExecutionDecision.allow(parse_shell_command("fake command"))
         state = kernel._supervisor.admit(
             decision,
-            _shell_route(driver),
+            _shell_route(handler),
         )
         assert state is not None
         await execution.started.wait()
 
         await kernel._supervisor.terminate(state)
 
-        assert driver.prepared == [("fake command", tmp_path, {"SESSION": "value"})]
+        assert handler.prepared == [("fake command", tmp_path, {"SESSION": "value"})]
         assert state.status == "killed"
         assert state.exit_code is None
-        assert state.driver_execution is execution
+        assert state.prepared_execution is execution
         assert state.chunks[0]["text"] == "driver output\n"
         assert state.completion_task is not None
         assert state.completion_task.done()
@@ -232,7 +232,7 @@ def test_kernel_runs_and_cancels_driver_execution_without_driver_branch(
     asyncio.run(scenario())
 
 
-def test_driver_preparation_failure_releases_lane_for_queued_execution(
+def test_handler_preparation_failure_releases_lane_for_queued_execution(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
@@ -245,11 +245,11 @@ def test_driver_preparation_failure_releases_lane_for_queued_execution(
         decision = ExecutionDecision.allow(parse_shell_command("fake command"))
         failed = kernel._supervisor.admit(
             decision,
-            _shell_route(_FailingDriver()),
+            _shell_route(_FailingHandler()),
         )
         queued = kernel._supervisor.admit(
             decision,
-            _shell_route(_SuccessfulDriver()),
+            _shell_route(_SuccessfulHandler()),
         )
         assert failed is not None
         assert queued is not None
@@ -267,8 +267,8 @@ def test_driver_preparation_failure_releases_lane_for_queued_execution(
     asyncio.run(scenario())
 
 
-def _shell_route(driver) -> _ExecutionRoute:
+def _shell_route(handler) -> _ExecutionRoute:
     return _ExecutionRoute(
-        command=_ShellCommand(prepare=driver.prepare),
+        command=_ShellCommand(prepare=handler.prepare),
         parallel_safe=False,
     )

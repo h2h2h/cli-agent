@@ -1,4 +1,4 @@
-"""Shell command-family execution driver."""
+"""Shell command-family execution handler."""
 
 from __future__ import annotations
 
@@ -7,19 +7,19 @@ import os
 from typing import TYPE_CHECKING
 
 from cli_agent.runtime._capability.command_parser import CommandParseResult
-from cli_agent.runtime._environment.drivers.base import (
-    _DriverContext,
-    _DriverExecution,
+from cli_agent.runtime._environment.handlers.base import (
+    _CommandContext,
     _ExecutionOutcome,
     _ExecutionOutput,
+    _PreparedExecution,
 )
-from cli_agent.runtime._environment.drivers.executions import _ProcessExecution
+from cli_agent.runtime._environment.handlers.executions import _ProcessExecution
 
 if TYPE_CHECKING:
     from cli_agent.runtime._capability.view import _CapabilityView
 
 
-class _ShellDriver:
+class _ShellHandler:
     """Prepare ordinary commands for execution by a child Shell."""
 
     def __init__(self, capability_view: _CapabilityView | None = None) -> None:
@@ -28,8 +28,8 @@ class _ShellDriver:
     def prepare(
         self,
         command: CommandParseResult,
-        context: _DriverContext,
-    ) -> _DriverExecution:
+        context: _CommandContext,
+    ) -> _PreparedExecution:
         child_env = dict(os.environ) | context.environment
 
         async def spawn_shell() -> asyncio.subprocess.Process:
@@ -61,7 +61,7 @@ class _CapabilityShellExecution:
         process: _ProcessExecution,
         capability_view: _CapabilityView,
         command: CommandParseResult,
-        context: _DriverContext,
+        context: _CommandContext,
     ) -> None:
         self._process = process
         self._capability_view = capability_view

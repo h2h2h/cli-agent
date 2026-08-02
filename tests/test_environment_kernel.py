@@ -18,8 +18,8 @@ from cli_agent.runtime._environment.commands import (
     _CustomCommandRegistry,
     _ShellCommand,
 )
-from cli_agent.runtime._environment.drivers.shell import _ShellDriver
 from cli_agent.runtime._environment.execution import _ExecutionState
+from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.policy import (
     ExecutablePolicy,
     ExecutionDecision,
@@ -33,7 +33,7 @@ from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
 def _router() -> _CommandRouter:
     registry = _CustomCommandRegistry(_builtin_custom_commands())
     return _CommandRouter(
-        shell_command=_ShellCommand(prepare=_ShellDriver().prepare),
+        shell_command=_ShellCommand(prepare=_ShellHandler().prepare),
         custom_registry=registry,
     )
 
@@ -847,7 +847,7 @@ def test_kill_removes_queued_execution_and_reuses_capacity(
 
             killed_state = kernel._executions[str(selected["exec_id"])]
             assert killed_state.kill_requested is True
-            assert killed_state.driver_execution is None
+            assert killed_state.prepared_execution is None
             assert killed_state.completion_task is None
 
             replacement = _output(
@@ -969,7 +969,7 @@ def test_killing_queued_execution_wakes_exec_and_output_waiters(
             assert killed["status"] == "killed"
             assert exec_result == killed
             assert output_result == killed
-            assert queued_state.driver_execution is None
+            assert queued_state.prepared_execution is None
             assert queued_state.completion_task is None
             assert not must_not_start.exists()
         finally:
