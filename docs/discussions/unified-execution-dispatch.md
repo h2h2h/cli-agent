@@ -4,6 +4,12 @@ Status: accepted for specification
 Accepted: 2026-07-28
 Normative follow-up: architecture decision 16
 
+The historical Driver-specific routing in this discussion is superseded by
+[RFC-0007](../rfcs/proposed/RFC-0007-unified-command-routing-and-execution-refactor.md).
+The current implementation routes `tools`, `cd`, and `export` through the
+Custom registry, uses Command metadata for isolation and parallel safety, and
+uses one global Scheduler barrier model.
+
 The Custom dispatch and scheduling portions are refined by
 [AEP-aligned Custom dispatch and ordered parallel scheduling](./aep-aligned-custom-dispatch-and-parallel-scheduling.md).
 [RFC-0001: Host-mediated execution approval](../rfcs/approved/RFC-0001-host-mediated-execution-approval.md)

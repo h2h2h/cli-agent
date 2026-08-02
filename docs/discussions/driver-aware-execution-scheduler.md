@@ -1,7 +1,13 @@
 # Driver-aware per-Session Execution Scheduler
 
 Status: superseded on 2026-07-29 by
-[AEP-aligned Custom dispatch and ordered parallel scheduling](./aep-aligned-custom-dispatch-and-parallel-scheduling.md).
+[AEP-aligned Custom dispatch and ordered parallel scheduling](./aep-aligned-custom-dispatch-and-parallel-scheduling.md),
+which is itself refined by
+[RFC-0007](../rfcs/proposed/RFC-0007-unified-command-routing-and-execution-refactor.md).
+
+The Tool/Shell lane model in this historical discussion is not part of the
+current implementation. RFC-0007 replaces it with Command metadata and one
+global Scheduler barrier model.
 
 ## Question
 

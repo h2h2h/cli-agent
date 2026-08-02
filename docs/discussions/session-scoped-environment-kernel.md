@@ -3,6 +3,11 @@
 Status: accepted
 Accepted: 2026-07-30
 
+The historical Driver terminology below refers to the current Command Handler
+contract defined by
+[RFC-0007](../rfcs/proposed/RFC-0007-unified-command-routing-and-execution-refactor.md).
+There is no public Driver API or Tool-specific scheduling lane.
+
 ## Decision
 
 Every active Agent Session owns exactly one `AgentLoop` and one

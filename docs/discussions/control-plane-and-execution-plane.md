@@ -6,6 +6,11 @@ Normative follow-up: architecture decision 16
 
 The lane-based scheduling references are superseded by
 [AEP-aligned Custom dispatch and ordered parallel scheduling](./aep-aligned-custom-dispatch-and-parallel-scheduling.md).
+The remaining Driver and Tool-lane terminology in this historical discussion
+is superseded by
+[RFC-0007](../rfcs/proposed/RFC-0007-unified-command-routing-and-execution-refactor.md),
+which defines Command handlers, Tool Catalog scheduling facts, and one global
+Scheduler barrier model.
 The lifecycle shape is amended by
 [Session-scoped Environment Kernel](./session-scoped-environment-kernel.md):
 each Agent Session owns one Kernel and there is no Environment Binding or

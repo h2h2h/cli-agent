@@ -1,21 +1,29 @@
 ---
 rfc_id: RFC-0003
 title: Tool Capability Commands and Isolated Tool Environment
-status: IN_PROGRESS
+status: SUPERSEDED
 author: cli-agent maintainers
 reviewers:
   - name: Project owner
     status: approved
 created: 2026-07-30
-last_updated: 2026-07-30
+last_updated: 2026-08-02
 decision_date: 2026-07-30
 related_prds: []
 related_rfcs:
   - RFC-0001
   - RFC-0002
+  - RFC-0007
 ---
 
 # RFC-0003: Tool Capability Commands and Isolated Tool Environment
+
+> Superseded by [RFC-0007](../../proposed/RFC-0007-unified-command-routing-and-execution-refactor.md).
+> This document remains as the historical Tool capability design. Its
+> `ToolCommand` parser field, Tool Driver, Tool lane, and `parallel_tools`
+> scheduling sections are no longer normative; current Tool execution uses
+> the Custom command registry, Tool Catalog metadata, and the global Scheduler
+> barrier model.
 
 ## Overview
 
@@ -26,8 +34,8 @@ and synchronizes one Workspace-private Python environment. Tool code runs in a
 fresh worker process through the existing Execution lifecycle.
 
 The initial default Policy allows every reserved `tools` invocation. Tool
-validation still controls whether a catalog entry can be loaded, and
-concurrency remains Host-owned.
+validation still controls whether a catalog entry can be loaded. The
+routing and scheduling model described below was later replaced by RFC-0007.
 
 ## Background & Context
 
@@ -370,7 +378,7 @@ Every invocation receives a fresh process, so module globals cannot cross
 calls. The shared `_ProcessExecution` owns output and process-group
 termination.
 
-### Scheduling
+### Historical scheduling model
 
 Execution routes carry a Runtime-owned lane. Existing Shell and Custom work
 uses the default lane; Tool work uses a separate Tool lane. Both lanes share
@@ -430,7 +438,7 @@ human-versus-Agent authorship and a stricter default Tool Policy.
 
 ## Decision Record
 
-**Status**: APPROVED / IN PROGRESS
+**Status**: SUPERSEDED by RFC-0007
 
 **Date**: 2026-07-30
 

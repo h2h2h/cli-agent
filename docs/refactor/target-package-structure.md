@@ -12,10 +12,15 @@ the simplification findings there (speculative abstractions, duplicated
 semantics, defensive coding) remain valid and are folded into the migration
 steps below.
 
+The command-routing and execution portions of this earlier target sketch are
+superseded by [RFC-0007](../rfcs/proposed/RFC-0007-unified-command-routing-and-execution-refactor.md).
+The current package uses `handlers/`, a Custom-first Router, and one global
+Scheduler barrier model.
+
 The layout borrows AEP's packaging principle — capability knowledge
 (Workspace lifetime, shared across Sessions) is packaged separately from
 Session machinery — without adopting AEP's internals. cli-agent's control
-plane (Parser → Policy → Approval → Decision → Router → Scheduler → Driver),
+plane (Parser → Policy → Approval → Decision → Router → Scheduler → Handler),
 its JSON-payload Tool worker, and its bounded output contracts are strictly
 stronger than AEP's equivalents and are preserved as-is.
 
@@ -80,12 +85,11 @@ src/cli_agent/
         ├── protocol.py            # syscall argument validation and result
         │                          #   payload shapes (incl. _snapshot)
         ├── supervisor.py          # Execution supervision: scheduling,
-        │                          #   Driver lifecycle, cancellation
+        │                          #   Handler lifecycle, cancellation
         ├── policy.py  routing.py  scheduler.py  execution.py
-        ├── drivers/               # kept as a subpackage: real polymorphic
-        │   │                      #   seam, grows with MCP
-        │   ├── base.py  shell.py  tool.py  executions.py
-        │   # custom.py deleted (_ResolvedCustomDriver pass-through)
+        ├── handlers/              # command preparation and execution seam
+        │   ├── base.py  shell.py  tools.py  executions.py
+        │   ├── cd.py  export.py
         └── commands.py            # registry + builtins flattened into one
 ```
 
@@ -97,56 +101,57 @@ Workspace-scoped capability knowledge. Reconciled once at Runtime open;
 Sessions receive references, never copies to mutate. Owns provenance,
 validation, whiteouts, generated indexes, and the Tool dependency venv.
 `tools/facts.py` is a pure-data leaf module: it imports nothing from
-`_environment/`, which is what breaks the potential import cycle between
-`grammar.py` (consumes `CommandParseResult`) and `parsing.py` (annotates
-`CommandParseResult.tool: ToolCommand | None`).
+`_environment/`, which breaks the potential import cycle between
+`grammar.py` (which consumes `CommandParseResult`) and the Session command
+machinery. Tool grammar facts are created only inside the capability Tool
+handler; the generic parser has no Tool-specific field.
 
 ### `_environment/`
 
 The Session-scoped Kernel domain. One Kernel per Session, owning cwd, the
 Session environment copy, the Scheduler, the Handle namespace, Execution
-States, and Driver lifecycle.
+States, and Command Handler lifecycle.
 
 ### `_environment/commands.py` — Runtime-owned command dispatch table
 
 Answers "who defines this command's behavior", *before* routing. A registry
-mapping an exact command head to a Runtime-trusted `_CustomCommandSpec`
+mapping an exact command head to a Runtime-trusted `_CustomCommand`
 (`prepare` + scheduling rule), consulted before the Shell fallback.
 
 It exists because some commands cannot be delegated to a child Shell: `cd`
 and `export` must mutate the Session's own cwd and environment table, and
 child-process state changes cannot propagate back to the parent. Their
-`prepare` receives the `_DriverContext` hooks (`set_cwd`, the Session env
+`prepare` receives the `_CommandContext` hooks (`set_cwd`, the Session env
 mapping) and performs the mutation in-process.
 
 It knows nothing about policy, approval, scheduling, or output bounds. It
 grows along the *command vocabulary* dimension: a new Runtime-owned command
 (e.g. `unset`) is one new registry entry.
 
-### `_environment/drivers/` — execution-plane backend seam
+### `_environment/handlers/` — command execution seam
 
 Answers "how an admitted Decision actually runs", *after* routing. The only
 place that performs side effects, consuming immutable Execution Decisions
 without re-parsing or re-authorizing.
 
-- `base.py`: contracts — `_ExecutionDriver.prepare` (prepare without
-  starting), `_DriverExecution.run/cancel` (owns one concrete execution's
-  resources), `_DriverContext`, `_ExecutionOutcome`.
+- `base.py`: contracts — `_CommandContext`, `_PreparedExecution`, and
+  `_ExecutionOutcome`.
 - `executions.py`: reusable execution primitives — `_InlineExecution`
   (in-process cooperative handler) and `_ProcessExecution` (child process,
   process group, stream capture, grace-period cancellation).
-- `shell.py`: Shell command family; wraps the child Shell in Capability View
-  copy-up/whiteout preparation.
-- `tool.py`: Tool command family; list/info degrade to inline text
-  executions, run assembles the JSON payload and spawns the venv worker.
+- `shell.py`: Shell command family; prepares the child Shell execution.
+- `tools.py`: Tool command family; list/info use inline text executions, and
+  run assembles the JSON payload and spawns the venv worker.
+- `cd.py` and `export.py`: Session-mutating inline command handlers.
 
 Custom commands from `commands.py` also produce `_InlineExecution`: both
-components feed the same `_DriverExecution` contract, so the supervisor
+components feed the same `_PreparedExecution` contract, so the supervisor
 applies one backend-neutral wait/output/cursor/kill/cleanup discipline with
-no driver-type branches in the Kernel.
+no command-family branches in the Kernel.
 
-This seam grows along the *execution backend* dimension: MCP adds
-`drivers/mcp.py` without touching `commands.py`.
+This seam grows along the *command handler* dimension: future MCP behavior
+enters the Tool handler and Catalog without adding a model-visible syscall or
+restoring a Tool-specific route.
 
 ### `_syscalls.py`
 
@@ -211,7 +216,7 @@ Two placements differ from the original split sketch:
 
 - **Approval stays in the Kernel.** `_authorize` consumes a PolicyEvaluation
   and produces an ExecutionDecision without touching the Scheduler, the
-  Execution registry, or Drivers — it is control-plane, not supervision. The
+  Execution registry, or Handlers — it is control-plane, not supervision. The
   `_approval_tasks` set exists only so `close()` can cancel in-flight
   approvals, so it follows the Kernel lifecycle.
 - **`_snapshot` moved to `protocol.py`.** Its only callers assemble syscall
@@ -232,9 +237,9 @@ Ordering moves leaves before roots so no module is reshaped twice.
 | Step | Content | Character |
 |---|---|---|
 | 1 | Move `ToolCommand`/`ToolReference` into `_capability/tools/facts.py`; unify the three near-duplicate provenance dataclasses (`_ToolEntry`, `ToolReference`, `_CapabilityInspection`) onto one shared record with per-context additions | pure move, lowest risk |
-| 2 | Create `_capability/`; move the Workspace-lifetime modules (`_workspace.py`, `_capability_view.py`, `_tool_catalog.py`, `_tool_commands.py`, `_tool_environment.py`, `_tool_worker.py`) plus `_environment/command_parser.py` (see amendment); replace the worker path computation in `drivers/tool.py` (`Path(__file__).parents[2]`) with `importlib.resources.files` | mechanical move |
-| 3 | Subtract inside `_environment/` (and the moved parser): flatten `commands/` into one `commands.py`; delete `drivers/custom.py` (router calls `spec.prepare` directly); delete the `CommandParser` ABC and the `parse_shell_command` wrapper in `_capability/command_parser.py` (one plain function); delete the `_route_decision` pass-through | pure subtraction |
-| 4 | Split the Kernel God Class into `kernel.py` (Session state aggregate), `protocol.py` (syscall validation/snapshots), `supervisor.py` (Driver supervision + approval coordination) | structural, test-backed |
+| 2 | Create `_capability/`; move the Workspace-lifetime modules (`_workspace.py`, `_capability_view.py`, `_tool_catalog.py`, `_tool_commands.py`, `_tool_environment.py`, `_tool_worker.py`) plus `_environment/command_parser.py` (see amendment); replace the worker path computation in `handlers/tools.py` with `importlib.resources.files` | mechanical move |
+| 3 | Subtract inside `_environment/` (and the moved parser): flatten `commands/` into one `commands.py`; route Custom commands directly through the registry; delete the `CommandParser` ABC and the `parse_shell_command` wrapper in `_capability/command_parser.py` (one plain function); delete the `_route_decision` pass-through | pure subtraction |
+| 4 | Split the Kernel God Class into `kernel.py` (Session state aggregate), `protocol.py` (syscall validation/snapshots), `supervisor.py` (Handler supervision + approval coordination) | structural, test-backed |
 | 5 | Rename `_builtin_tools.py` → `_syscalls.py`; narrow `runtime/__init__.py` to the true Host surface; unify the mutator fact source (`_DIRECT_MUTATORS` vs `_DEFAULT_ASKED_EXECUTABLES`, including the duplicated in-place-`sed` detectors); remove defensive checks and single-use constants per `AGENTS.override.md` | finishing pass |
 
 Step 5's public-surface narrowing: `runtime/__init__.py` keeps

@@ -106,18 +106,18 @@ flowchart TB
                 PROTO["protocol.py<br/>exec / output / kill<br/>参数校验与 Execution snapshot"]
                 POLICY["policy.py<br/>ALLOW / DENY / ASK<br/>Host-owned ExecutablePolicy"]
                 DECISION["ExecutionDecision<br/>最终、不可变、allow-only 授权边界"]
-                ROUTER["routing.py<br/>CUSTOM / SHELL / TOOL<br/>lane + scheduling class"]
-                SCHED["scheduler.py<br/>有界准入<br/>顺序 admission + 并行批次"]
+                ROUTER["routing.py<br/>Custom registry + Shell fallback<br/>Command metadata"]
+                SCHED["scheduler.py<br/>single pending queue + barriers<br/>parallel_limit"]
                 SUPV["supervisor.py<br/>执行监督<br/>等待 · 取消 · 清理"]
                 EXEC["execution.py<br/>_ExecutionState<br/>bounded output · Cursor · lifecycle"]
                 CMDS["commands.py<br/>Runtime Custom handlers<br/>cd / export"]
 
-                subgraph DRIVERS["drivers/"]
+                subgraph HANDLERS["handlers/"]
                     direction LR
 
-                    DRBASE["base.py<br/>ExecutionDriver contract"]
-                    SHELL_DRV["shell.py<br/>Shell Driver"]
-                    TOOL_DRV["tool.py<br/>Tool Driver"]
+                    HAND_BASE["base.py<br/>CommandContext + PreparedExecution"]
+                    SHELL_HANDLER["shell.py<br/>Shell handler"]
+                    TOOL_HANDLER["tools.py<br/>Tool handler"]
                     PROC["executions.py<br/>process group<br/>SIGTERM → KILL"]
                 end
 
@@ -130,13 +130,14 @@ flowchart TB
 
                 DECISION --> ROUTER
                 ROUTER -.->|查找 Custom registry| CMDS
-                ROUTER -->|CUSTOM / SHELL / TOOL| SCHED
-                SCHED --> SUPV --> DRBASE
-                DRBASE --> SHELL_DRV
-                DRBASE --> TOOL_DRV
-                SHELL_DRV --> PROC
+                ROUTER -->|_ExecutionRoute| SCHED
+                SCHED --> SUPV --> HAND_BASE
+                HAND_BASE --> SHELL_HANDLER
+                HAND_BASE --> TOOL_HANDLER
+                SHELL_HANDLER --> PROC
+                TOOL_HANDLER --> PROC
                 SUPV --> EXEC
-                TOOL_DRV -->|启动 JSON worker| T_WORKER
+                TOOL_HANDLER -->|启动 JSON worker| T_WORKER
             end
 
             SESSION_NODE --> LOOP
@@ -178,5 +179,33 @@ flowchart TB
     class M_FACTS,M_CAT mcp
     class M_STUB artifact
     class SESSION_NODE,RES boundary
-    class KERNEL,PROTO,POLICY,DECISION,DENIED,ROUTER,SCHED,SUPV,EXEC,CMDS,DRBASE,SHELL_DRV,TOOL_DRV,PROC environment
+    class KERNEL,PROTO,POLICY,DECISION,DENIED,ROUTER,SCHED,SUPV,EXEC,CMDS,HAND_BASE,SHELL_HANDLER,TOOL_HANDLER,PROC environment
 ```
+
+## Unified command execution
+
+The model-visible surface remains the fixed `exec`, `output`, and `kill`
+syscalls. An `exec` call follows one Session lifecycle:
+
+```text
+CommandParseResult
+    → Policy / Approval
+    → allow-only ExecutionDecision
+    → Custom-first Command Router
+    → one global Scheduler queue and barrier
+    → Supervisor + Command Handler
+    → backend-neutral Execution Snapshot
+```
+
+`cd` and `export` are registered Custom commands with mutable Session context.
+The `tools` command is another Custom command; its Tool grammar and Catalog
+remain inside the capability handler. Unmatched commands use the Shell
+handler. Command metadata controls isolation: `isolated=True` copies the
+Session environment and removes `set_cwd`, while `parallel_safe=True` always
+gets the same snapshot even when the command is otherwise serial.
+
+The Scheduler has one `parallel_limit` and no Tool-specific lane. Consecutive
+parallel-safe commands share a batch, a serial command creates a barrier, and
+later work cannot cross that barrier. Every admitted command therefore shares
+the same output, cursor, cancellation, close, and Session-private Handle
+contract regardless of its handler.

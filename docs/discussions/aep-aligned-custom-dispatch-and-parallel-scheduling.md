@@ -4,6 +4,9 @@ Status: implemented in the working tree on 2026-07-29.
 
 This decision supersedes the lane-based scheduling model and refines the
 earlier unified-dispatch design.
+The implementation details in this discussion are superseded and completed
+by [RFC-0007](../rfcs/proposed/RFC-0007-unified-command-routing-and-execution-refactor.md),
+which makes Command metadata and the global Scheduler barriers normative.
 
 ## Decision
 

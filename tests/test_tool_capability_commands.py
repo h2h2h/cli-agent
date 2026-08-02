@@ -302,6 +302,55 @@ def test_tools_list_info_and_reserved_invalid_syntax_use_tool_handler(
     asyncio.run(scenario())
 
 
+def test_custom_and_shell_commands_share_one_execution_lifecycle(
+    tmp_path: Path,
+) -> None:
+    repertoire = _repertoire(tmp_path)
+    (repertoire / "tools" / "hello.py").write_text(
+        '"""Greeting Tool."""\nVALUE = "hello"\n'
+    )
+    child = tmp_path / "child"
+    child.mkdir()
+
+    async def scenario() -> None:
+        kernel = await _kernel(tmp_path, repertoire)
+        try:
+            commands = (
+                ("cd child", "cd", False),
+                ("export UNIFIED=yes", "export", False),
+                ("tools list", "tools", True),
+                ("export", "export", False),
+                ("pwd", None, False),
+            )
+            snapshots: list[dict[str, object]] = []
+            for command, route_name, parallel_safe in commands:
+                snapshot = _output(await _exec(kernel, command))
+                state = kernel._executions[str(snapshot["exec_id"])]
+
+                assert state.route.command.name == route_name
+                assert state.route.parallel_safe is parallel_safe
+                assert {
+                    "exec_id",
+                    "status",
+                    "exit_code",
+                    "chunks",
+                    "next_cursor",
+                    "is_terminal",
+                    "truncated",
+                    "available_from",
+                } <= snapshot.keys()
+                assert snapshot["status"] == "exited"
+                snapshots.append(snapshot)
+
+            assert "hello | valid | repertoire" in _text(snapshots[2], "stdout")
+            assert "UNIFIED=yes" in _text(snapshots[3], "stdout")
+            assert _text(snapshots[4], "stdout").strip() == str(child)
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+
 def test_reserved_tools_without_catalog_do_not_fall_back_to_shell(
     tmp_path: Path,
 ) -> None:
