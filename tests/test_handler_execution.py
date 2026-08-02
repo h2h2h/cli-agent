@@ -2,10 +2,12 @@ import asyncio
 from pathlib import Path
 from typing import Literal
 
+from cli_agent.runtime import ToolCall
 from cli_agent.runtime._capability.command_parser import parse_shell_command
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
+    _CustomCommand,
     _CustomCommandRegistry,
     _ShellCommand,
 )
@@ -228,6 +230,62 @@ def test_kernel_runs_and_cancels_prepared_execution_without_branch(
         assert state.completion_task is not None
         assert state.completion_task.done()
         await kernel.close()
+
+    asyncio.run(scenario())
+
+
+def test_parallel_safe_metadata_forces_an_isolated_command_context(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        prepared_context: _CommandContext | None = None
+
+        async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+            del output
+            assert prepared_context is not None
+            prepared_context.environment["WORKER"] = "changed"
+            return _ExecutionOutcome.exited()
+
+        def prepare(command, context: _CommandContext) -> _InlineExecution:
+            del command
+            nonlocal prepared_context
+            prepared_context = context
+            return _InlineExecution(execute)
+
+        registry = _CustomCommandRegistry(
+            (
+                _CustomCommand(
+                    name="worker",
+                    prepare=prepare,
+                    parallel_safe=True,
+                    isolated=False,
+                ),
+            )
+        )
+        kernel = EnvironmentKernel(
+            tmp_path,
+            base_env={"SESSION": "value"},
+            registry=registry,
+        )
+        try:
+            result = await kernel.dispatch(
+                ToolCall(
+                    call_id="exec_worker",
+                    name="exec",
+                    arguments={"command": "worker"},
+                )
+            )
+
+            assert result.error is None
+            assert prepared_context is not None
+            assert prepared_context.environment == {
+                "SESSION": "value",
+                "WORKER": "changed",
+            }
+            assert prepared_context.set_cwd is None
+            assert kernel._env == {"SESSION": "value"}
+        finally:
+            await kernel.close()
 
     asyncio.run(scenario())
 

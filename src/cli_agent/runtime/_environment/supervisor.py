@@ -117,10 +117,7 @@ class _ExecutionSupervisor:
 
     def _start_execution(self, state: _ExecutionState) -> None:
         session = self._session
-        isolate_context = (
-            state.route.parallel_safe
-            or state.route.command.isolated
-        )
+        isolate_context = state.route.command.isolated or state.route.parallel_safe
         context = _CommandContext(
             workspace=session._workspace,
             cwd=session._cwd,

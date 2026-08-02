@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 
 from cli_agent.runtime._environment.commands import (
     _Command,
@@ -11,21 +10,6 @@ from cli_agent.runtime._environment.commands import (
     _ShellCommand,
 )
 from cli_agent.runtime._environment.policy import ExecutionDecision
-
-
-class _DriverKind(Enum):
-    """Legacy scheduler classification retained until the lane migration."""
-
-    CUSTOM = "custom"
-    SHELL = "shell"
-    TOOL = "tool"
-
-
-class _SchedulingClass(Enum):
-    """Legacy scheduling labels retained for the in-progress migration."""
-
-    SERIAL = "serial"
-    PARALLEL_SAFE = "parallel_safe"
 
 
 @dataclass(frozen=True, slots=True)

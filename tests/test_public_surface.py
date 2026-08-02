@@ -68,6 +68,7 @@ def test_keeps_runtime_internals_private() -> None:
     private_names = {
         "AgentLoop",
         "EnvironmentKernel",
+        "ToolCommand",
         "_RuntimeResources",
         "_reconcile_runtime_resources",
     }
