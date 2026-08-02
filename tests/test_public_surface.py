@@ -66,7 +66,12 @@ def test_exposes_host_facing_runtime_lifecycle() -> None:
 
 
 def test_keeps_runtime_internals_private() -> None:
-    private_names = {"AgentLoop", "EnvironmentKernel"}
+    private_names = {
+        "AgentLoop",
+        "EnvironmentKernel",
+        "_RuntimeResources",
+        "_reconcile_runtime_resources",
+    }
     for name in private_names:
         assert name not in runtime.__all__
         assert not hasattr(runtime, name)

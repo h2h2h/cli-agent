@@ -1,6 +1,6 @@
 # Session handoff
 
-Updated: 2026-08-01
+Updated: 2026-08-02
 
 ## Repository state
 
@@ -28,7 +28,15 @@ Updated: 2026-08-01
 - [RFC-0004](./rfcs/proposed/RFC-0004-skill-discovery-and-loading.md) is
   PROPOSED; the milestone 08 tickets live in
   `docs/issues/06-discover-and-load-skills-on-demand/`.
-- The working tree has 310 passing tests, and Ruff passes for `src` and
+- [RFC-0006](./rfcs/proposed/RFC-0006-explicit-runtime-resource-ownership.md)
+  is PROPOSED; the milestone 15 tickets live in
+  `docs/issues/15-make-runtime-resource-ownership-explicit/`.
+- Milestone 15 (Make Runtime resource ownership explicit) is implemented:
+  issue 01 introduced the `_RuntimeResources` aggregate and
+  `_reconcile_runtime_resources()`, issue 02 migrated `AgentRuntime` to own a
+  single aggregate, and issue 03 added ownership-boundary tests and updated
+  the architecture diagram.
+- The working tree has 326 passing tests, and Ruff passes for `src` and
   `tests`.
 
 ## Implemented runtime
@@ -182,6 +190,22 @@ Updated: 2026-08-01
   model-visible surface stays exactly `exec`, `output`, and `kill`, the
   Runtime public exports are unchanged, and additional Sessions do not re-run
   reconcile.
+- Runtime-owned Workspace state converges into one `_RuntimeResources`
+  aggregate (`runtime/_resources.py`): Workspace root, immutable base
+  environment snapshot (`repr=False`), Capability View, Tool Catalog, Tool
+  Environment, and Skill Catalog. `_reconcile_runtime_resources()` keeps the
+  established open order and the reconcilers' exception, fail-soft, atomic
+  write, and persistent-state semantics. `AgentRuntime` no longer saves any
+  parallel Workspace field, and the MCP projection result is not retained;
+  only its generated Tool files are consumed by the Tool Catalog.
+- Sessions borrow only the explicit objects they need. `EnvironmentKernel` and
+  the system message assembler select fields from the aggregate by name and
+  never receive the full aggregate, so `_environment` does not depend on the
+  Runtime composition type. Each Kernel still copies the immutable base
+  environment snapshot into its own mutable Session environment. Host-owned
+  Provider, Policy, Approver gate, and diagnostic callback stay outside the
+  aggregate and are never closed by `close_session()` or Runtime close, which
+  still only close Session-owned Kernel state.
 
 ## Known limits
 
@@ -237,8 +261,7 @@ Updated: 2026-08-01
 
 ## Next
 
-Peer review milestone 13 (issues 01, 02, 03, 05, and 06; issue 04 was
-cancelled) and RFC-0005, then commit only on explicit request. The next
-milestone is 14 — Invoke MCP tools with bounded bindings — where worker stubs
-switch to an IPC shim so the worker no longer needs `mcp`, and the projection
-contract gains bounded bindings.
+Peer review milestone 15 (issues 01, 02, and 03) and RFC-0006, then commit only
+on explicit request. The next milestone is 14 — Invoke MCP tools with bounded
+bindings — where worker stubs switch to an IPC shim so the worker no longer
+needs `mcp`, and the projection contract gains bounded bindings.

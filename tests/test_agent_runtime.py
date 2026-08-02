@@ -12,6 +12,7 @@ from cli_agent.runtime import (
     ModelCompletion,
     ModelEvent,
     ModelProvider,
+    PolicyEvaluation,
     RuntimeClosedError,
     ScriptedModelProvider,
     SystemMessage,
@@ -21,6 +22,11 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
+from cli_agent.runtime._capability.view import _CapabilityView
+from cli_agent.runtime._resources import _RuntimeResources
 
 
 def test_opens_and_closes_runtime_explicitly(tmp_path: Path, monkeypatch) -> None:
@@ -441,6 +447,209 @@ def test_runtime_closes_every_session_kernel(
     asyncio.run(scenario())
 
 
+def test_runtime_holds_single_resource_aggregate(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=ScriptedModelProvider(script=()),
+        )
+
+        resources = runtime._resources
+        assert isinstance(resources, _RuntimeResources)
+        assert resources.workspace == tmp_path.resolve()
+        assert isinstance(resources.capability_view, _CapabilityView)
+        assert isinstance(resources.tool_catalog, _ToolCatalog)
+        assert isinstance(resources.tool_environment, _ToolEnvironment)
+        assert isinstance(resources.skill_catalog, _SkillCatalog)
+        assert not hasattr(runtime, "_workspace")
+        assert not hasattr(runtime, "_capability_view")
+        assert not hasattr(runtime, "_tool_catalog")
+        assert not hasattr(runtime, "_tool_environment")
+        assert not hasattr(runtime, "_skill_catalog")
+        assert not hasattr(runtime, "_mcp_catalog")
+        assert not hasattr(runtime, "_base_env")
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_sessions_borrow_the_same_workspace_resources(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _TrackingEnvironmentKernel.instances.clear()
+    monkeypatch.setattr(
+        runtime_module,
+        "EnvironmentKernel",
+        _TrackingEnvironmentKernel,
+    )
+    provider = ScriptedModelProvider(
+        script=(
+            (_completion(AssistantMessage.text("A")),),
+            (_completion(AssistantMessage.text("B")),),
+        )
+    )
+
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider)
+        await _collect_turn(runtime, "session-a", UserMessage.text("A"))
+        await _collect_turn(runtime, "session-b", UserMessage.text("B"))
+
+        assert len(_TrackingEnvironmentKernel.instances) == 2
+        first, second = _TrackingEnvironmentKernel.instances
+        resources = runtime._resources
+        assert first.capability_view is resources.capability_view
+        assert second.capability_view is resources.capability_view
+        assert first.tool_catalog is resources.tool_catalog
+        assert second.tool_catalog is resources.tool_catalog
+        assert first.tool_environment is resources.tool_environment
+        assert second.tool_environment is resources.tool_environment
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_each_session_gets_an_independent_environment_copy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    environment = tmp_path / ".workspace" / "env"
+    environment.parent.mkdir()
+    environment.write_text("VALUE=shared\n", encoding="utf-8")
+    _TrackingEnvironmentKernel.instances.clear()
+    monkeypatch.setattr(
+        runtime_module,
+        "EnvironmentKernel",
+        _TrackingEnvironmentKernel,
+    )
+    provider = ScriptedModelProvider(
+        script=(
+            (_completion(AssistantMessage.text("A")),),
+            (_completion(AssistantMessage.text("B")),),
+        )
+    )
+
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider)
+        await _collect_turn(runtime, "session-a", UserMessage.text("A"))
+        await _collect_turn(runtime, "session-b", UserMessage.text("B"))
+
+        first, second = _TrackingEnvironmentKernel.instances
+        assert first.base_env == {"VALUE": "shared"}
+        assert second.base_env == {"VALUE": "shared"}
+        assert first.base_env is not second.base_env
+        assert first.base_env is not runtime._resources.base_env
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_runtime_close_only_closes_session_owned_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _TrackingEnvironmentKernel.instances.clear()
+    monkeypatch.setattr(
+        runtime_module,
+        "EnvironmentKernel",
+        _TrackingEnvironmentKernel,
+    )
+    provider = ScriptedModelProvider(
+        script=(
+            (_completion(AssistantMessage.text("A")),),
+            (_completion(AssistantMessage.text("B")),),
+        )
+    )
+
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider)
+        resources = runtime._resources
+        await _collect_turn(runtime, "session-a", UserMessage.text("A"))
+        await _collect_turn(runtime, "session-b", UserMessage.text("B"))
+        await runtime.close_session("session-a")
+
+        assert [
+            kernel.close_count
+            for kernel in _TrackingEnvironmentKernel.instances
+        ] == [1, 0]
+
+        await runtime.close()
+
+        assert [
+            kernel.close_count
+            for kernel in _TrackingEnvironmentKernel.instances
+        ] == [1, 1]
+        assert not hasattr(resources, "close")
+        assert resources.workspace == tmp_path.resolve()
+        assert resources.base_env == {}
+        assert resources.capability_view is runtime._resources.capability_view
+        assert resources.tool_catalog is runtime._resources.tool_catalog
+        assert resources.tool_environment is runtime._resources.tool_environment
+        assert resources.skill_catalog is runtime._resources.skill_catalog
+
+    asyncio.run(scenario())
+
+
+def test_host_owned_dependencies_stay_outside_the_aggregate(
+    tmp_path: Path,
+) -> None:
+    class _TrackingProvider(ScriptedModelProvider):
+        def __init__(self) -> None:
+            super().__init__(
+                script=((_completion(AssistantMessage.text("Done")),),)
+            )
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _TrackingPolicy:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def evaluate(self, command: object) -> PolicyEvaluation:
+            return PolicyEvaluation.allow(command)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _TrackingApprover:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def approve(self, request: object) -> object:
+            raise AssertionError("approver must not be invoked")
+
+        def close(self) -> None:
+            self.closed = True
+
+    provider = _TrackingProvider()
+    policy = _TrackingPolicy()
+    approver = _TrackingApprover()
+    received: list[object] = []
+
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=provider,
+            execution_policy=policy,
+            execution_approver=approver,
+            on_diagnostic=received.append,
+        )
+        await _collect_turn(runtime, "session-a", UserMessage.text("Work"))
+        await runtime.close()
+
+        field_names = set(_RuntimeResources.__dataclass_fields__)
+        assert field_names.isdisjoint(
+            {"provider", "policy", "approval_gate", "on_diagnostic"}
+        )
+        assert not provider.closed
+        assert not policy.closed
+        assert not approver.closed
+
+    asyncio.run(scenario())
+
+
 class OpenFailure(Exception):
     pass
 
@@ -463,7 +672,7 @@ class _TrackingEnvironmentKernel:
         parallel_tools: frozenset[str],
     ) -> None:
         self.workspace = Path(workspace)
-        self.base_env = base_env
+        self.base_env = dict(base_env or {})
         self.policy = policy
         self.capability_view = capability_view
         self.tool_catalog = tool_catalog

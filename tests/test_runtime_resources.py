@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -241,3 +242,34 @@ def test_reconcile_requires_existing_workspace(tmp_path: Path) -> None:
 
     asyncio.run(scenario())
     assert not missing.exists()
+
+
+def _package_modules(package: object) -> tuple[Path, ...]:
+    import importlib
+
+    package_path = Path(importlib.import_module(package).__file__).parent
+    return tuple(path for path in package_path.rglob("*.py"))
+
+
+def test_capability_package_never_imports_resources() -> None:
+    for path in _package_modules("cli_agent.runtime._capability"):
+        source = path.read_text(encoding="utf-8")
+        assert "runtime._resources" not in source, path
+
+
+def test_resources_module_never_imports_environment() -> None:
+    source = Path(resources_module.__file__).read_text(encoding="utf-8")
+    assert "runtime._environment" not in source
+
+
+def test_environment_package_never_imports_resources() -> None:
+    for path in _package_modules("cli_agent.runtime._environment"):
+        source = path.read_text(encoding="utf-8")
+        assert "runtime._resources" not in source, path
+
+
+def test_environment_kernel_does_not_accept_resource_aggregate() -> None:
+    from cli_agent.runtime._environment.kernel import EnvironmentKernel
+
+    parameters = inspect.signature(EnvironmentKernel.__init__).parameters
+    assert "resources" not in parameters
