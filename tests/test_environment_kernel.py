@@ -16,6 +16,7 @@ from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
     _CustomCommandRegistry,
+    _ShellCommand,
 )
 from cli_agent.runtime._environment.drivers.shell import _ShellDriver
 from cli_agent.runtime._environment.execution import _ExecutionState
@@ -32,7 +33,7 @@ from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
 def _router() -> _CommandRouter:
     registry = _CustomCommandRegistry(_builtin_custom_commands())
     return _CommandRouter(
-        shell_driver=_ShellDriver(),
+        shell_command=_ShellCommand(prepare=_ShellDriver().prepare),
         custom_registry=registry,
     )
 

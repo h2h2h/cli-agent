@@ -19,9 +19,7 @@ from cli_agent.runtime._environment.execution import (
 )
 from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime._environment.routing import (
-    _DriverKind,
     _ExecutionRoute,
-    _SchedulingClass,
 )
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
 
@@ -124,8 +122,8 @@ class _ExecutionSupervisor:
     def _start_execution(self, state: _ExecutionState) -> None:
         session = self._session
         isolate_context = (
-            state.route.scheduling is _SchedulingClass.PARALLEL_SAFE
-            or state.route.driver_kind is _DriverKind.TOOL
+            state.route.parallel_safe
+            or state.route.command.isolated
         )
         context = _DriverContext(
             workspace=session._workspace,
@@ -134,7 +132,7 @@ class _ExecutionSupervisor:
             set_cwd=None if isolate_context else session._set_cwd,
         )
         try:
-            execution = state.route.driver.prepare(
+            execution = state.route.command.prepare(
                 state.decision.parse_result,
                 context,
             )

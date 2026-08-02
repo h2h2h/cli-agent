@@ -8,8 +8,9 @@ from cli_agent.runtime._capability.command_parser import parse_shell_command
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
+    _CustomCommand,
     _CustomCommandRegistry,
-    _CustomCommandSpec,
+    _ShellCommand,
 )
 from cli_agent.runtime._environment.drivers.base import (
     _ExecutionOutcome,
@@ -20,8 +21,6 @@ from cli_agent.runtime._environment.drivers.shell import _ShellDriver
 from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime._environment.routing import (
     _CommandRouter,
-    _DriverKind,
-    _SchedulingClass,
 )
 
 
@@ -38,7 +37,7 @@ def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> No
     registry = _CustomCommandRegistry(
         (
             *_builtin_custom_commands(),
-            _CustomCommandSpec(
+            _CustomCommand(
                 name="cli_read",
                 prepare=prepare_cli_read,
                 parallel_safe=True,
@@ -46,9 +45,11 @@ def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> No
         )
     )
     router = _CommandRouter(
-        shell_driver=_ShellDriver(),
+        shell_command=_ShellCommand(
+            prepare=_ShellDriver().prepare,
+            parallel_commands=frozenset({"cat"}),
+        ),
         custom_registry=registry,
-        parallel_commands=frozenset({"cat"}),
     )
 
     export_route = router.route(
@@ -64,14 +65,19 @@ def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> No
         ExecutionDecision.allow(parse_shell_command("cat file.txt | head"))
     )
 
-    assert export_route.driver_kind is _DriverKind.CUSTOM
-    assert export_route.scheduling is _SchedulingClass.SERIAL
-    assert read_route.driver_kind is _DriverKind.CUSTOM
-    assert read_route.scheduling is _SchedulingClass.PARALLEL_SAFE
-    assert cat_route.driver_kind is _DriverKind.SHELL
-    assert cat_route.scheduling is _SchedulingClass.PARALLEL_SAFE
-    assert pipeline_route.driver_kind is _DriverKind.SHELL
-    assert pipeline_route.scheduling is _SchedulingClass.SERIAL
+    assert isinstance(export_route.command, _CustomCommand)
+    assert export_route.command.name == "export"
+    assert export_route.command.isolated is False
+    assert export_route.parallel_safe is False
+    assert isinstance(read_route.command, _CustomCommand)
+    assert read_route.command.name == "cli_read"
+    assert read_route.command.isolated is True
+    assert read_route.parallel_safe is True
+    assert isinstance(cat_route.command, _ShellCommand)
+    assert cat_route.command.isolated is True
+    assert cat_route.parallel_safe is True
+    assert isinstance(pipeline_route.command, _ShellCommand)
+    assert pipeline_route.parallel_safe is False
 
 
 def test_cd_is_a_session_persistent_custom_command(tmp_path: Path) -> None:

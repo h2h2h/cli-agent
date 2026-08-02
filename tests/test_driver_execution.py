@@ -7,6 +7,7 @@ from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
     _CustomCommandRegistry,
+    _ShellCommand,
 )
 from cli_agent.runtime._environment.drivers.base import (
     _DriverContext,
@@ -20,9 +21,7 @@ from cli_agent.runtime._environment.drivers.executions import (
 from cli_agent.runtime._environment.drivers.shell import _ShellDriver
 from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime._environment.routing import (
-    _DriverKind,
     _ExecutionRoute,
-    _SchedulingClass,
 )
 
 
@@ -270,7 +269,6 @@ def test_driver_preparation_failure_releases_lane_for_queued_execution(
 
 def _shell_route(driver) -> _ExecutionRoute:
     return _ExecutionRoute(
-        driver_kind=_DriverKind.SHELL,
-        scheduling=_SchedulingClass.SERIAL,
-        driver=driver,
+        command=_ShellCommand(prepare=driver.prepare),
+        parallel_safe=False,
     )

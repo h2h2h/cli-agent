@@ -15,6 +15,7 @@ from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
     _CustomCommandRegistry,
+    _ShellCommand,
 )
 from cli_agent.runtime._environment.drivers.shell import _ShellDriver
 from cli_agent.runtime._environment.drivers.tool import _ToolDriver
@@ -76,15 +77,18 @@ class EnvironmentKernel:
             if registry is None
             else registry
         )
+        shell_driver = _ShellDriver(capability_view)
         self._router = _CommandRouter(
-            shell_driver=_ShellDriver(capability_view),
+            shell_command=_ShellCommand(
+                prepare=shell_driver.prepare,
+                parallel_commands=frozenset(parallel_commands or ()),
+            ),
             custom_registry=registry,
             tool_driver=(
                 _ToolDriver(tool_catalog, tool_environment)
                 if tool_catalog is not None and tool_environment is not None
                 else None
             ),
-            parallel_commands=frozenset(parallel_commands or ()),
             parallel_tools=frozenset(parallel_tools or ()),
         )
         self._tool_catalog = tool_catalog

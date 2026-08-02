@@ -10,7 +10,6 @@ from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime._environment.routing import (
     _ExecutionLane,
     _ExecutionRoute,
-    _SchedulingClass,
 )
 
 _DEFAULT_QUEUE_LIMIT = 32
@@ -97,21 +96,22 @@ class _ExecutionScheduler:
         return pending
 
     def _can_start_immediately(self, route: _ExecutionRoute) -> bool:
-        if any(pending.route.lane is route.lane for pending in self._pending):
+        lane = _lane_for(route)
+        if any(_lane_for(pending.route) is lane for pending in self._pending):
             return False
         lane_running = tuple(
             state
             for state in self._running.values()
-            if state.route.lane is route.lane
+            if _lane_for(state.route) is lane
         )
         if not lane_running:
             return True
-        if route.scheduling is _SchedulingClass.SERIAL:
+        if not route.parallel_safe:
             return False
-        if len(lane_running) >= self._lane_limit(route.lane):
+        if len(lane_running) >= self._lane_limit(lane):
             return False
         return all(
-            state.route.scheduling is _SchedulingClass.PARALLEL_SAFE
+            state.route.parallel_safe
             for state in lane_running
         )
 
@@ -126,18 +126,24 @@ class _ExecutionScheduler:
 
     def _claim_lane(self, lane: _ExecutionLane) -> tuple[_ExecutionState, ...]:
         running = [
-            state for state in self._running.values() if state.route.lane is lane
+            state
+            for state in self._running.values()
+            if _lane_for(state.route) is lane
         ]
         if any(
-            state.route.scheduling is _SchedulingClass.SERIAL for state in running
+            not state.route.parallel_safe for state in running
         ):
             return ()
-        pending = [state for state in self._pending if state.route.lane is lane]
+        pending = [
+            state
+            for state in self._pending
+            if _lane_for(state.route) is lane
+        ]
         if not pending:
             return ()
 
         head = pending[0]
-        if head.route.scheduling is _SchedulingClass.SERIAL:
+        if not head.route.parallel_safe:
             if running:
                 return ()
             return (self._claim(head),)
@@ -147,7 +153,7 @@ class _ExecutionScheduler:
         for state in pending:
             if capacity <= 0:
                 break
-            if state.route.scheduling is _SchedulingClass.SERIAL:
+            if not state.route.parallel_safe:
                 break
             claimed.append(self._claim(state))
             capacity -= 1
@@ -165,3 +171,13 @@ class _ExecutionScheduler:
             if lane is _ExecutionLane.TOOL
             else self._parallel_limit
         )
+
+
+def _lane_for(route: _ExecutionRoute) -> _ExecutionLane:
+    """Return the transitional lane for the current Tool scheduling model."""
+
+    return (
+        _ExecutionLane.TOOL
+        if route.command.name == "tools"
+        else _ExecutionLane.DEFAULT
+    )

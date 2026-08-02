@@ -17,11 +17,6 @@ from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.policy import PolicyEvaluation
-from cli_agent.runtime._environment.routing import (
-    _DriverKind,
-    _ExecutionLane,
-    _SchedulingClass,
-)
 from cli_agent.runtime._system_message import assemble_system_message
 
 
@@ -209,8 +204,8 @@ def test_tools_list_info_and_reserved_invalid_syntax_use_tool_driver(
             assert invalid["status"] == "failed"
             assert "Usage: tools" in _text(invalid, "stderr")
             state = kernel._executions[str(invalid["exec_id"])]
-            assert state.route.driver_kind is _DriverKind.TOOL
-            assert state.route.lane is _ExecutionLane.TOOL
+            assert state.route.command.name == "tools"
+            assert state.route.parallel_safe is False
         finally:
             await kernel.close()
 
@@ -600,16 +595,16 @@ def test_only_host_named_tools_receive_parallel_scheduling(
                 await _exec(kernel, 'tools run "getattr(tools, \'allowed\').VALUE"')
             )
             assert (
-                kernel._executions[str(allowed["exec_id"])].route.scheduling
-                is _SchedulingClass.PARALLEL_SAFE
+                kernel._executions[str(allowed["exec_id"])].route.parallel_safe
+                is True
             )
             assert (
-                kernel._executions[str(mixed["exec_id"])].route.scheduling
-                is _SchedulingClass.SERIAL
+                kernel._executions[str(mixed["exec_id"])].route.parallel_safe
+                is False
             )
             assert (
-                kernel._executions[str(dynamic["exec_id"])].route.scheduling
-                is _SchedulingClass.SERIAL
+                kernel._executions[str(dynamic["exec_id"])].route.parallel_safe
+                is False
             )
         finally:
             await kernel.close()
