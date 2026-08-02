@@ -13,6 +13,7 @@ from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
+    _CustomCommand,
     _CustomCommandRegistry,
     _ShellCommand,
 )
@@ -71,11 +72,26 @@ class EnvironmentKernel:
         self._policy = ExecutablePolicy() if policy is None else policy
         self._approval_gate = approval_gate
         self._approval_session_id = approval_session_id
-        registry = (
-            _CustomCommandRegistry(_builtin_custom_commands())
-            if registry is None
-            else registry
+        parallel_tools = frozenset(parallel_tools or ())
+        tool_handler = (
+            _ToolHandler(
+                tool_catalog,
+                tool_environment,
+                parallel_tools=parallel_tools,
+            )
         )
+        tool_command = _CustomCommand(
+            name="tools",
+            prepare=tool_handler.prepare,
+            parallel_safe=tool_handler.parallel_safe,
+            isolated=True,
+        )
+        if registry is None:
+            commands = list(_builtin_custom_commands())
+            commands.append(tool_command)
+            registry = _CustomCommandRegistry(commands)
+        else:
+            registry.register(tool_command)
         shell_handler = _ShellHandler(capability_view)
         self._router = _CommandRouter(
             shell_command=_ShellCommand(
@@ -83,13 +99,6 @@ class EnvironmentKernel:
                 parallel_commands=frozenset(parallel_commands or ()),
             ),
             custom_registry=registry,
-            tool_handler=(
-                _ToolHandler(tool_catalog, tool_environment)
-                if tool_catalog is not None and tool_environment is not None
-                else None
-            ),
-            tool_catalog=tool_catalog,
-            parallel_tools=frozenset(parallel_tools or ()),
         )
         self._env = dict(base_env or {})
         self._cwd = self._workspace

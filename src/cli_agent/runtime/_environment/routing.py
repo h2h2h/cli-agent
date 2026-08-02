@@ -5,16 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from cli_agent.runtime._capability.command_parser import CommandParseResult
-from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime._capability.tools.grammar import parse_tool_command
 from cli_agent.runtime._environment.commands import (
     _Command,
-    _CustomCommand,
     _CustomCommandRegistry,
     _ShellCommand,
 )
-from cli_agent.runtime._environment.handlers.tools import _ToolHandler
 from cli_agent.runtime._environment.policy import ExecutionDecision
 
 
@@ -60,56 +55,19 @@ class _CommandRouter:
         *,
         shell_command: _ShellCommand,
         custom_registry: _CustomCommandRegistry,
-        tool_handler: _ToolHandler | None = None,
-        tool_catalog: _ToolCatalog | None = None,
-        parallel_tools: frozenset[str] = frozenset(),
     ) -> None:
         self._shell_command = shell_command
         self._custom_registry = custom_registry
-        self._tool_catalog = tool_catalog
-        self._tool_command = (
-            None
-            if tool_handler is None
-            else _CustomCommand(
-                name="tools",
-                prepare=tool_handler.prepare,
-                parallel_safe=self._tool_parallel_safe,
-                isolated=True,
-            )
-        )
-        self._parallel_tools = parallel_tools
 
     def route(self, decision: ExecutionDecision) -> _ExecutionRoute:
         """Resolve one final decision without performing its operation."""
 
         parsed = decision.parse_result
         command = self._custom_registry.resolve(parsed)
-        if command is None and self._tool_command is not None:
-            if self._tool_command.matches(parsed):
-                command = self._tool_command
         if command is None:
             command = self._shell_command
 
         return _ExecutionRoute(
             command=command,
             parallel_safe=command.parallel_safe(parsed),
-        )
-
-    def _tool_parallel_safe(self, command: CommandParseResult) -> bool:
-        if self._tool_catalog is None:
-            return False
-        facts = parse_tool_command(command, self._tool_catalog)
-        if facts is None:
-            return False
-        if facts.operation in {"list", "inspect"}:
-            return True
-        return bool(
-            facts.operation == "run"
-            and facts.valid
-            and facts.references
-            and not facts.has_dynamic_references
-            and all(
-                reference.valid and reference.name in self._parallel_tools
-                for reference in facts.references
-            )
         )

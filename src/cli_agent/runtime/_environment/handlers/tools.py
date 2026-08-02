@@ -28,24 +28,53 @@ class _ToolHandler:
 
     def __init__(
         self,
-        catalog: _ToolCatalog,
-        environment: _ToolEnvironment,
+        catalog: _ToolCatalog | None,
+        environment: _ToolEnvironment | None,
+        parallel_tools: frozenset[str] = frozenset(),
     ) -> None:
         self._catalog = catalog
         self._environment = environment
+        self._parallel_tools = parallel_tools
+
+    def parallel_safe(self, command: CommandParseResult) -> bool:
+        """Return the scheduling fact for one parsed Tools command."""
+
+        if self._catalog is None:
+            return False
+        facts = parse_tool_command(command, self._catalog)
+        if facts is None:
+            return False
+        if facts.operation in {"list", "inspect"}:
+            return True
+        return bool(
+            facts.operation == "run"
+            and facts.valid
+            and facts.references
+            and not facts.has_dynamic_references
+            and all(
+                reference.valid and reference.name in self._parallel_tools
+                for reference in facts.references
+            )
+        )
 
     def prepare(
         self,
         command: CommandParseResult,
         context: _CommandContext,
     ) -> _PreparedExecution:
-        facts = parse_tool_command(command, self._catalog)
+        catalog = self._catalog
+        if catalog is None:
+            return _text_execution(
+                "Tool catalog is unavailable\n",
+                success=False,
+            )
+        facts = parse_tool_command(command, catalog)
         if facts is None:
             raise RuntimeError("Tool handler received an ordinary command")
         if facts.operation == "list":
-            return _text_execution(self._catalog.render_index(), success=True)
+            return _text_execution(catalog.render_index(), success=True)
         if facts.operation == "inspect" and facts.name is not None:
-            text, success = self._catalog.render_info(facts.name)
+            text, success = catalog.render_info(facts.name)
             return _text_execution(text, success=success)
         if facts.operation != "run" or facts.code is None:
             return _text_execution(
@@ -57,9 +86,15 @@ class _ToolHandler:
                 (facts.validation_error or "Invalid Tool invocation") + "\n",
                 success=False,
             )
-        if not self._environment.available or self._environment.python is None:
+        environment = self._environment
+        if environment is None or not environment.available or environment.python is None:
+            error = (
+                "Tool environment is unavailable"
+                if environment is None
+                else environment.error or "Tool environment is unavailable"
+            )
             return _text_execution(
-                (self._environment.error or "Tool environment is unavailable") + "\n",
+                error + "\n",
                 success=False,
             )
 
@@ -71,15 +106,15 @@ class _ToolHandler:
                 "tools_directory": str(context.workspace / ".workspace" / "tools"),
                 "tool_paths": {
                     entry.name: str(entry.path)
-                    for entry in self._catalog.valid_entries
+                    for entry in catalog.valid_entries
                 },
             },
             ensure_ascii=False,
         ).encode("utf-8")
-        python = self._environment.python
+        python = environment.python
         worker = files("cli_agent.runtime._capability.tools").joinpath("worker.py")
         child_env = dict(os.environ) | context.environment
-        child_env["VIRTUAL_ENV"] = str(self._environment.root / ".venv")
+        child_env["VIRTUAL_ENV"] = str(environment.root / ".venv")
         child_env["PYTHONNOUSERSITE"] = "1"
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         bin_directory = str(python.parent)

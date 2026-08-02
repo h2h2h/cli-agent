@@ -190,6 +190,13 @@ def test_tools_list_info_and_reserved_invalid_syntax_use_tool_handler(
     async def scenario() -> None:
         kernel = await _kernel(tmp_path, repertoire)
         try:
+            registered = kernel._router._custom_registry.resolve(
+                parse_shell_command("tools list")
+            )
+            assert registered is not None
+            assert registered.name == "tools"
+            assert not hasattr(kernel._router, "_tool_command")
+
             listed = _output(await _exec(kernel, "tools list"))
             assert listed["status"] == "exited"
             assert "hello | valid | repertoire" in _text(listed, "stdout")
@@ -202,8 +209,24 @@ def test_tools_list_info_and_reserved_invalid_syntax_use_tool_handler(
             assert invalid["status"] == "failed"
             assert "Usage: tools" in _text(invalid, "stderr")
             state = kernel._executions[str(invalid["exec_id"])]
+            assert state.route.command is registered
             assert state.route.command.name == "tools"
             assert state.route.parallel_safe is False
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+
+def test_reserved_tools_without_catalog_do_not_fall_back_to_shell(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        kernel = EnvironmentKernel(tmp_path)
+        try:
+            result = _output(await _exec(kernel, "tools list"))
+            assert result["status"] == "failed"
+            assert "Tool catalog is unavailable" in _text(result, "stderr")
         finally:
             await kernel.close()
 
@@ -291,6 +314,9 @@ def test_tool_grammar_facts_stay_out_of_policy(
     repertoire = _repertoire(tmp_path)
     (repertoire / "tools" / "valid_tool.py").write_text("VALUE = 1\n")
     (repertoire / "tools" / "invalid_tool.py").write_text("VALUE =\n")
+    _prepare_workspace(tmp_path)
+    view = _CapabilityView.open(tmp_path, repertoire)
+    catalog = _ToolCatalog.reconcile(view)
 
     class RecordingPolicy:
         def __init__(self) -> None:
@@ -308,7 +334,7 @@ def test_tool_grammar_facts_stay_out_of_policy(
             await _exec(kernel, "tools info invalid_tool")
 
             assert all(not hasattr(command, "tool") for command in policy.commands)
-            run = parse_tool_command(policy.commands[0], kernel._router._tool_catalog)
+            run = parse_tool_command(policy.commands[0], catalog)
             assert run is not None
             assert run.operation == "run"
             assert run.references[0].name == "valid_tool"
@@ -317,7 +343,7 @@ def test_tool_grammar_facts_stay_out_of_policy(
 
             inspected = parse_tool_command(
                 policy.commands[1],
-                kernel._router._tool_catalog,
+                catalog,
             )
             assert inspected is not None
             assert inspected.operation == "inspect"
@@ -351,6 +377,12 @@ def test_unavailable_tool_environment_fails_run_without_host_fallback(
             tool_environment=unavailable,
         )
         try:
+            listed = _output(await _exec(kernel, "tools list"))
+            assert listed["status"] == "exited"
+            assert "example | valid | repertoire" in _text(listed, "stdout")
+            info = _output(await _exec(kernel, "tools info example"))
+            assert info["status"] == "exited"
+
             result = _output(
                 await _exec(kernel, 'tools run "tools.example.VALUE"')
             )
