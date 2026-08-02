@@ -1,6 +1,6 @@
 # test(runtime): prove MCP projection and invocation / 验证 MCP 投影与调用
 
-**Status / 状态：** pending
+**Status / 状态：** pass
 
 ## English
 

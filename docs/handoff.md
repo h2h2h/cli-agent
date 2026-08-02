@@ -1,13 +1,21 @@
 # Session handoff
 
-Updated: 2026-07-30
+Updated: 2026-08-01
 
 ## Repository state
 
-- Milestones 01 through 07 are present on branch `v2`; the current head is
-  `8c31741` (`feat(workspace): mount capability view`).
-- The prioritized milestone 10 Tool capability command implementation is in
-  the working tree and awaits peer review. No M10 commit was created.
+- The working tree is on branch `refactor`. Milestone 10 Tool capability
+  commands and the capability-package refactors are committed; milestone 08
+  (Discover and load Skills on demand) is complete on top of them.
+- Milestone 13 (Project MCP tools during Runtime open) is implemented: issue 01
+  (MCP dependency and config facts), 02 (diagnostic seam), 03 (reconcile by
+  full rebuild), 05 (Runtime base dependency injection), and 06 (prove
+  projection and invocation) are committed; issue 04 (MCP provenance) was
+  cancelled by decision.
+- Milestone 08 commits: `9a62292` (strictyaml + Skill entry facts),
+  `3c43379` (SKILL.md frontmatter parse and validate),
+  `b9cc904` (Skill Catalog and generated index), and
+  `4952e1e` (compact Skill catalog in model context).
 - [RFC-0001](./rfcs/approved/RFC-0001-host-mediated-execution-approval.md)
   supersedes the adjacent scratch milestone 06 ticket for this repository; the
   external scratch artifact remains historical input rather than the active
@@ -17,7 +25,10 @@ Updated: 2026-07-30
 - [RFC-0003](./rfcs/approved/RFC-0003-tool-capability-commands.md) records the
   implemented M10 command grammar, Catalog, Tool Environment, worker, Policy,
   and scheduling decisions.
-- The working tree has 245 passing tests, and Ruff passes for `src` and
+- [RFC-0004](./rfcs/proposed/RFC-0004-skill-discovery-and-loading.md) is
+  PROPOSED; the milestone 08 tickets live in
+  `docs/issues/06-discover-and-load-skills-on-demand/`.
+- The working tree has 310 passing tests, and Ruff passes for `src` and
   `tests`.
 
 ## Implemented runtime
@@ -126,6 +137,51 @@ Updated: 2026-07-30
   Execution state, and Drivers remain focused private implementation modules.
   See
   [Session-scoped Environment Kernel](./discussions/session-scoped-environment-kernel.md).
+- Runtime open builds a trusted `_SkillCatalog` from top-level effective
+  `.workspace/skills/*` directories using the same Capability View provenance
+  and whiteout rules as Tools. Entries record name, path, provenance, shadow
+  facts, structural validity, and validation error without raising.
+- SKILL.md frontmatter is parsed with `strictyaml`. `name` (lowercase,
+  letters/digits/hyphens, ≤64, must equal the directory name) and `description`
+  (≤1024) are required and strict; `license`, `allowed-tools`, and
+  `compatibility` are optional string checks only. Missing, unclosed, or
+  non-mapping frontmatter is reported as an entry error.
+- `skills/index.md` is an atomically generated, reproducible, non-authoritative
+  projection of the compact catalog. It is regenerated on every Runtime open
+  and never trusts an authored index.
+- The runtime-assembled system message appends a compact Skills section listing
+  each discovered Skill by name, status, and summary only — never the full
+  SKILL.md body. Full instructions remain available on demand through ordinary
+  environment access, for example `cat .workspace/skills/<name>/SKILL.md`.
+- Adding Skills adds no model Tool and no reserved command head. The
+  model-visible surface stays exactly `exec`, `output`, and `kill`, and the
+  Runtime public exports are unchanged.
+- `_mcp` is a mounted Capability View configuration directory (like
+  `tools`/`skills`/`library`): Repertoire `_mcp/<server>/config.json`
+  descriptions appear as exact lower links under `.workspace/_mcp/`, real
+  Workspace files override them, and a whiteout disables a server. Runtime
+  open projects the effective descriptions into generated Tool stubs at
+  `.workspace/tools/mcp_<server>.py` by full rebuild: stale `mcp_*` stubs are
+  removed first, servers are discovered in parallel, and only successfully
+  discovered servers produce a stub. The `mcp_` filename prefix is the sole
+  ownership basis; hand-authored Tools without it are never touched. The
+  `_mcp` config never appears in the tools/skills index and stores only env
+  variable names, never values.
+- MCP discovery is fail-to-none: a missing or structurally invalid config, or
+  a server that exhausts discovery retries, emits a non-blocking Runtime
+  Diagnostic and produces no stub, and a previous stub for that server is
+  removed on the next reconcile. A whiteouted server is disabled without a
+  diagnostic. Workspace open never blocks on MCP projection.
+- The Tool worker venv resolves user `tools/requirements.txt` plus the
+  Runtime-owned `mcp` base dependency (deduped), and synchronization compiles
+  a lockfile before `uv pip sync` so transitive dependencies are installed.
+  A generated MCP stub runs through the ordinary `tools run` surface, mixes
+  with local Tools in one code block, and a connection failure returns an
+  ordinary failed Tool Result without deleting the stub.
+- MCP projection adds no model Tool and no reserved command head. The
+  model-visible surface stays exactly `exec`, `output`, and `kill`, the
+  Runtime public exports are unchanged, and additional Sessions do not re-run
+  reconcile.
 
 ## Known limits
 
@@ -159,10 +215,30 @@ Updated: 2026-07-30
   default-allow Tool Policy.
 - Execution States are in memory only and are not restored after Runtime
   restart.
+- Skill discovery is advertisement only: the compact model context lists name,
+  status, and summary, and the model must read full instructions on demand.
+  There is no Skill-specific Tool or reserved command, and the `skills`
+  directory holds no executable contract by itself.
+- Skill frontmatter validation is structural, not safety certification. The
+  `license`, `allowed-tools`, and `compatibility` fields receive only string
+  type checks, and full SKILL.md instructions are not evaluated or trusted by
+  the Runtime.
+- The Skill Catalog and generated index are Runtime-open snapshots. Skill files
+  created or changed during an active Runtime are reconciled on the next open.
+- MCP stubs are pure generated artifacts of Runtime open and are fully rebuilt
+  (including overwriting local edits) on the next open. A server that becomes
+  unreachable at invocation time keeps its stub until the next reconcile.
+  MCP description changes under Repertoire take effect on the next open;
+  real Workspace `_mcp` files are visible to the next reconcile without
+  re-opening.
+- In M13 a worker venv needs the Runtime-owned `mcp` package because a stub
+  connects directly to its server. M14 will remove that need when stubs switch
+  to an IPC shim.
 
 ## Next
 
-Peer review RFC-0003 and the M10 working tree, then commit only on explicit
-request. After M10 is accepted, return to milestone 08 — Discover and load
-Skills on demand — using the same actual-layer provenance and generated-index
-rules.
+Peer review milestone 13 (issues 01, 02, 03, 05, and 06; issue 04 was
+cancelled) and RFC-0005, then commit only on explicit request. The next
+milestone is 14 — Invoke MCP tools with bounded bindings — where worker stubs
+switch to an IPC shim so the worker no longer needs `mcp`, and the projection
+contract gains bounded bindings.
