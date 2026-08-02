@@ -181,7 +181,9 @@ def test_mcp_integration_keeps_model_visible_surface_and_public_exports(
                 workspace / ".workspace" / "tools" / "mcp_math.py"
             ).is_file()
             assert received == []
-            assert runtime._resources.tool_catalog.get("mcp_math") is not None
+            mcp_tool = runtime._resources.tool_catalog.get("mcp_math")
+            assert mcp_tool is not None
+            assert mcp_tool.parallel_safe is False
 
             request = ModelRequest(messages=())
             assert tuple(schema.name for schema in request.tools) == (

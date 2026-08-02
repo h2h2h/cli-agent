@@ -65,7 +65,10 @@ async def _reconcile_runtime_resources(
         capability_view,
         on_diagnostic=on_diagnostic,
     )
-    tool_catalog = _ToolCatalog.reconcile(capability_view)
+    tool_catalog = _ToolCatalog.reconcile(
+        capability_view,
+        on_diagnostic=on_diagnostic,
+    )
     tool_environment = await _ToolEnvironment.reconcile(capability_view)
     skill_catalog = _SkillCatalog.reconcile(capability_view)
     return _RuntimeResources(

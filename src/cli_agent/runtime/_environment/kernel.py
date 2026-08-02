@@ -58,9 +58,7 @@ class EnvironmentKernel:
         byte_limit: int = 1_048_576,
         queue_limit: int = _DEFAULT_QUEUE_LIMIT,
         parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
-        tool_parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
         parallel_commands: frozenset[str] | None = None,
-        parallel_tools: frozenset[str] | None = None,
         registry: _CustomCommandRegistry | None = None,
         approval_gate: _ExecutionApprovalGate | None = None,
         approval_session_id: str | None = None,
@@ -72,14 +70,7 @@ class EnvironmentKernel:
         self._policy = ExecutablePolicy() if policy is None else policy
         self._approval_gate = approval_gate
         self._approval_session_id = approval_session_id
-        parallel_tools = frozenset(parallel_tools or ())
-        tool_handler = (
-            _ToolHandler(
-                tool_catalog,
-                tool_environment,
-                parallel_tools=parallel_tools,
-            )
-        )
+        tool_handler = _ToolHandler(tool_catalog, tool_environment)
         tool_command = _CustomCommand(
             name="tools",
             prepare=tool_handler.prepare,
@@ -109,7 +100,6 @@ class EnvironmentKernel:
             self,
             queue_limit=queue_limit,
             parallel_limit=parallel_limit,
-            tool_parallel_limit=tool_parallel_limit,
             chunk_limit=chunk_limit,
             byte_limit=byte_limit,
         )

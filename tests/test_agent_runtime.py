@@ -134,7 +134,7 @@ def test_host_configures_runtime_lifetime_executable_deny_set(
     asyncio.run(scenario())
 
 
-def test_passes_parallel_authorization_to_kernel(
+def test_passes_parallel_command_authorization_to_kernel(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -160,7 +160,6 @@ def test_passes_parallel_authorization_to_kernel(
             workspace=tmp_path,
             provider=configured_provider,
             parallel_commands=frozenset({"cat", "rg"}),
-            parallel_tools=frozenset({"search", "fetch"}),
         )
         await _collect_turn(
             default_runtime,
@@ -178,10 +177,6 @@ def test_passes_parallel_authorization_to_kernel(
             for kernel in _TrackingEnvironmentKernel.instances
         ] == [frozenset(), frozenset({"cat", "rg"})]
         assert [
-            kernel.parallel_tools
-            for kernel in _TrackingEnvironmentKernel.instances
-        ] == [frozenset(), frozenset({"search", "fetch"})]
-        assert [
             kernel.approval_session_id
             for kernel in _TrackingEnvironmentKernel.instances
         ] == ["default", "configured"]
@@ -190,20 +185,6 @@ def test_passes_parallel_authorization_to_kernel(
         await configured_runtime.close()
 
     asyncio.run(scenario())
-
-
-def test_rejects_invalid_parallel_tool_names_before_opening_environment(
-    tmp_path: Path,
-) -> None:
-    with pytest.raises(
-        ValueError,
-        match="parallel Tool names must be non-keyword Python identifiers",
-    ):
-        AgentRuntime.open(
-            workspace=tmp_path,
-            provider=ScriptedModelProvider(script=()),
-            parallel_tools=frozenset({"class"}),
-        )
 
 
 def test_cleans_up_environment_when_open_fails(
@@ -669,7 +650,6 @@ class _TrackingEnvironmentKernel:
         approval_gate: object,
         approval_session_id: str,
         parallel_commands: frozenset[str],
-        parallel_tools: frozenset[str],
     ) -> None:
         self.workspace = Path(workspace)
         self.base_env = dict(base_env or {})
@@ -680,7 +660,6 @@ class _TrackingEnvironmentKernel:
         self.approval_gate = approval_gate
         self.approval_session_id = approval_session_id
         self.parallel_commands = parallel_commands
-        self.parallel_tools = parallel_tools
         self.close_count = 0
         self.events: list[str] = []
         self.instances.append(self)

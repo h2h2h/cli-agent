@@ -103,8 +103,11 @@ def test_reconcile_runs_steps_in_documented_order(
 
     class _FakeToolCatalog:
         @staticmethod
-        def reconcile(capability_view: object) -> object:
-            del capability_view
+        def reconcile(
+            capability_view: object,
+            on_diagnostic: object = None,
+        ) -> object:
+            del capability_view, on_diagnostic
             order.append("tool_catalog")
             return object()
 

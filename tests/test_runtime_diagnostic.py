@@ -49,3 +49,31 @@ def test_callback_receives_structured_diagnostics(tmp_path: Path) -> None:
             detail={"server": "github"},
         )
     ]
+
+
+def test_callback_receives_tool_metadata_parse_diagnostic(tmp_path: Path) -> None:
+    repertoire = tmp_path / "repertoire"
+    (repertoire / "tools").mkdir(parents=True)
+    for name in ("skills", "library"):
+        (repertoire / name).mkdir()
+    (repertoire / "tools" / "broken.py").write_text(
+        "PARALLEL_SAFE = 'yes'\nVALUE = 1\n",
+        encoding="utf-8",
+    )
+    received: list[RuntimeDiagnostic] = []
+
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            repertoire=repertoire,
+            provider=ScriptedModelProvider(script=()),
+            on_diagnostic=received.append,
+        )
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+    assert len(received) == 1
+    assert received[0].kind == "tools.parallel_safe_parse_failed"
+    assert received[0].detail["tool"] == "broken"
+    assert received[0].detail["default_parallel_safe"] is True

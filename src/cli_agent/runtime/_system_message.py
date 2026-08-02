@@ -25,8 +25,8 @@ def assemble_system_message(
             Optional Host instruction appended to the canonical message.
         tool_catalog (`_ToolCatalog | None`):
             Optional Runtime-open Tool Catalog; when present, a compact
-            Tools section advertises discovered Tools by name, status, and
-            summary without embedding any full Tool file body.
+            Tools section advertises discovered Tools by name, status, summary,
+            and parallel-safe fact without embedding any full Tool file body.
         skill_catalog (`_SkillCatalog | None`):
             Optional Runtime-open Skill Catalog; when present, a compact
             Skills section advertises discovered Skills by name, status, and
@@ -71,7 +71,7 @@ def _render_tools_section(tool_catalog: _ToolCatalog) -> str:
         "Tools",
         (
             "- The compact Tool catalog lists each discovered Tool by name, "
-            "status, and summary only."
+            "status, summary, and parallel-safe fact only."
         ),
     ]
     if tool_catalog.entries:
@@ -81,7 +81,10 @@ def _render_tools_section(tool_catalog: _ToolCatalog) -> str:
                 if entry.valid
                 else f"invalid: {entry.validation_error or 'unknown error'}"
             )
-            lines.append(f"- {entry.name} ({status}): {entry.summary}")
+            lines.append(
+                f"- {entry.name} ({status}): {entry.summary} "
+                f"[parallel-safe: {'yes' if entry.parallel_safe else 'no'}]"
+            )
     else:
         lines.append("- No Tools are currently discovered.")
     lines.append(

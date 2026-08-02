@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 import cli_agent.runtime._capability.tools.environment as tool_environment_module
-from cli_agent.runtime import ExecutablePolicy, ToolCall, ToolResult
+from cli_agent.runtime import (
+    ExecutablePolicy,
+    RuntimeDiagnostic,
+    ToolCall,
+    ToolResult,
+)
 from cli_agent.runtime._capability.command_parser import parse_shell_command
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
@@ -57,6 +62,85 @@ def test_catalog_generates_index_and_reports_actual_provenance(
     assert found is True
     assert "Provenance: repertoire" in text
     assert "Lower arithmetic Tool." in text
+
+
+def test_catalog_uses_tool_declarations_and_regular_tool_default(
+    tmp_path: Path,
+) -> None:
+    repertoire = _repertoire(tmp_path)
+    (repertoire / "tools" / "defaulted.py").write_text("VALUE = 1\n")
+    (repertoire / "tools" / "serial.py").write_text(
+        "PARALLEL_SAFE = False\nVALUE = 2\n"
+    )
+    (repertoire / "tools" / "typed.py").write_text(
+        "PARALLEL_SAFE: bool = True\nVALUE = 3\n"
+    )
+
+    _prepare_workspace(tmp_path)
+    view = _CapabilityView.open(tmp_path, repertoire)
+    catalog = _ToolCatalog.reconcile(view)
+
+    assert catalog.get("defaulted").parallel_safe is True  # type: ignore[union-attr]
+    assert catalog.get("serial").parallel_safe is False  # type: ignore[union-attr]
+    assert catalog.get("typed").parallel_safe is True  # type: ignore[union-attr]
+    index = (view.root / "tools" / "index.md").read_text()
+    assert "| defaulted | valid | repertoire | no | yes |" in index
+    info, found = catalog.render_info("serial")
+    assert found is True
+    assert "Parallel Safe: no" in info
+
+
+def test_catalog_falls_back_and_reports_invalid_parallel_metadata(
+    tmp_path: Path,
+) -> None:
+    repertoire = _repertoire(tmp_path)
+    (repertoire / "tools" / "invalid.py").write_text(
+        "PARALLEL_SAFE = 'yes'\nVALUE = 1\n"
+    )
+    (repertoire / "tools" / "duplicate.py").write_text(
+        "PARALLEL_SAFE = True\nPARALLEL_SAFE = False\nVALUE = 2\n"
+    )
+    (repertoire / "tools" / "broken.py").write_text("def broken(:\n")
+
+    _prepare_workspace(tmp_path)
+    view = _CapabilityView.open(tmp_path, repertoire)
+    diagnostics: list[RuntimeDiagnostic] = []
+    catalog = _ToolCatalog.reconcile(view, diagnostics.append)
+
+    assert catalog.get("invalid").valid is True  # type: ignore[union-attr]
+    assert catalog.get("invalid").parallel_safe is True  # type: ignore[union-attr]
+    assert catalog.get("duplicate").parallel_safe is True  # type: ignore[union-attr]
+    assert catalog.get("broken").valid is False  # type: ignore[union-attr]
+    assert [diagnostic.kind for diagnostic in diagnostics] == [
+        "tools.parallel_safe_parse_failed",
+        "tools.parallel_safe_parse_failed",
+        "tools.parallel_safe_parse_failed",
+    ]
+    assert {diagnostic.detail["tool"] for diagnostic in diagnostics} == {
+        "broken",
+        "duplicate",
+        "invalid",
+    }
+
+
+def test_workspace_tool_override_controls_parallel_metadata(tmp_path: Path) -> None:
+    repertoire = _repertoire(tmp_path)
+    (repertoire / "tools" / "shared.py").write_text(
+        "PARALLEL_SAFE = False\nVALUE = 1\n"
+    )
+    _prepare_workspace(tmp_path)
+    override = tmp_path / ".workspace" / "tools" / "shared.py"
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text("PARALLEL_SAFE = True\nVALUE = 2\n")
+
+    view = _CapabilityView.open(tmp_path, repertoire)
+    catalog = _ToolCatalog.reconcile(view)
+    entry = catalog.get("shared")
+
+    assert entry is not None
+    assert entry.provenance == "workspace"
+    assert entry.shadows_repertoire is True
+    assert entry.parallel_safe is True
 
 
 def test_system_message_embeds_only_compact_tools_catalog(
@@ -604,7 +688,7 @@ def test_tool_lane_progresses_while_serial_shell_is_running(
     asyncio.run(scenario())
 
 
-def test_only_host_named_tools_receive_parallel_scheduling(
+def test_catalog_tool_metadata_controls_parallel_scheduling(
     tmp_path: Path,
 ) -> None:
     repertoire = _repertoire(tmp_path)
@@ -612,11 +696,7 @@ def test_only_host_named_tools_receive_parallel_scheduling(
     (repertoire / "tools" / "other.py").write_text("VALUE = 2\n")
 
     async def scenario() -> None:
-        kernel = await _kernel(
-            tmp_path,
-            repertoire,
-            parallel_tools=frozenset({"allowed"}),
-        )
+        kernel = await _kernel(tmp_path, repertoire)
         try:
             allowed = _output(
                 await _exec(kernel, 'tools run "tools.allowed.VALUE"')
@@ -636,7 +716,7 @@ def test_only_host_named_tools_receive_parallel_scheduling(
             )
             assert (
                 kernel._executions[str(mixed["exec_id"])].route.parallel_safe
-                is False
+                is True
             )
             assert (
                 kernel._executions[str(dynamic["exec_id"])].route.parallel_safe
@@ -648,7 +728,7 @@ def test_only_host_named_tools_receive_parallel_scheduling(
     asyncio.run(scenario())
 
 
-def test_batch_dispatch_preserves_result_order_when_parallel_tools_finish_out_of_order(
+def test_batch_dispatch_preserves_result_order_when_parallel_commands_finish_out_of_order(
     tmp_path: Path,
 ) -> None:
     repertoire = _repertoire(tmp_path)
@@ -664,11 +744,7 @@ def test_batch_dispatch_preserves_result_order_when_parallel_tools_finish_out_of
     second_finished = tmp_path / "second-finished"
 
     async def scenario() -> None:
-        kernel = await _kernel(
-            tmp_path,
-            repertoire,
-            parallel_tools=frozenset({"timed"}),
-        )
+        kernel = await _kernel(tmp_path, repertoire)
         try:
             calls = (
                 ToolCall(
@@ -744,7 +820,6 @@ async def _kernel(
     repertoire: Path,
     *,
     policy=None,
-    parallel_tools: frozenset[str] = frozenset(),
 ) -> EnvironmentKernel:
     _prepare_workspace(workspace)
     view = _CapabilityView.open(workspace, repertoire)
@@ -757,7 +832,6 @@ async def _kernel(
         tool_catalog=catalog,
         tool_environment=environment,
         policy=policy,
-        parallel_tools=parallel_tools,
     )
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import keyword
 from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,7 +46,6 @@ class AgentRuntime:
         policy: ExecutionPolicy,
         approval_gate: _ExecutionApprovalGate | None,
         parallel_commands: frozenset[str],
-        parallel_tools: frozenset[str],
         instruction: str | None,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
     ) -> None:
@@ -56,7 +54,6 @@ class AgentRuntime:
         self._policy = policy
         self._approval_gate = approval_gate
         self._parallel_commands = parallel_commands
-        self._parallel_tools = parallel_tools
         self._instruction = instruction
         self._on_diagnostic = on_diagnostic
         self._sessions: dict[str, _Session] = {}
@@ -73,16 +70,14 @@ class AgentRuntime:
         execution_policy: ExecutionPolicy | None = None,
         execution_approver: ExecutionApprover | None = None,
         parallel_commands: frozenset[str] | None = None,
-        parallel_tools: frozenset[str] | None = None,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> Coroutine[Any, None, AgentRuntime]:
         """Validate arguments and return a coroutine that opens the Runtime.
 
-        ``parallel_tools`` is validated synchronously so non-identifier names
-        raise before the caller awaits. Awaiting the returned coroutine
-        reconciles the Workspace, Capability View, Tool Catalog, and Tool
-        Environment, then constructs the Runtime. The opened Runtime may also
-        be used as an async context manager that closes itself on exit.
+        Awaiting the returned coroutine reconciles the Workspace, Capability
+        View, Tool Catalog, and Tool Environment, then constructs the Runtime.
+        The opened Runtime may also be used as an async context manager that
+        closes itself on exit.
 
         Args:
             workspace (`str | Path`):
@@ -102,9 +97,6 @@ class AgentRuntime:
                 Resolves ASK evaluations for this Runtime.
             parallel_commands (`frozenset[str] | None`):
                 Executable basenames trusted to run in parallel Shell batches.
-            parallel_tools (`frozenset[str] | None`):
-                Tool names trusted to run in parallel Tool batches; each name
-                must be a non-keyword Python identifier.
             on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
                 Optional Host callback receiving structured Runtime
                 Diagnostics, such as MCP discovery exhaustion, without blocking
@@ -113,9 +105,6 @@ class AgentRuntime:
         Returns:
             A coroutine resolving to the opened :class:`AgentRuntime`.
 
-        Raises:
-            ValueError: If any name in ``parallel_tools`` is not a valid
-                non-keyword Python identifier.
         """
 
         return cls._reconcile(
@@ -126,9 +115,6 @@ class AgentRuntime:
             policy=execution_policy,
             approver=execution_approver,
             parallel_commands=frozenset(parallel_commands or ()),
-            parallel_tools=_validate_parallel_tool_names(
-                parallel_tools or frozenset()
-            ),
             on_diagnostic=on_diagnostic,
         )
 
@@ -143,7 +129,6 @@ class AgentRuntime:
         policy: ExecutionPolicy | None,
         approver: ExecutionApprover | None,
         parallel_commands: frozenset[str],
-        parallel_tools: frozenset[str],
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
     ) -> AgentRuntime:
         """Prepare Workspace-scoped resources and construct the Runtime."""
@@ -163,7 +148,6 @@ class AgentRuntime:
             policy=effective_policy,
             approval_gate=approval_gate,
             parallel_commands=parallel_commands,
-            parallel_tools=parallel_tools,
             instruction=instruction,
             on_diagnostic=on_diagnostic,
         )
@@ -271,7 +255,6 @@ class AgentRuntime:
             approval_gate=self._approval_gate,
             approval_session_id=session_id,
             parallel_commands=self._parallel_commands,
-            parallel_tools=self._parallel_tools,
         )
 
     def _emit_diagnostic(
@@ -302,23 +285,3 @@ class AgentRuntime:
                 detail=detail or {},
             )
         )
-
-
-def _validate_parallel_tool_names(names: frozenset[str]) -> frozenset[str]:
-    invalid = sorted(
-        (
-            name
-            for name in names
-            if (
-                not isinstance(name, str)
-                or not name.isidentifier()
-                or keyword.iskeyword(name)
-            )
-        ),
-        key=repr,
-    )
-    if invalid:
-        raise ValueError(
-            "parallel Tool names must be non-keyword Python identifiers"
-        )
-    return frozenset(names)

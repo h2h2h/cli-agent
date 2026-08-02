@@ -30,11 +30,9 @@ class _ToolHandler:
         self,
         catalog: _ToolCatalog | None,
         environment: _ToolEnvironment | None,
-        parallel_tools: frozenset[str] = frozenset(),
     ) -> None:
         self._catalog = catalog
         self._environment = environment
-        self._parallel_tools = parallel_tools
 
     def parallel_safe(self, command: CommandParseResult) -> bool:
         """Return the scheduling fact for one parsed Tools command."""
@@ -52,7 +50,7 @@ class _ToolHandler:
             and facts.references
             and not facts.has_dynamic_references
             and all(
-                reference.valid and reference.name in self._parallel_tools
+                reference.valid and reference.parallel_safe
                 for reference in facts.references
             )
         )

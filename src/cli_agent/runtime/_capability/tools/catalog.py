@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import ast
 import keyword
+from collections.abc import Callable
 from pathlib import Path
 
 from cli_agent.runtime._capability.tools.facts import ToolEntry
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _atomic_write
+from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+
+_PARALLEL_SAFE_NAME = "PARALLEL_SAFE"
+_MCP_TOOL_PREFIX = "mcp_"
 
 
 class _ToolCatalog:
@@ -19,12 +24,26 @@ class _ToolCatalog:
         self._by_name = {entry.name: entry for entry in entries}
 
     @classmethod
-    def reconcile(cls, capability_view: _CapabilityView) -> _ToolCatalog:
-        """Build trusted entries and atomically refresh the derived index."""
+    def reconcile(
+        cls,
+        capability_view: _CapabilityView,
+        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+    ) -> _ToolCatalog:
+        """Build trusted entries and atomically refresh the derived index.
+
+        Args:
+            capability_view (`_CapabilityView`):
+                Effective Runtime-open capability files to inspect.
+            on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
+                Optional callback for non-blocking metadata parse notices.
+
+        Returns:
+            The immutable Tool Catalog for the effective capability files.
+        """
 
         tools_directory = capability_view.root / "tools"
         entries = tuple(
-            _inspect_tool(path, capability_view)
+            _inspect_tool(path, capability_view, on_diagnostic)
             for path in sorted(
                 (
                     path
@@ -62,12 +81,18 @@ class _ToolCatalog:
                 "This file is not an authority for validation or scheduling."
             ),
             "",
-            "| Name | Status | Provenance | Shadows Repertoire | Summary |",
-            "|---|---|---|---|---|",
+            (
+                "| Name | Status | Provenance | Shadows Repertoire | "
+                "Parallel Safe | Summary |"
+            ),
+            "|---|---|---|---|---|---|",
         ]
         for entry in self.entries:
             lines.append(
-                "| {name} | {status} | {provenance} | {shadows} | {summary} |".format(
+                (
+                    "| {name} | {status} | {provenance} | {shadows} | "
+                    "{parallel_safe} | {summary} |"
+                ).format(
                     name=_markdown_cell(entry.name),
                     status=(
                         "valid"
@@ -76,6 +101,7 @@ class _ToolCatalog:
                     ).replace("|", "\\|"),
                     provenance=entry.provenance or "unknown",
                     shadows="yes" if entry.shadows_repertoire else "no",
+                    parallel_safe="yes" if entry.parallel_safe else "no",
                     summary=_markdown_cell(entry.summary),
                 )
             )
@@ -95,6 +121,7 @@ class _ToolCatalog:
                 "- Shadows Repertoire: "
                 f"{'yes' if entry.shadows_repertoire else 'no'}"
             ),
+            f"- Parallel Safe: {'yes' if entry.parallel_safe else 'no'}",
         ]
         if entry.validation_error:
             lines.append(f"- Validation error: {entry.validation_error}")
@@ -108,13 +135,18 @@ class _ToolCatalog:
         return "\n".join(lines).rstrip() + "\n", True
 
 
-def _inspect_tool(path: Path, capability_view: _CapabilityView) -> ToolEntry:
+def _inspect_tool(
+    path: Path,
+    capability_view: _CapabilityView,
+    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+) -> ToolEntry:
     name = path.stem
+    default_parallel_safe = _default_parallel_safe(name)
     relative = Path("tools") / path.name
     try:
         inspection = capability_view.inspect(relative)
     except ValueError as exc:
-        return _invalid_entry(name, path, str(exc))
+        return _invalid_entry(name, path, str(exc), default_parallel_safe)
 
     common = {
         "name": name,
@@ -132,15 +164,17 @@ def _inspect_tool(path: Path, capability_view: _CapabilityView) -> ToolEntry:
             valid=False,
             validation_error=(
                 "Tool filename stem must be a non-keyword Python identifier"
-            ),
-            documentation=None,
-        )
+                ),
+                documentation=None,
+                parallel_safe=default_parallel_safe,
+            )
     if not inspection.valid:
         return ToolEntry(
             **common,
             valid=False,
             validation_error=inspection.validation_error,
             documentation=None,
+            parallel_safe=default_parallel_safe,
         )
     if not path.is_file():
         return ToolEntry(
@@ -148,6 +182,7 @@ def _inspect_tool(path: Path, capability_view: _CapabilityView) -> ToolEntry:
             valid=False,
             validation_error="Tool path must be a regular file",
             documentation=None,
+            parallel_safe=default_parallel_safe,
         )
 
     try:
@@ -158,30 +193,53 @@ def _inspect_tool(path: Path, capability_view: _CapabilityView) -> ToolEntry:
             valid=False,
             validation_error=f"Tool source is not readable UTF-8: {exc}",
             documentation=None,
+            parallel_safe=default_parallel_safe,
         )
     try:
         tree = ast.parse(source, filename=str(path))
     except SyntaxError as exc:
         location = f"line {exc.lineno}" if exc.lineno is not None else "unknown line"
+        _emit_parallel_safe_diagnostic(
+            on_diagnostic,
+            name=name,
+            relative=relative,
+            default=default_parallel_safe,
+            error=f"Python syntax error at {location}: {exc.msg}",
+            stage="source",
+        )
         return ToolEntry(
             **common,
             valid=False,
             validation_error=f"Python syntax error at {location}: {exc.msg}",
             documentation=None,
+            parallel_safe=default_parallel_safe,
         )
 
     documentation = _read_companion_documentation(path)
     if documentation is None:
         documentation = ast.get_docstring(tree, clean=False)
+    parallel_safe = _parse_parallel_safe(
+        tree,
+        default=default_parallel_safe,
+        name=name,
+        relative=relative,
+        on_diagnostic=on_diagnostic,
+    )
     return ToolEntry(
         **common,
         valid=True,
         validation_error=None,
         documentation=documentation,
+        parallel_safe=parallel_safe,
     )
 
 
-def _invalid_entry(name: str, path: Path, error: str) -> ToolEntry:
+def _invalid_entry(
+    name: str,
+    path: Path,
+    error: str,
+    parallel_safe: bool,
+) -> ToolEntry:
     return ToolEntry(
         name=name,
         path=path,
@@ -190,6 +248,113 @@ def _invalid_entry(name: str, path: Path, error: str) -> ToolEntry:
         valid=False,
         validation_error=error,
         documentation=None,
+        parallel_safe=parallel_safe,
+    )
+
+
+def _default_parallel_safe(name: str) -> bool:
+    return not name.startswith(_MCP_TOOL_PREFIX)
+
+
+def _parse_parallel_safe(
+    tree: ast.Module,
+    *,
+    default: bool,
+    name: str,
+    relative: Path,
+    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+) -> bool:
+    declarations: list[ast.expr | None] = []
+    invalid_declaration = False
+
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            matching_targets = [
+                target
+                for target in node.targets
+                if isinstance(target, ast.Name)
+                and target.id == _PARALLEL_SAFE_NAME
+            ]
+            if matching_targets:
+                if len(node.targets) != 1:
+                    invalid_declaration = True
+                declarations.append(node.value)
+        elif isinstance(node, ast.AnnAssign):
+            if (
+                isinstance(node.target, ast.Name)
+                and node.target.id == _PARALLEL_SAFE_NAME
+            ):
+                declarations.append(node.value)
+        elif isinstance(node, ast.AugAssign):
+            if (
+                isinstance(node.target, ast.Name)
+                and node.target.id == _PARALLEL_SAFE_NAME
+            ):
+                invalid_declaration = True
+
+    if len(declarations) > 1:
+        invalid_declaration = True
+    elif len(declarations) == 1 and not _is_boolean_literal(declarations[0]):
+        invalid_declaration = True
+
+    if invalid_declaration:
+        _emit_parallel_safe_diagnostic(
+            on_diagnostic,
+            name=name,
+            relative=relative,
+            default=default,
+            error=_parallel_safe_error(declarations),
+            stage="declaration",
+        )
+        return default
+    if not declarations:
+        return default
+    value = declarations[0]
+    assert value is not None
+    assert isinstance(value, ast.Constant)
+    assert type(value.value) is bool
+    return value.value
+
+
+def _is_boolean_literal(value: ast.expr | None) -> bool:
+    return (
+        isinstance(value, ast.Constant)
+        and type(value.value) is bool
+    )
+
+
+def _parallel_safe_error(declarations: list[ast.expr | None]) -> str:
+    if len(declarations) > 1:
+        return "PARALLEL_SAFE must be declared exactly once"
+    return "PARALLEL_SAFE must be a literal boolean"
+
+
+def _emit_parallel_safe_diagnostic(
+    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+    *,
+    name: str,
+    relative: Path,
+    default: bool,
+    error: str,
+    stage: str,
+) -> None:
+    if on_diagnostic is None:
+        return
+    on_diagnostic(
+        RuntimeDiagnostic(
+            kind="tools.parallel_safe_parse_failed",
+            message=(
+                f"Tool {name} parallel-safe metadata could not be parsed; "
+                f"using default parallel_safe={default}"
+            ),
+            detail={
+                "tool": name,
+                "path": relative.as_posix(),
+                "stage": stage,
+                "error": error,
+                "default_parallel_safe": default,
+            },
+        )
     )
 
 

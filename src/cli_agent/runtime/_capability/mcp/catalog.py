@@ -256,7 +256,8 @@ def _render_stub(
 ) -> str:
     header = (
         _stub_docstring(config, tools)
-        + "\n\nimport asyncio\nimport json\nimport os\n"
+        + "\n\nPARALLEL_SAFE = False\n"
+        + "\nimport asyncio\nimport json\nimport os\n"
         + "from contextlib import asynccontextmanager\n\n"
         + "from mcp import ClientSession\n"
     )

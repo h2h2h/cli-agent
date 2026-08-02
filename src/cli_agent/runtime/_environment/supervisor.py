@@ -39,7 +39,6 @@ class _ExecutionSupervisor:
         *,
         queue_limit: int,
         parallel_limit: int,
-        tool_parallel_limit: int,
         chunk_limit: int,
         byte_limit: int,
     ) -> None:
@@ -47,7 +46,6 @@ class _ExecutionSupervisor:
         self._scheduler = _ExecutionScheduler(
             queue_limit,
             parallel_limit,
-            tool_parallel_limit,
         )
         self._chunk_limit = chunk_limit
         self._byte_limit = byte_limit

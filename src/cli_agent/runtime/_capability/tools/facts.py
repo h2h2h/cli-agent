@@ -18,6 +18,7 @@ class ToolEntry:
     valid: bool
     validation_error: str | None
     documentation: str | None
+    parallel_safe: bool
 
     @property
     def summary(self) -> str:
