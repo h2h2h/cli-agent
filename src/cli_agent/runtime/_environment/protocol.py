@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import jsonschema
 
-from cli_agent.runtime._environment.execution import _ExecutionState
+from cli_agent.runtime._environment.execution_state import _ExecutionState
 from cli_agent.runtime._syscalls import BUILT_IN_SYSCALL_SCHEMAS
 from cli_agent.runtime.model import JSONValue, ToolCall, ToolResult
 

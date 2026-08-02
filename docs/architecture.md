@@ -109,7 +109,7 @@ flowchart TB
                 ROUTER["routing.py<br/>Custom registry + Shell fallback<br/>Command metadata"]
                 SCHED["scheduler.py<br/>single pending queue + barriers<br/>parallel_limit"]
                 SUPV["supervisor.py<br/>执行监督<br/>等待 · 取消 · 清理"]
-                EXEC["execution.py<br/>_ExecutionState<br/>bounded output · Cursor · lifecycle"]
+                EXEC["execution_state.py<br/>_ExecutionState<br/>bounded output · Cursor · lifecycle"]
                 CMDS["commands.py<br/>Runtime Custom handlers<br/>cd / export"]
 
                 subgraph HANDLERS["handlers/"]

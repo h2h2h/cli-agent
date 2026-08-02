@@ -6,7 +6,7 @@ import asyncio
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from cli_agent.runtime._environment.execution import (
+from cli_agent.runtime._environment.execution_state import (
     _ExecutionState,
     _notify_changed,
     _StateOutput,

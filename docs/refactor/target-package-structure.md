@@ -86,7 +86,7 @@ src/cli_agent/
         │                          #   payload shapes (incl. _snapshot)
         ├── supervisor.py          # Execution supervision: scheduling,
         │                          #   Handler lifecycle, cancellation
-        ├── policy.py  routing.py  scheduler.py  execution.py
+        ├── policy.py  routing.py  scheduler.py  execution_state.py
         ├── handlers/              # command preparation and execution seam
         │   ├── base.py  shell.py  tools.py  executions.py
         │   ├── cd.py  export.py

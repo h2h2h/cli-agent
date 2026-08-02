@@ -538,7 +538,7 @@ src/cli_agent/runtime/_environment/
 │   ├── shell.py                # Shell command prepare/execution
 │   ├── tools.py                # tools custom command prepare/execution
 │   └── executions.py            # Inline / subprocess concrete executions
-├── execution.py                # Session Execution State
+├── execution_state.py          # Session Execution State
 ├── routing.py
 ├── scheduler.py
 └── supervisor.py
@@ -558,7 +558,7 @@ src/cli_agent/runtime/_environment/
 | `_DriverExecution` | `_PreparedExecution` | 表达一次已准备的可运行执行。 |
 | `_ExecutionDriver` | `_Command.prepare` | prepare 归属统一 Command。 |
 
-`execution.py` 不迁移到 `handlers/execution.py`，避免与已有 Session
+`execution_state.py` 不迁移到 `handlers/executions.py`，避免与已有 Session
 Execution State 模型混淆。
 
 ## 执行流程

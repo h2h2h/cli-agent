@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import uuid4
 
-from cli_agent.runtime._environment.execution import _ExecutionState
+from cli_agent.runtime._environment.execution_state import _ExecutionState
 from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime._environment.routing import _ExecutionRoute
 

@@ -21,7 +21,7 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._environment.execution import _ExecutionState
+from cli_agent.runtime._environment.execution_state import _ExecutionState
 
 
 class _CoordinatedProvider:

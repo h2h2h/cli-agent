@@ -18,7 +18,7 @@ from cli_agent.runtime._environment.commands import (
     _CustomCommandRegistry,
     _ShellCommand,
 )
-from cli_agent.runtime._environment.execution import _ExecutionState
+from cli_agent.runtime._environment.execution_state import _ExecutionState
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.policy import (
     ExecutablePolicy,

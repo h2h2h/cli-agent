@@ -61,7 +61,7 @@ promotion, and close cleanup.
 
 Each admitted Execution is still represented by one private
 `_ExecutionState`. This is a real one-to-many relationship: one Kernel owns
-many live Execution States. The type remains in `execution.py` so Scheduler and
+many live Execution States. The type remains in `execution_state.py` so Scheduler and
 Kernel can share it without a circular dependency.
 
 ## Workspace-scoped resources
