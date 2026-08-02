@@ -40,6 +40,20 @@ def _successful_preparer(command, context):
     return _InlineExecution(execute)
 
 
+def test_parser_emits_only_generic_shell_syntax_facts() -> None:
+    command = parse_shell_command("tools list")
+
+    assert not hasattr(command, "tool")
+    assert tuple(command.__dataclass_fields__) == (
+        "raw_command",
+        "tokens",
+        "executable_basename",
+        "tokenization_succeeded",
+        "contains_shell_composition",
+        "contains_output_redirection",
+    )
+
+
 def test_custom_command_contract_and_registry_match_command_heads() -> None:
     command = _CustomCommand(
         name="custom",

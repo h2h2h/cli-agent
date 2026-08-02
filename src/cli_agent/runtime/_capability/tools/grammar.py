@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import re
-from dataclasses import replace
 
 from cli_agent.runtime._capability.command_parser import CommandParseResult
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
@@ -17,15 +16,15 @@ _HEREDOC_PATTERN = re.compile(
 _RUN_PREFIX = re.compile(r"\Atools[ \t]+run(?:[ \t]+(?P<argument>.*))?\Z")
 
 
-def classify_tool_command(
+def parse_tool_command(
     command: CommandParseResult,
     catalog: _ToolCatalog,
-) -> CommandParseResult:
-    """Enrich reserved commands with Catalog-derived Policy facts."""
+) -> ToolCommand | None:
+    """Parse reserved Tools grammar into independent capability facts."""
 
     if not _is_reserved_tool_head(command):
-        return command
-    return replace(command, tool=_tool_facts(command, catalog))
+        return None
+    return _tool_facts(command, catalog)
 
 
 def _tool_facts(command: CommandParseResult, catalog: _ToolCatalog) -> ToolCommand:

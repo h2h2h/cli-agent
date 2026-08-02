@@ -12,7 +12,6 @@ from uuid import uuid4
 from cli_agent.runtime._capability.command_parser import (
     _DIRECT_MUTATORS,
     CommandParseResult,
-    ToolCommand,
     _sed_is_in_place,
 )
 
@@ -168,12 +167,6 @@ class ExecutablePolicy:
                     matched = True
                     break
 
-        if command.tool is not None and not matched:
-            return PolicyEvaluation.allow(
-                command,
-                rule_id=f"tool.{command.tool.operation}.allow",
-            )
-
         if not matched and command.contains_output_redirection:
             return PolicyEvaluation.ask(
                 command,
@@ -236,7 +229,6 @@ class ExecutionApprovalRequest:
     tokenization_succeeded: bool
     contains_shell_composition: bool
     contains_output_redirection: bool
-    tool: ToolCommand | None
     rule_id: str
     reason: str
 
@@ -315,7 +307,6 @@ class _ExecutionApprovalGate:
             contains_output_redirection=(
                 evaluation.parse_result.contains_output_redirection
             ),
-            tool=evaluation.parse_result.tool,
             rule_id=evaluation.rule_id,
             reason=evaluation.reason,
         )

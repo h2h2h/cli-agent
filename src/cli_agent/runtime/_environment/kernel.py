@@ -10,7 +10,6 @@ from pathlib import Path
 from cli_agent.runtime._capability.command_parser import parse_shell_command
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
-from cli_agent.runtime._capability.tools.grammar import classify_tool_command
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
@@ -89,9 +88,9 @@ class EnvironmentKernel:
                 if tool_catalog is not None and tool_environment is not None
                 else None
             ),
+            tool_catalog=tool_catalog,
             parallel_tools=frozenset(parallel_tools or ()),
         )
-        self._tool_catalog = tool_catalog
         self._env = dict(base_env or {})
         self._cwd = self._workspace
         self._executions: dict[str, _ExecutionState] = {}
@@ -176,10 +175,6 @@ class EnvironmentKernel:
         if isinstance(args, ToolResult):
             return args
         command = parse_shell_command(args["command"])
-        # command.tool (`CommandParseResult`) is always `None` when parsed from a raw command string.
-        # _tool_catalog is used to judge if it is a tool command and enrich the `CommandParseResult`.
-        if self._tool_catalog is not None:
-            command = classify_tool_command(command, self._tool_catalog)
         try:
             evaluation = await self._policy.evaluate(command)
         except Exception:

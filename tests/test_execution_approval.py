@@ -201,6 +201,7 @@ def test_host_approval_allows_one_exact_command(tmp_path: Path) -> None:
             assert request.tokens == parse_shell_command(command).tokens
             assert request.executable_basename == Path(sys.executable).name
             assert request.contains_shell_composition is False
+            assert not hasattr(request, "tool")
             assert request.rule_id.startswith("shell.ask-executable.")
         finally:
             await kernel.close()

@@ -10,6 +10,7 @@ from importlib.resources import files
 from cli_agent.runtime._capability.command_parser import CommandParseResult
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
+from cli_agent.runtime._capability.tools.grammar import parse_tool_command
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
@@ -38,7 +39,7 @@ class _ToolHandler:
         command: CommandParseResult,
         context: _CommandContext,
     ) -> _PreparedExecution:
-        facts = command.tool
+        facts = parse_tool_command(command, self._catalog)
         if facts is None:
             raise RuntimeError("Tool handler received an ordinary command")
         if facts.operation == "list":

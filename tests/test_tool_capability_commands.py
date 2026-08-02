@@ -12,7 +12,7 @@ from cli_agent.runtime._capability.command_parser import parse_shell_command
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.tools.facts import ToolCommand
-from cli_agent.runtime._capability.tools.grammar import classify_tool_command
+from cli_agent.runtime._capability.tools.grammar import parse_tool_command
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -117,12 +117,13 @@ def test_default_policy_allows_every_reserved_tool_form(tmp_path: Path) -> None:
         )
         operations = ("list", "inspect", "run", "run", "invalid")
         for raw, operation in zip(commands, operations, strict=True):
-            command = classify_tool_command(parse_shell_command(raw), catalog)
-            assert isinstance(command.tool, ToolCommand)
-            assert command.tool.operation == operation
+            command = parse_shell_command(raw)
+            facts = parse_tool_command(command, catalog)
+            assert isinstance(facts, ToolCommand)
+            assert facts.operation == operation
             evaluation = await policy.evaluate(command)
             assert evaluation.action.value == "allow"
-            assert evaluation.rule_id == f"tool.{operation}.allow"
+            assert evaluation.rule_id == "default.allow"
 
     asyncio.run(scenario())
 
@@ -155,21 +156,18 @@ def test_reserved_tool_grammar_cannot_fall_through_to_shell(
     view = _CapabilityView.open(tmp_path, repertoire)
     catalog = _ToolCatalog.reconcile(view)
 
-    command = classify_tool_command(parse_shell_command(raw), catalog)
+    command = parse_shell_command(raw)
+    facts = parse_tool_command(command, catalog)
 
-    assert (command.tool is not None) is reserved
-    if command.tool is not None:
-        assert command.tool.operation == operation
+    assert (facts is not None) is reserved
+    if facts is not None:
+        assert facts.operation == operation
 
 
 def test_host_can_override_default_tool_allow_by_executable_name(
     tmp_path: Path,
 ) -> None:
-    repertoire = _repertoire(tmp_path)
-    _prepare_workspace(tmp_path)
-    view = _CapabilityView.open(tmp_path, repertoire)
-    catalog = _ToolCatalog.reconcile(view)
-    command = classify_tool_command(parse_shell_command("tools list"), catalog)
+    command = parse_shell_command("tools list")
 
     async def scenario() -> None:
         evaluation = await ExecutablePolicy(
@@ -181,7 +179,7 @@ def test_host_can_override_default_tool_allow_by_executable_name(
     asyncio.run(scenario())
 
 
-def test_tools_list_info_and_reserved_invalid_syntax_use_tool_driver(
+def test_tools_list_info_and_reserved_invalid_syntax_use_tool_handler(
     tmp_path: Path,
 ) -> None:
     repertoire = _repertoire(tmp_path)
@@ -287,7 +285,7 @@ def test_fresh_tool_workers_isolate_module_state_and_use_private_python(
     asyncio.run(scenario())
 
 
-def test_tool_policy_receives_trusted_validation_and_provenance(
+def test_tool_grammar_facts_stay_out_of_policy(
     tmp_path: Path,
 ) -> None:
     repertoire = _repertoire(tmp_path)
@@ -309,13 +307,19 @@ def test_tool_policy_receives_trusted_validation_and_provenance(
             await _exec(kernel, 'tools run "tools.valid_tool.VALUE"')
             await _exec(kernel, "tools info invalid_tool")
 
-            run = policy.commands[0].tool
+            assert all(not hasattr(command, "tool") for command in policy.commands)
+            run = parse_tool_command(policy.commands[0], kernel._router._tool_catalog)
+            assert run is not None
             assert run.operation == "run"
             assert run.references[0].name == "valid_tool"
             assert run.references[0].provenance == "repertoire"
             assert run.references[0].valid is True
 
-            inspected = policy.commands[1].tool
+            inspected = parse_tool_command(
+                policy.commands[1],
+                kernel._router._tool_catalog,
+            )
+            assert inspected is not None
             assert inspected.operation == "inspect"
             assert inspected.references[0].valid is False
             assert "syntax error" in inspected.references[0].validation_error

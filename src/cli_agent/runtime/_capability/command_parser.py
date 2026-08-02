@@ -6,8 +6,6 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
-from cli_agent.runtime._capability.tools.facts import ToolCommand
-
 _DIRECT_MUTATORS = frozenset(
     {
         "chmod",
@@ -45,7 +43,6 @@ class CommandParseResult:
     tokenization_succeeded: bool
     contains_shell_composition: bool
     contains_output_redirection: bool
-    tool: ToolCommand | None = None
 
 
 def parse_shell_command(raw_command: str) -> CommandParseResult:

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 from cli_agent.runtime._capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime._capability.tools.grammar import parse_tool_command
 from cli_agent.runtime._environment.commands import (
     _Command,
     _CustomCommand,
@@ -59,10 +61,12 @@ class _CommandRouter:
         shell_command: _ShellCommand,
         custom_registry: _CustomCommandRegistry,
         tool_handler: _ToolHandler | None = None,
+        tool_catalog: _ToolCatalog | None = None,
         parallel_tools: frozenset[str] = frozenset(),
     ) -> None:
         self._shell_command = shell_command
         self._custom_registry = custom_registry
+        self._tool_catalog = tool_catalog
         self._tool_command = (
             None
             if tool_handler is None
@@ -92,7 +96,9 @@ class _CommandRouter:
         )
 
     def _tool_parallel_safe(self, command: CommandParseResult) -> bool:
-        facts = command.tool
+        if self._tool_catalog is None:
+            return False
+        facts = parse_tool_command(command, self._tool_catalog)
         if facts is None:
             return False
         if facts.operation in {"list", "inspect"}:
