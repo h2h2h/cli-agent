@@ -38,7 +38,7 @@ def test_runtime_open_loads_complete_dotenv_environment(
             provider=ScriptedModelProvider(script=()),
         )
 
-        assert dict(runtime._base_env) == {
+        assert dict(runtime._resources.base_env) == {
             "API_BASE_URL": " https://example.test/api ",
             "DUPLICATE": "second",
             "EMPTY": "",
@@ -50,7 +50,7 @@ def test_runtime_open_loads_complete_dotenv_environment(
             "value": "lower",
         }
         with pytest.raises(TypeError):
-            runtime._base_env["NEW"] = "value"  # type: ignore[index]
+            runtime._resources.base_env["NEW"] = "value"  # type: ignore[index]
         await runtime.close()
 
     asyncio.run(scenario())
@@ -72,8 +72,8 @@ def test_workspace_environment_is_loaded_once_per_runtime(tmp_path: Path) -> Non
             provider=ScriptedModelProvider(script=()),
         )
 
-        assert first_runtime._base_env == {"VALUE": "first"}
-        assert second_runtime._base_env == {"VALUE": "second"}
+        assert first_runtime._resources.base_env == {"VALUE": "first"}
+        assert second_runtime._resources.base_env == {"VALUE": "second"}
         await first_runtime.close()
         await second_runtime.close()
 

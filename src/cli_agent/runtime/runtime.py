@@ -10,21 +10,16 @@ from types import TracebackType
 from typing import Any
 
 from cli_agent.runtime._agent_loop import AgentLoop
-from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
-from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
-from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
-from cli_agent.runtime._capability.view import _CapabilityView
-from cli_agent.runtime._capability.workspace import (
-    _load_workspace_env,
-    _prepare_workspace,
-)
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.policy import (
     ExecutablePolicy,
     ExecutionApprover,
     ExecutionPolicy,
     _ExecutionApprovalGate,
+)
+from cli_agent.runtime._resources import (
+    _reconcile_runtime_resources,
+    _RuntimeResources,
 )
 from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
@@ -48,13 +43,7 @@ class AgentRuntime:
         self,
         *,
         provider: ModelProvider,
-        workspace: Path,
-        capability_view: _CapabilityView,
-        tool_catalog: _ToolCatalog,
-        tool_environment: _ToolEnvironment,
-        skill_catalog: _SkillCatalog,
-        mcp_catalog: _MCPCatalog,
-        base_env: Mapping[str, str],
+        resources: _RuntimeResources,
         policy: ExecutionPolicy,
         approval_gate: _ExecutionApprovalGate | None,
         parallel_commands: frozenset[str],
@@ -63,13 +52,7 @@ class AgentRuntime:
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
     ) -> None:
         self._provider = provider
-        self._workspace = workspace
-        self._capability_view = capability_view
-        self._tool_catalog = tool_catalog
-        self._tool_environment = tool_environment
-        self._skill_catalog = skill_catalog
-        self._mcp_catalog = mcp_catalog
-        self._base_env = base_env
+        self._resources = resources
         self._policy = policy
         self._approval_gate = approval_gate
         self._parallel_commands = parallel_commands
@@ -165,29 +148,18 @@ class AgentRuntime:
     ) -> AgentRuntime:
         """Prepare Workspace-scoped resources and construct the Runtime."""
 
-        paths = _prepare_workspace(workspace)
-        base_env = _load_workspace_env(paths.environment)
-        capability_view = _CapabilityView.open(paths.root, repertoire)
-        mcp_catalog = await _MCPCatalog.reconcile(
-            capability_view,
+        resources = await _reconcile_runtime_resources(
+            workspace=workspace,
+            repertoire=repertoire,
             on_diagnostic=on_diagnostic,
         )
-        tool_catalog = _ToolCatalog.reconcile(capability_view)
-        tool_environment = await _ToolEnvironment.reconcile(capability_view)
-        skill_catalog = _SkillCatalog.reconcile(capability_view)
         effective_policy = ExecutablePolicy() if policy is None else policy
         approval_gate = (
             None if approver is None else _ExecutionApprovalGate(approver)
         )
         return cls(
             provider=provider,
-            workspace=paths.root,
-            capability_view=capability_view,
-            tool_catalog=tool_catalog,
-            tool_environment=tool_environment,
-            skill_catalog=skill_catalog,
-            mcp_catalog=mcp_catalog,
-            base_env=base_env,
+            resources=resources,
             policy=effective_policy,
             approval_gate=approval_gate,
             parallel_commands=parallel_commands,
@@ -241,10 +213,10 @@ class AgentRuntime:
         if session is None:
             bound_provider = provider if provider is not None else self._provider
             system = assemble_system_message(
-                self._workspace,
+                self._resources.workspace,
                 self._instruction,
-                tool_catalog=self._tool_catalog,
-                skill_catalog=self._skill_catalog,
+                tool_catalog=self._resources.tool_catalog,
+                skill_catalog=self._resources.skill_catalog,
             )
             kernel = self._new_kernel(session_id)
             try:
@@ -290,11 +262,11 @@ class AgentRuntime:
 
     def _new_kernel(self, session_id: str) -> EnvironmentKernel:
         return EnvironmentKernel(
-            self._workspace,
-            capability_view=self._capability_view,
-            tool_catalog=self._tool_catalog,
-            tool_environment=self._tool_environment,
-            base_env=self._base_env,
+            self._resources.workspace,
+            capability_view=self._resources.capability_view,
+            tool_catalog=self._resources.tool_catalog,
+            tool_environment=self._resources.tool_environment,
+            base_env=self._resources.base_env,
             policy=self._policy,
             approval_gate=self._approval_gate,
             approval_session_id=session_id,

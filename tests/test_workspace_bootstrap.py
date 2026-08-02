@@ -90,7 +90,7 @@ def test_runtime_open_uses_explicit_repertoire(tmp_path: Path) -> None:
             provider=ScriptedModelProvider(script=()),
         )
         try:
-            assert runtime._capability_view.repertoire == repertoire
+            assert runtime._resources.capability_view.repertoire == repertoire
         finally:
             await runtime.close()
 
