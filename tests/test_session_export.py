@@ -80,7 +80,7 @@ def test_top_level_export_is_atomic_and_session_private(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_export_uses_shell_lane_fifo_and_queued_kill_prevents_mutation(
+def test_export_uses_shell_fifo_and_queued_kill_prevents_mutation(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:

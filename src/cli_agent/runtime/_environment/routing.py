@@ -21,13 +21,6 @@ class _DriverKind(Enum):
     TOOL = "tool"
 
 
-class _ExecutionLane(Enum):
-    """Legacy scheduler lane retained until the global scheduler migration."""
-
-    DEFAULT = "default"
-    TOOL = "tool"
-
-
 class _SchedulingClass(Enum):
     """Legacy scheduling labels retained for the in-progress migration."""
 

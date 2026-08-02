@@ -15,7 +15,6 @@ _UNKNOWN_EXECUTION = {
     "message": "execution not found",
 }
 _PRIVATE_SNAPSHOT_FIELDS = {
-    "lane",
     "pid",
     "process_id",
     "session_id",

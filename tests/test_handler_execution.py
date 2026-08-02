@@ -232,7 +232,7 @@ def test_kernel_runs_and_cancels_prepared_execution_without_branch(
     asyncio.run(scenario())
 
 
-def test_handler_preparation_failure_releases_lane_for_queued_execution(
+def test_handler_preparation_failure_releases_serial_slot_for_queued_execution(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:

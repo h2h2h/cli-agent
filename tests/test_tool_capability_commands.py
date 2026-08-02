@@ -645,7 +645,7 @@ def test_dependency_sync_failure_is_fail_soft_for_catalog_operations(
     asyncio.run(scenario())
 
 
-def test_tool_lane_progresses_while_serial_shell_is_running(
+def test_tool_waits_behind_serial_shell_barrier(
     tmp_path: Path,
 ) -> None:
     repertoire = _repertoire(tmp_path)
@@ -676,10 +676,68 @@ def test_tool_lane_progresses_while_serial_shell_is_running(
                         "tools run "
                         f'"tools.marker.touch({str(tool_finished)!r})"'
                     ),
+                    wait_ms=0,
                 )
             )
             assert shell["status"] == "running"
-            assert tool["status"] == "exited"
+            assert tool["status"] == "queued"
+            assert not tool_finished.exists()
+
+            shell_release.touch(exist_ok=True)
+            assert (
+                await _read_until_terminal(kernel, str(tool["exec_id"]))
+            )["status"] == "exited"
+            assert tool_finished.exists()
+        finally:
+            shell_release.touch(exist_ok=True)
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+
+def test_tool_shares_parallel_capacity_with_shell(tmp_path: Path) -> None:
+    repertoire = _repertoire(tmp_path)
+    (repertoire / "tools" / "marker.py").write_text(
+        "from pathlib import Path\n"
+        "def touch(path):\n"
+        "    Path(path).touch()\n"
+    )
+    shell_started = tmp_path / "parallel-shell-started"
+    shell_release = tmp_path / "parallel-shell-release"
+    tool_finished = tmp_path / "parallel-tool-finished"
+
+    async def scenario() -> None:
+        kernel = await _kernel(
+            tmp_path,
+            repertoire,
+            parallel_commands=frozenset({Path(sys.executable).name}),
+            parallel_limit=1,
+        )
+        try:
+            shell = _output(
+                await _exec(
+                    kernel,
+                    _blocking_command(shell_started, shell_release),
+                    wait_ms=0,
+                )
+            )
+            await _wait_for_path(shell_started)
+            tool = _output(
+                await _exec(
+                    kernel,
+                    f'tools run "tools.marker.touch({str(tool_finished)!r})"',
+                    wait_ms=0,
+                )
+            )
+
+            assert shell["status"] == "running"
+            assert tool["status"] == "queued"
+            assert not tool_finished.exists()
+
+            shell_release.touch(exist_ok=True)
+            assert (
+                await _read_until_terminal(kernel, str(tool["exec_id"]))
+            )["status"] == "exited"
             assert tool_finished.exists()
         finally:
             shell_release.touch(exist_ok=True)
@@ -820,6 +878,8 @@ async def _kernel(
     repertoire: Path,
     *,
     policy=None,
+    parallel_commands: frozenset[str] = frozenset(),
+    parallel_limit: int = 4,
 ) -> EnvironmentKernel:
     _prepare_workspace(workspace)
     view = _CapabilityView.open(workspace, repertoire)
@@ -832,6 +892,8 @@ async def _kernel(
         tool_catalog=catalog,
         tool_environment=environment,
         policy=policy,
+        parallel_commands=parallel_commands,
+        parallel_limit=parallel_limit,
     )
 
 
@@ -871,6 +933,25 @@ def _text(snapshot: dict[str, object], stream: str) -> str:
         for chunk in chunks
         if isinstance(chunk, dict) and chunk.get("stream") == stream
     )
+
+
+async def _read_until_terminal(
+    kernel: EnvironmentKernel,
+    exec_id: str,
+) -> dict[str, object]:
+    for index in range(100):
+        snapshot = _output(
+            await kernel.dispatch(
+                ToolCall(
+                    call_id=f"output_{index}",
+                    name="output",
+                    arguments={"exec_id": exec_id, "wait_ms": 100},
+                )
+            )
+        )
+        if snapshot["is_terminal"]:
+            return snapshot
+    raise AssertionError("execution did not reach a terminal state")
 
 
 def _blocking_command(started: Path, release: Path) -> str:
