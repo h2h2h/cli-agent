@@ -35,8 +35,10 @@ Tool 投影进 Workspace 层；模型通过既有 `tools run` 语法组合调用
 worker 到 Runtime 的 IPC 回通道，替换存根内部实现，落地共享 client、并发预算、
 `MCP_BUSY` 与 close 清理。存根表面不变，因此 A→B 是内部 swap，不返工。
 
-本设计不新增模型可见 Syscall（仍为 `exec`、`output`、`kill`），不把 `_mcp/`
-挂载进 Capability View，模型不直接接触 MCP 连接描述。
+本设计不新增模型可见 Syscall（仍为 `exec`、`output`、`kill`）。`_mcp/` 作为
+Capability View 的托管配置目录挂载（lower/upper 合并、copy-up、whiteout），
+但不出现在工具/技能 index；配置只存 env 变量名，模型不直接接触 MCP 连接描述
+与凭据值。
 
 ## 背景与上下文
 
@@ -61,8 +63,8 @@ worker 到 Runtime 的 IPC 回通道，替换存根内部实现，落地共享 c
 
 | 术语 | 定义 |
 |---|---|
-| MCP 描述 | `_mcp/<server>/config.json`：用户对某 MCP Server 的传输与启动描述；`_mcp` 不挂载进 Capability View，模型不可见。 |
-| MCP 描述 | `_mcp/<server>/config.json`：用户对某 MCP Server 的传输与启动描述；`_mcp` 不挂载进 Capability View，模型不可见。 |
+| MCP 描述 | `_mcp/<server>/config.json`：用户对某 MCP Server 的传输与启动描述；`_mcp` 是 Capability View 的托管配置目录，支持 Repertoire 挂载与 Workspace 覆盖/白名单；不出现在工具/技能 index。 |
+| MCP 描述 | `_mcp/<server>/config.json`：用户对某 MCP Server 的传输与启动描述；`_mcp` 是 Capability View 的托管配置目录，支持 Repertoire 挂载与 Workspace 覆盖/白名单；不出现在工具/技能 index。 |
 | MCP 投影 | Runtime open 时从描述发现 Tool 元数据后生成的真实 Python 存根文件 `.workspace/tools/mcp_<server>.py`，按普通 Workspace Tool 呈现。 |
 | MCP 命名约定 | 生成存根一律以 `mcp_<server>.py` 命名；用户约定不使用 `mcp_` 前缀书写手写 Tool。它是清理（删除 `tools/mcp_*.py`）与来源识别的唯一依据。 |
 | Workspace MCP Binding | Runtime 独占的 live MCP client 集合：每 server 一个共享 `ClientSession`、并发预算、自启进程句柄；同 Runtime 的 Session 共享，不同 Workspace 永不共享。 |
@@ -106,7 +108,9 @@ AEP 可用的命令表面之上补齐：Secret 引用化（本 RFC 采用 `.work
 
 ### 目标
 
-1. 用户只写 `_mcp/<server>/config.json` 即可请求一个 MCP Server 的能力。
+1. 用户在 Repertoire 或 Workspace 的 `.workspace/_mcp/<server>/config.json` 写
+   配置即可请求一个 MCP Server 的能力；Workspace 可覆盖或白名单 Repertoire
+   描述。
 2. Runtime open 并行调和描述 → 生成真实 Python 存根 Tool；发现失败重试 ≤3 次，
    耗尽发 Runtime Diagnostic 且不阻塞 open；失败服务器本次不生成存根，不留旧
    产物（纯生成物语义）。
@@ -121,7 +125,8 @@ AEP 可用的命令表面之上补齐：Secret 引用化（本 RFC 采用 `.work
 
 ### 非目标
 
-1. 提供 `mcp add/remove` 类 Agent-可见命令（配置面由用户直接维护 Repertoire）。
+1. 提供 `mcp add/remove` 类 Agent-可见命令（配置面由用户直接维护 Repertoire
+   与 Workspace 配置目录）。
 2. 把 MCP 结果视为安全或良性；断连/失败按普通失败 Tool Result 处理。
 3. 热重载：运行中的 Runtime 不感知 MCP 描述变化，下次 open 调和。
 4. 引入 sampling、elicitation、roots 等 server 反溯能力。
@@ -291,10 +296,11 @@ AEP 可用的命令表面之上补齐：Secret 引用化（本 RFC 采用 `.work
 ### 架构
 
 ```text
-Repertoire/_mcp/<server>/config.json   （用户拥有，模型不可见）
+Repertoire/_mcp/<server>/config.json ── 精确链接挂载 ──▶ .workspace/_mcp/<server>/config.json
+（用户拥有，托管配置目录）                     │          （可被真实文件覆盖或 whiteout 禁用）
         │
 Runtime open ─ Repertoire Reconciliation
-        │       1. jsonschema 校验描述（失败 → 诊断，跳过）
+        │       1. 读 .workspace/_mcp 视图中的 config.json（jsonschema 校验，失败 → 诊断，跳过）
         │       2. 并行 mcp SDK list_tools() 发现（每 server 重试 ≤3 次，耗尽 → 诊断）
         │       3. 删除 .workspace/tools/mcp_*.py（清理旧产物）
         │       4. 为每个成功发现的 server 生成 .workspace/tools/mcp_<server>.py
@@ -310,8 +316,10 @@ Runtime open ─ Repertoire Reconciliation
 
 ### 配置面 `_mcp/<server>/config.json`
 
-`_prepare_repertoire` 增加 `_mcp` 顶层目录；`_CAPABILITY_DIRECTORIES` **不加**
-`_mcp`，因此不挂载、模型不可见。`<server>` 目录名规则与 Skill 名一致：小写字母、
+`_mcp` 加入 `_CAPABILITY_DIRECTORIES`，作为托管配置目录挂载：Repertoire 描述以
+精确 lower 链接出现在 `.workspace/_mcp/`，用户可写真实文件覆盖，或以 whiteout
+禁用；新增 server 也可只在 Workspace 层书写。它不出现在工具/技能 index，配置只
+存 env 变量名，因此挂载不泄露凭据。`<server>` 目录名规则与 Skill 名一致：小写字母、
 数字、连字符，≤64，且必须等于 `name`。
 
 ```json
@@ -522,7 +530,9 @@ M14 以 Workspace MCP Binding + IPC 回通道替换内部实现落地共享、�
 ### 批准条件
 
 - 代码须经同行评审后方可提交。
-- `_mcp` 不挂载进 Capability View；模型可见 surface 仍为 `exec`/`output`/`kill`。
+- `_mcp` 挂载进 Capability View（托管配置目录，支持 Repertoire 挂载与 Workspace
+  覆盖/白名单）；模型可见 surface 仍为 `exec`/`output`/`kill`，`_mcp` 不出现在
+  工具/技能 index。
 - `mcp_` 前缀约定是清理与来源识别的唯一依据；清理只删 `mcp_*.py`，永不触碰
   其他文件。
 

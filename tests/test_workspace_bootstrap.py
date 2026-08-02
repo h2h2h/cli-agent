@@ -199,6 +199,7 @@ def test_concurrent_runtime_opens_share_idempotent_bootstrap(
     assert {path.name for path in workspace_state.iterdir()} == {
         ".capability-view",
         ".tool-environment",
+        "_mcp",
         "env",
         "library",
         "skills",

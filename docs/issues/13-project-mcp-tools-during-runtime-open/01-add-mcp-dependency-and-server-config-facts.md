@@ -32,6 +32,10 @@ without trusting authored metadata.
   transport enum, and per-transport required fields.
 - Keep `facts.py` free of `_environment/` imports so the import graph stays
   `_environment -> _capability -> leaf modules`.
+- Amended after review: `_mcp` is mounted as a managed Capability View
+  configuration directory supporting Repertoire links, Workspace overrides,
+  and whiteouts (see RFC-0005). It still never appears in the tools/skills
+  index and stores only env variable names.
 
 ## 中文
 
@@ -57,3 +61,6 @@ MCP 发现使用官方 `mcp` SDK，架构决策 09 已批准其与 `httpx` 一�
   名）、transport 枚举与各 transport 的必填字段。
 - 保持 `facts.py` 不 import `_environment/`，使依赖图严格保持
   `_environment -> _capability -> 叶子模块`。
+- 评审后修订：`_mcp` 挂载为 Capability View 的托管配置目录，支持 Repertoire
+  链接、Workspace 覆盖与 whiteout（见 RFC-0005）。它仍不出现在工具/技能
+  index，且只存 env 变量名。
