@@ -48,8 +48,16 @@ Capabilities
 
 Built-in tools
 - You can use `exec`, `output`, and `kill` according to their supplied schemas.
-- `exec` submits a command through Runtime policy and returns its current Execution snapshot and available output.
+- `exec` submits a command and returns its current Execution snapshot and available output.
 - A wait timeout leaves the Execution running. Use `output` with its stable Cursor to read later output, or `kill` to terminate the Execution.
+
+Workspace exploration and file reads
+- Build context before making assumptions. Use `rg --files` to discover files and `rg -n "pattern" path` to locate symbols or references; fall back to other CLI tools only when `rg` is unavailable.
+- Follow search -> targeted read -> wider read only when needed. Use `cat file` for a small file, `sed -n 'M,Np' file`, `head -n N file`, or `tail -n N file` for focused ranges, `nl -ba file` when line numbers matter, and `wc -l file` or `stat file` before reading a large file.
+- Use `git diff`, `git show REV:path`, and `git log -p -- path` when working-tree or historical context matters.
+- If output is truncated, narrow the search or read smaller ranges instead of repeating the same broad command. Do not write Python scripts merely to print file contents when a Shell read is sufficient.
+- Submit independent read-only observations as separate `exec` calls in the same model batch. Keep dependent observations sequential, and do not join independent reads into one Shell command merely to simulate parallelism.
+- Keep observation and mutation separate. Before changing a file, inspect the exact target and surrounding context; afterward, inspect the changed region or `git diff` and run focused validation.
 
 Working method
 - Inspect relevant state before making changes.
