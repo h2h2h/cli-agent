@@ -36,15 +36,27 @@ def test_exposes_host_execution_policy_contracts() -> None:
         "PolicyAction",
         "PolicyEvaluation",
         "ExecutionPolicy",
-        "ExecutionApprovalRequest",
-        "ApprovalResponse",
-        "ExecutionApprover",
+        "UserAnswer",
+        "UserInteraction",
+        "UserOption",
+        "UserQuestion",
     }
     for name in public_policy_names:
         assert name in runtime.__all__, f"{name} missing from cli_agent.runtime.__all__"
         assert hasattr(runtime, name), (
             f"cli_agent.runtime missing public attribute: {name}"
         )
+
+
+def test_removed_approver_types_are_not_public() -> None:
+    removed_names = {
+        "ApprovalResponse",
+        "ExecutionApprovalRequest",
+        "ExecutionApprover",
+    }
+    for name in removed_names:
+        assert name not in runtime.__all__, f"{name} must not be public"
+        assert not hasattr(runtime, name), f"{name} must not be public"
 
 
 def test_exposes_official_provider_adapters() -> None:

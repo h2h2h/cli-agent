@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 from pathlib import Path
 
+from interaction_fakes import _ScriptedInteraction
 from policy_fakes import _AskExecutablePolicy
 
 from cli_agent.runtime import (
@@ -24,6 +25,9 @@ from cli_agent.runtime import (
     UserMessage,
 )
 from cli_agent.runtime._environment.execution_state import _ExecutionState
+
+_user_interaction = _ScriptedInteraction("deny")
+
 
 
 class _CoordinatedProvider:
@@ -175,6 +179,7 @@ def test_public_runtime_proves_concurrent_session_scheduling(
         provider_b.peer = provider_a
         default_provider = ScriptedModelProvider(script=())
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=default_provider,
             execution_policy=_AskExecutablePolicy(

@@ -219,15 +219,15 @@ def test_runs_multiple_interactive_turns_in_one_session(
 
 
 @pytest.mark.parametrize(
-    ("approval_input", "expected_exists", "expected_error"),
+    ("interaction_input", "expected_exists", "expected_error"),
     (
         ("yes\n", False, None),
-        ("\n", True, "execution approval was denied by the Host"),
+        ("\n", True, "direct invocation of 'rm' requires Host approval"),
     ),
 )
-def test_reference_cli_resolves_execution_approval_once(
+def test_reference_cli_resolves_ask_interaction_once(
     tmp_path: Path,
-    approval_input: str,
+    interaction_input: str,
     expected_exists: bool,
     expected_error: str | None,
 ) -> None:
@@ -267,7 +267,7 @@ def test_reference_cli_resolves_execution_approval_once(
                 rule_id="test.ask-rm",
                 reason="direct invocation of 'rm' requires Host approval",
             ),
-            stdin=StringIO(approval_input),
+            stdin=StringIO(interaction_input),
             stdout=StringIO(),
             stderr=stderr,
         )
@@ -277,8 +277,8 @@ def test_reference_cli_resolves_execution_approval_once(
     assert proof.exists() is expected_exists
     assert stderr.getvalue() == (
         f"[tool] exec: {command}\n"
-        "[approval] direct invocation of 'rm' requires Host approval\n"
-        f"  command: {command}\n"
+        "[interaction] direct invocation of 'rm' requires Host approval\n"
+        f"command: {command}\n"
         "Allow once? [y/N] \n"
         "[completion] reason=stop\n"
     )

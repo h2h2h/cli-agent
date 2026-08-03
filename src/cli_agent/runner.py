@@ -10,13 +10,13 @@ from cli_agent.config import CliConfig
 from cli_agent.presentation import render_diagnostic, render_event, render_prompt
 from cli_agent.runtime import (
     AgentRuntime,
-    ApprovalResponse,
-    ExecutionApprovalRequest,
     ExecutionPolicy,
     ModelCompletion,
     ModelProvider,
     TextDelta,
+    UserAnswer,
     UserMessage,
+    UserQuestion,
 )
 
 
@@ -38,7 +38,7 @@ async def run_agent(
         repertoire=config.repertoire,
         provider=provider,
         execution_policy=execution_policy,
-        execution_approver=_TerminalExecutionApprover(
+        user_interaction=_TerminalUserInteraction(
             stdin=stdin,
             stderr=stderr,
         ),
@@ -147,24 +147,16 @@ def _turn_exit_code(completed: bool, *, stderr: TextIO) -> int:
     return 0
 
 
-class _TerminalExecutionApprover:
-    """Resolve Runtime ASK evaluations through the Reference CLI streams."""
+class _TerminalUserInteraction:
+    """Resolve Runtime questions through the Reference CLI streams."""
 
     def __init__(self, *, stdin: TextIO, stderr: TextIO) -> None:
         self._stdin = stdin
         self._stderr = stderr
 
-    async def approve(
-        self,
-        request: ExecutionApprovalRequest,
-    ) -> ApprovalResponse:
+    async def ask(self, request: UserQuestion) -> UserAnswer:
         print(
-            f"[approval] {request.reason}",
-            file=self._stderr,
-            flush=True,
-        )
-        print(
-            f"  command: {request.raw_command}",
+            f"[interaction] {request.prompt}",
             file=self._stderr,
             flush=True,
         )
@@ -174,5 +166,5 @@ class _TerminalExecutionApprover:
         if not self._stdin.isatty():
             print(file=self._stderr, flush=True)
         if response.strip().casefold() in {"y", "yes"}:
-            return ApprovalResponse.ALLOW
-        return ApprovalResponse.DENY
+            return UserAnswer(value="allow_once")
+        return UserAnswer(value="deny")

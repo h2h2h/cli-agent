@@ -10,11 +10,8 @@ from typing import Any
 
 from cli_agent.runtime._agent_loop import AgentLoop
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._environment.policy import (
-    ExecutionApprover,
-    ExecutionPolicy,
-    _ExecutionApprovalGate,
-)
+from cli_agent.runtime._environment.interaction import UserInteraction
+from cli_agent.runtime._environment.policy import ExecutionPolicy
 from cli_agent.runtime._resources import (
     _reconcile_runtime_resources,
     _RuntimeResources,
@@ -43,7 +40,7 @@ class AgentRuntime:
         provider: ModelProvider,
         resources: _RuntimeResources,
         policy: ExecutionPolicy | None,
-        approval_gate: _ExecutionApprovalGate | None,
+        user_interaction: UserInteraction,
         parallel_commands: frozenset[str],
         instruction: str | None,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
@@ -51,7 +48,7 @@ class AgentRuntime:
         self._provider = provider
         self._resources = resources
         self._policy = policy
-        self._approval_gate = approval_gate
+        self._user_interaction = user_interaction
         self._parallel_commands = parallel_commands
         self._instruction = instruction
         self._on_diagnostic = on_diagnostic
@@ -64,10 +61,10 @@ class AgentRuntime:
         *,
         workspace: str | Path,
         provider: ModelProvider,
+        user_interaction: UserInteraction,
         repertoire: str | Path | None = None,
         system_instruction: str | None = None,
         execution_policy: ExecutionPolicy | None = None,
-        execution_approver: ExecutionApprover | None = None,
         parallel_commands: frozenset[str] | None = None,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> Coroutine[Any, None, AgentRuntime]:
@@ -84,6 +81,9 @@ class AgentRuntime:
             provider (`ModelProvider`):
                 Model provider used by new Sessions when no per-turn override
                 is supplied to :meth:`run_turn`.
+            user_interaction (`UserInteraction`):
+                Host-owned Runtime-wide question channel; required even when
+                ``execution_policy`` is omitted.
             repertoire (`str | Path | None`):
                 User-maintained capability lower tree; defaults to
                 ``~/.config/cli-agent/repertoire``.
@@ -94,8 +94,6 @@ class AgentRuntime:
                 Optional Host-injected execution Policy. ``None`` fully skips
                 Policy evaluation; no default Policy or implicit decision is
                 constructed.
-            execution_approver (`ExecutionApprover | None`):
-                Resolves ASK evaluations for this Runtime.
             parallel_commands (`frozenset[str] | None`):
                 Executable basenames trusted to run in parallel Shell batches.
             on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
@@ -114,7 +112,7 @@ class AgentRuntime:
             provider=provider,
             instruction=system_instruction,
             policy=execution_policy,
-            approver=execution_approver,
+            user_interaction=user_interaction,
             parallel_commands=frozenset(parallel_commands or ()),
             on_diagnostic=on_diagnostic,
         )
@@ -128,7 +126,7 @@ class AgentRuntime:
         provider: ModelProvider,
         instruction: str | None,
         policy: ExecutionPolicy | None,
-        approver: ExecutionApprover | None,
+        user_interaction: UserInteraction,
         parallel_commands: frozenset[str],
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
     ) -> AgentRuntime:
@@ -139,14 +137,11 @@ class AgentRuntime:
             repertoire=repertoire,
             on_diagnostic=on_diagnostic,
         )
-        approval_gate = (
-            None if approver is None else _ExecutionApprovalGate(approver)
-        )
         return cls(
             provider=provider,
             resources=resources,
             policy=policy,
-            approval_gate=approval_gate,
+            user_interaction=user_interaction,
             parallel_commands=parallel_commands,
             instruction=instruction,
             on_diagnostic=on_diagnostic,
@@ -252,8 +247,8 @@ class AgentRuntime:
             tool_environment=self._resources.tool_environment,
             base_env=self._resources.base_env,
             policy=self._policy,
-            approval_gate=self._approval_gate,
-            approval_session_id=session_id,
+            user_interaction=self._user_interaction,
+            session_id=session_id,
             parallel_commands=self._parallel_commands,
             on_diagnostic=self._on_diagnostic,
         )

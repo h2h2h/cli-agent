@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import httpx
+from interaction_fakes import _ScriptedInteraction
 
 from cli_agent.runtime import (
     AgentRuntime,
@@ -19,6 +20,8 @@ from cli_agent.runtime import (
     ToolCallReady,
     UserMessage,
 )
+
+_user_interaction = _ScriptedInteraction("allow_once")
 
 
 def test_runs_an_openai_compatible_tool_round_trip(
@@ -167,6 +170,7 @@ def test_runs_an_openai_compatible_tool_round_trip(
 
     async def scenario() -> None:
         async with await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
         ) as runtime:

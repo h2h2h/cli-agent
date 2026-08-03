@@ -143,7 +143,7 @@ def test_reports_nonzero_exit_as_terminal_execution(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "command", ("rm proof.txt", '"rm" proof.txt', "/bin/rm proof.txt")
 )
-def test_ask_without_approver_fails_closed_before_execution(
+def test_ask_without_interaction_fails_closed_before_execution(
     tmp_path: Path,
     command: str,
 ) -> None:
@@ -170,7 +170,7 @@ def test_ask_without_approver_fails_closed_before_execution(
         assert _error(result) == {
             "ok": False,
             "code": "policy_denied",
-            "message": "execution requires approval but no approver is configured",
+            "message": "execution requires user interaction but none is configured",
         }
         assert proof.read_text() == "preserved"
 

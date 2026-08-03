@@ -1,10 +1,13 @@
 """Provider-neutral building blocks for the cli-agent Runtime."""
 
 from cli_agent.runtime._capability.command_parser import ShellParseResult
+from cli_agent.runtime._environment.interaction import (
+    UserAnswer,
+    UserInteraction,
+    UserOption,
+    UserQuestion,
+)
 from cli_agent.runtime._environment.policy import (
-    ApprovalResponse,
-    ExecutionApprovalRequest,
-    ExecutionApprover,
     ExecutionPolicy,
     PolicyAction,
     PolicyEvaluation,
@@ -37,11 +40,8 @@ from cli_agent.runtime.runtime import AgentRuntime, RuntimeClosedError
 
 __all__ = (
     "AgentRuntime",
-    "ApprovalResponse",
     "AssistantMessage",
     "ShellParseResult",
-    "ExecutionApprover",
-    "ExecutionApprovalRequest",
     "ExecutionPolicy",
     "JSONValue",
     "ModelCompletion",
@@ -64,5 +64,9 @@ __all__ = (
     "ToolCallReady",
     "ToolResult",
     "ToolResultMessage",
+    "UserAnswer",
+    "UserInteraction",
     "UserMessage",
+    "UserOption",
+    "UserQuestion",
 )

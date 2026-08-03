@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+from interaction_fakes import _ScriptedInteraction
+
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -10,6 +12,9 @@ from cli_agent.runtime import (
     UserMessage,
 )
 from cli_agent.runtime._environment import EnvironmentKernel
+
+_user_interaction = _ScriptedInteraction("allow_once")
+
 
 
 def test_sessions_own_isolated_copies_of_runtime_open_environment(
@@ -30,7 +35,7 @@ def test_sessions_own_isolated_copies_of_runtime_open_environment(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider)
+        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider, user_interaction=_user_interaction)
 
         await _collect_turn(runtime, "session-a", "first a")
         await _collect_turn(runtime, "session-b", "first b")

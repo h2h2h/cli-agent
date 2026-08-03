@@ -2,8 +2,12 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from interaction_fakes import _ScriptedInteraction
 
 from cli_agent.runtime import AgentRuntime, RuntimeDiagnostic, ScriptedModelProvider
+
+_user_interaction = _ScriptedInteraction("allow_once")
+
 
 
 def test_diagnostic_is_frozen() -> None:
@@ -15,6 +19,7 @@ def test_diagnostic_is_frozen() -> None:
 def test_emission_is_silent_without_a_callback(tmp_path: Path) -> None:
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
         )
@@ -29,6 +34,7 @@ def test_callback_receives_structured_diagnostics(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             on_diagnostic=received.append,
@@ -64,6 +70,7 @@ def test_callback_receives_tool_metadata_parse_diagnostic(tmp_path: Path) -> Non
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
