@@ -2,10 +2,10 @@ import asyncio
 import json
 import shlex
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from policy_fakes import _AskExecutablePolicy, _DenyExecutablePolicy
 
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._capability.command_parser import (
@@ -21,7 +21,6 @@ from cli_agent.runtime._environment.commands import (
 from cli_agent.runtime._environment.execution_state import _ExecutionState
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.policy import (
-    ExecutablePolicy,
     PolicyAction,
     PolicyEvaluation,
 )
@@ -144,14 +143,21 @@ def test_reports_nonzero_exit_as_terminal_execution(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "command", ("rm proof.txt", '"rm" proof.txt', "/bin/rm proof.txt")
 )
-def test_asks_for_recognized_direct_rm_before_execution(
+def test_ask_without_approver_fails_closed_before_execution(
     tmp_path: Path,
     command: str,
 ) -> None:
     async def scenario() -> None:
         proof = tmp_path / "proof.txt"
         proof.write_text("preserved")
-        binding = EnvironmentKernel(tmp_path)
+        binding = EnvironmentKernel(
+            tmp_path,
+            policy=_AskExecutablePolicy(
+                frozenset({"rm"}),
+                rule_id="test.ask-rm",
+                reason="rm requires Host approval",
+            ),
+        )
 
         result = await binding.dispatch(
             ToolCall(
@@ -177,13 +183,21 @@ def test_policy_failure_fails_closed_without_starting_command(tmp_path: Path) ->
             self,
             command: ShellParseResult,
         ) -> object:
-            raise RuntimeError(command.raw_command)
+            if "proof" in command.raw_command:
+                raise RuntimeError(command.raw_command)
+            return PolicyEvaluation(
+                action=PolicyAction.ALLOW,
+                rule_id="test.allow",
+            )
+
+    diagnostics: list[object] = []
 
     async def scenario() -> None:
         proof = tmp_path / "proof.txt"
         binding = EnvironmentKernel(
             tmp_path,
-            policy=FailingPolicy(),
+            policy=FailingPolicy(),  # type: ignore[arg-type]
+            on_diagnostic=diagnostics.append,
         )
 
         result = await binding.dispatch(
@@ -200,38 +214,49 @@ def test_policy_failure_fails_closed_without_starting_command(tmp_path: Path) ->
 
         assert _error(result) == {
             "ok": False,
-            "code": "internal",
+            "code": "policy_denied",
             "message": "execution policy failed closed",
         }
         assert not proof.exists()
 
+        still_usable = await binding.dispatch(
+            ToolCall(
+                call_id="policy_failure_session_usable",
+                name="exec",
+                arguments={"command": _python_command("pass")},
+            )
+        )
+        assert _output(still_usable)["status"] == "exited"
+
     asyncio.run(scenario())
 
+    assert [d.kind for d in diagnostics] == ["execution_policy.failed"]
+    assert "RuntimeError" in diagnostics[0].detail["exception"]
 
-def test_policy_cannot_replace_the_parsed_command(tmp_path: Path) -> None:
-    class RewritingPolicy:
+
+def test_policy_invalid_evaluation_fails_closed_with_diagnostic(
+    tmp_path: Path,
+) -> None:
+    class InvalidPolicy:
         async def evaluate(
             self,
             command: ShellParseResult,
-        ) -> PolicyEvaluation:
-            return PolicyEvaluation.allow(
-                replace(
-                    command,
-                    raw_command=_python_command(
-                        f"from pathlib import Path; Path({str(proof)!r}).touch()"
-                    ),
-                )
-            )
+        ) -> object:
+            del command
+            return "not an evaluation"
+
+    diagnostics: list[object] = []
 
     async def scenario() -> None:
         binding = EnvironmentKernel(
             tmp_path,
-            policy=RewritingPolicy(),
+            policy=InvalidPolicy(),  # type: ignore[arg-type]
+            on_diagnostic=diagnostics.append,
         )
 
         result = await binding.dispatch(
             ToolCall(
-                call_id="rewritten_policy",
+                call_id="invalid_policy",
                 name="exec",
                 arguments={"command": "pwd"},
             )
@@ -239,25 +264,150 @@ def test_policy_cannot_replace_the_parsed_command(tmp_path: Path) -> None:
 
         assert _error(result) == {
             "ok": False,
-            "code": "internal",
+            "code": "policy_denied",
             "message": "execution policy failed closed",
         }
-        assert not proof.exists()
+        assert binding._executions == {}
 
-    proof = tmp_path / "proof.txt"
     asyncio.run(scenario())
 
+    assert [d.kind for d in diagnostics] == ["execution_policy.invalid_evaluation"]
 
-def test_direct_guard_documents_wrapper_noncoverage(tmp_path: Path) -> None:
+
+def test_policy_denial_reports_the_policy_reason(tmp_path: Path) -> None:
     async def scenario() -> None:
-        policy = ExecutablePolicy()
-        command = parse_shell_ast("env rm proof.txt")
+        binding = EnvironmentKernel(
+            tmp_path,
+            policy=_DenyExecutablePolicy(
+                frozenset({"rm"}),
+                reason="direct invocation of 'rm' is denied by policy",
+            ),
+        )
 
-        evaluation = await policy.evaluate(command)
+        result = await binding.dispatch(
+            ToolCall(
+                call_id="denied_rm_policy",
+                name="exec",
+                arguments={"command": "rm proof.txt"},
+            )
+        )
 
-        assert evaluation.action is PolicyAction.ALLOW
+        assert _error(result) == {
+            "ok": False,
+            "code": "policy_denied",
+            "message": "direct invocation of 'rm' is denied by policy",
+        }
+        assert binding._executions == {}
 
     asyncio.run(scenario())
+
+
+def test_one_policy_hook_evaluates_custom_and_shell_fallback(
+    tmp_path: Path,
+) -> None:
+    class CountingPolicy:
+        def __init__(self) -> None:
+            self.evaluated: list[str] = []
+
+        async def evaluate(
+            self,
+            command: ShellParseResult,
+        ) -> PolicyEvaluation:
+            self.evaluated.append(command.raw_command)
+            return PolicyEvaluation(
+                action=PolicyAction.ALLOW,
+                rule_id="test.allow",
+            )
+
+    async def scenario() -> None:
+        policy = CountingPolicy()
+        binding = EnvironmentKernel(tmp_path, policy=policy)
+        try:
+            exported = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="exec_export",
+                        name="exec",
+                        arguments={"command": "export HOOK=value"},
+                    )
+                )
+            )
+            shell = _output(
+                await binding.dispatch(
+                    ToolCall(
+                        call_id="exec_shell",
+                        name="exec",
+                        arguments={"command": "pwd"},
+                    )
+                )
+            )
+
+            assert exported["status"] == "exited"
+            assert shell["status"] == "exited"
+            assert policy.evaluated == ["export HOOK=value", "pwd"]
+        finally:
+            await binding.close()
+
+    asyncio.run(scenario())
+
+
+def test_policy_none_skips_evaluation_entirely(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        binding = EnvironmentKernel(tmp_path)
+
+        result = await binding.dispatch(
+            ToolCall(
+                call_id="no_policy_rm",
+                name="exec",
+                arguments={"command": "touch proof.txt"},
+            )
+        )
+
+        assert result.error is None
+        assert _output(result)["status"] == "exited"
+        assert (tmp_path / "proof.txt").exists()
+
+    asyncio.run(scenario())
+
+
+def test_policy_evaluation_carries_no_parsed_command(tmp_path: Path) -> None:
+    evaluated: list[str] = []
+
+    class RecordingPolicy:
+        async def evaluate(
+            self,
+            command: ShellParseResult,
+        ) -> PolicyEvaluation:
+            evaluated.append(command.raw_command)
+            return PolicyEvaluation(
+                action=PolicyAction.ALLOW,
+                rule_id="test.allow",
+            )
+
+    async def scenario() -> None:
+        binding = EnvironmentKernel(
+            tmp_path,
+            policy=RecordingPolicy(),
+        )
+
+        result = await binding.dispatch(
+            ToolCall(
+                call_id="policy_executes_original",
+                name="exec",
+                arguments={"command": "pwd"},
+            )
+        )
+
+        assert _output(result)["status"] == "exited"
+
+    asyncio.run(scenario())
+
+    assert tuple(PolicyEvaluation.__dataclass_fields__) == (
+        "action",
+        "rule_id",
+        "reason",
+    )
+    assert evaluated == ["pwd"]
 
 
 def test_wait_timeout_returns_running_execution_and_incremental_output(
@@ -684,9 +834,9 @@ def test_policy_denial_bypasses_saturated_queue_and_new_session_is_fresh(
         kernel = EnvironmentKernel(
             tmp_path,
             queue_limit=1,
-            policy=ExecutablePolicy(
-                denied_executables=frozenset({"rm"}),
-                asked_executables=frozenset(),
+            policy=_DenyExecutablePolicy(
+                frozenset({"rm"}),
+                reason="direct invocation of 'rm' is denied by policy",
             ),
         )
         fresh_kernel: EnvironmentKernel | None = None

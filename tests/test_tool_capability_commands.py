@@ -5,10 +5,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from policy_fakes import _AllowAllPolicy, _DenyExecutablePolicy
 
 import cli_agent.runtime._capability.tools.environment as tool_environment_module
 from cli_agent.runtime import (
-    ExecutablePolicy,
+    PolicyAction,
     RuntimeDiagnostic,
     ToolCall,
     ToolResult,
@@ -183,7 +184,9 @@ def test_system_message_tools_section_omitted_without_catalog(
     assert "No Tools are currently discovered." not in body
 
 
-def test_default_policy_allows_every_reserved_tool_form(tmp_path: Path) -> None:
+def test_every_reserved_tool_form_evaluates_through_the_same_policy_hook(
+    tmp_path: Path,
+) -> None:
     repertoire = _repertoire(tmp_path)
     (repertoire / "tools" / "echo.py").write_text("def value():\n    return 'ok'\n")
     _prepare_workspace(tmp_path)
@@ -191,7 +194,7 @@ def test_default_policy_allows_every_reserved_tool_form(tmp_path: Path) -> None:
     catalog = _ToolCatalog.reconcile(view)
 
     async def scenario() -> None:
-        policy = ExecutablePolicy()
+        policy = _AllowAllPolicy()
         commands = (
             "tools list",
             "tools info echo",
@@ -206,8 +209,8 @@ def test_default_policy_allows_every_reserved_tool_form(tmp_path: Path) -> None:
             assert isinstance(facts, ToolCommand)
             assert facts.operation == operation
             evaluation = await policy.evaluate(command)
-            assert evaluation.action.value == "allow"
-            assert evaluation.rule_id == "default.allow"
+            assert evaluation.action is PolicyAction.ALLOW
+            assert evaluation.rule_id == "test.allow"
 
     asyncio.run(scenario())
 
@@ -248,17 +251,19 @@ def test_reserved_tool_grammar_cannot_fall_through_to_shell(
         assert facts.operation == operation
 
 
-def test_host_can_override_default_tool_allow_by_executable_name(
+def test_host_can_deny_tool_executable_through_the_policy_hook(
     tmp_path: Path,
 ) -> None:
     command = parse_shell_ast("tools list")
+    policy = _DenyExecutablePolicy(
+        frozenset({"tools"}),
+        reason="tools is denied by policy",
+    )
 
     async def scenario() -> None:
-        evaluation = await ExecutablePolicy(
-            denied_executables=frozenset({"tools"}),
-        ).evaluate(command)
-        assert evaluation.action.value == "deny"
-        assert evaluation.rule_id == "shell.deny-executable.tools"
+        evaluation = await policy.evaluate(command)
+        assert evaluation.action is PolicyAction.DENY
+        assert evaluation.rule_id == "test.deny-executable"
 
     asyncio.run(scenario())
 
@@ -456,7 +461,10 @@ def test_tool_grammar_facts_stay_out_of_policy(
 
         async def evaluate(self, command):
             self.commands.append(command)
-            return PolicyEvaluation.allow(command)
+            return PolicyEvaluation(
+                action=PolicyAction.ALLOW,
+                rule_id="test.allow",
+            )
 
     async def scenario() -> None:
         policy = RecordingPolicy()

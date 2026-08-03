@@ -5,6 +5,7 @@ from io import StringIO
 from pathlib import Path
 
 import pytest
+from policy_fakes import _AskExecutablePolicy
 
 from cli_agent.config import CliConfig
 from cli_agent.presentation import render_diagnostic, render_event
@@ -261,6 +262,11 @@ def test_reference_cli_resolves_execution_approval_once(
         run_agent(
             _config(tmp_path),
             provider,
+            execution_policy=_AskExecutablePolicy(
+                frozenset({"rm"}),
+                rule_id="test.ask-rm",
+                reason="direct invocation of 'rm' requires Host approval",
+            ),
             stdin=StringIO(approval_input),
             stdout=StringIO(),
             stderr=stderr,

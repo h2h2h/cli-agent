@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
 
-from cli_agent.runtime._capability.command_parser import parse_shell_ast
+from cli_agent.runtime._capability.command_parser import (
+    ShellParseResult,
+    parse_shell_ast,
+)
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.view import _CapabilityView
@@ -22,7 +25,6 @@ from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.handlers.tools import _ToolHandler
 from cli_agent.runtime._environment.policy import (
     ApprovalResponse,
-    ExecutablePolicy,
     ExecutionPolicy,
     PolicyAction,
     PolicyEvaluation,
@@ -41,6 +43,7 @@ from cli_agent.runtime._environment.scheduler import (
     _DEFAULT_QUEUE_LIMIT,
 )
 from cli_agent.runtime._environment.supervisor import _ExecutionSupervisor
+from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import ToolCall, ToolResult
 
 
@@ -64,11 +67,13 @@ class EnvironmentKernel:
         capability_view: _CapabilityView | None = None,
         tool_catalog: _ToolCatalog | None = None,
         tool_environment: _ToolEnvironment | None = None,
+        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> None:
         self._workspace = Path(workspace).resolve()
-        self._policy = ExecutablePolicy() if policy is None else policy
+        self._policy = policy
         self._approval_gate = approval_gate
         self._approval_session_id = approval_session_id
+        self._on_diagnostic = on_diagnostic
         tool_handler = _ToolHandler(tool_catalog, tool_environment)
         tool_command = _CustomCommand(
             name="tools",
@@ -184,31 +189,17 @@ class EnvironmentKernel:
                 code="internal",
                 message="execution route is not supported",
             )
-        try:
-            evaluation = await self._policy.evaluate(command)
-        except Exception:
-            return _protocol_error(
+        if self._policy is not None:
+            evaluation = await self._evaluate(command, call.call_id)
+            if isinstance(evaluation, ToolResult):
+                return evaluation
+            authorization = await self._authorize(
                 call.call_id,
-                code="internal",
-                message="execution policy failed closed",
+                evaluation,
+                command,
             )
-        if (
-            not isinstance(evaluation, PolicyEvaluation)
-            or evaluation.parse_result != command
-        ):
-            return _protocol_error(
-                call.call_id,
-                code="internal",
-                message="execution policy failed closed",
-            )
-        # evaluation is one of `allow`, `deny`, or `ask`
-        # if `ask`, the approver_gate will be used in _authorize
-        authorization = await self._authorize(
-            call.call_id,
-            evaluation,
-        )
-        if isinstance(authorization, ToolResult):
-            return authorization
+            if isinstance(authorization, ToolResult):
+                return authorization
         if self._closed:
             return _protocol_error(
                 call.call_id,
@@ -272,10 +263,45 @@ class EnvironmentKernel:
             ),
         )
 
+    async def _evaluate(
+        self,
+        command: ShellParseResult,
+        call_id: str,
+    ) -> PolicyEvaluation | ToolResult:
+        policy = self._policy
+        if policy is None:
+            raise RuntimeError("policy evaluation requires a configured policy")
+        try:
+            evaluation = await policy.evaluate(command)
+        except Exception as exc:
+            self._emit_diagnostic(
+                "execution_policy.failed",
+                "execution policy raised an exception",
+                detail={"exception": repr(exc)},
+            )
+            return _protocol_error(
+                call_id,
+                code="policy_denied",
+                message="execution policy failed closed",
+            )
+        if not _is_valid_evaluation(evaluation):
+            self._emit_diagnostic(
+                "execution_policy.invalid_evaluation",
+                "execution policy returned an invalid evaluation",
+                detail={"evaluation": repr(evaluation)},
+            )
+            return _protocol_error(
+                call_id,
+                code="policy_denied",
+                message="execution policy failed closed",
+            )
+        return evaluation
+
     async def _authorize(
         self,
         call_id: str,
         evaluation: PolicyEvaluation,
+        command: ShellParseResult,
     ) -> bool | ToolResult:
         if evaluation.action is PolicyAction.DENY:
             return _protocol_error(
@@ -297,6 +323,7 @@ class EnvironmentKernel:
         task = asyncio.create_task(
             gate.request(
                 evaluation,
+                command,
                 session_id=self._approval_session_id,
             )
         )
@@ -377,3 +404,31 @@ class EnvironmentKernel:
 
     def _set_cwd(self, cwd: Path) -> None:
         self._cwd = cwd
+
+    def _emit_diagnostic(
+        self,
+        kind: str,
+        message: str,
+        *,
+        detail: Mapping[str, object] | None = None,
+    ) -> None:
+        """Emit one structured Host notice when a callback is configured."""
+
+        if self._on_diagnostic is None:
+            return
+        self._on_diagnostic(
+            RuntimeDiagnostic(
+                kind=kind,
+                message=message,
+                detail=detail or {},
+            )
+        )
+
+
+def _is_valid_evaluation(evaluation: object) -> bool:
+    """Return whether one Policy result is structurally valid."""
+
+    return (
+        isinstance(evaluation, PolicyEvaluation)
+        and evaluation.action in PolicyAction
+    )

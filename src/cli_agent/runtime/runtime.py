@@ -11,7 +11,6 @@ from typing import Any
 from cli_agent.runtime._agent_loop import AgentLoop
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.policy import (
-    ExecutablePolicy,
     ExecutionApprover,
     ExecutionPolicy,
     _ExecutionApprovalGate,
@@ -43,7 +42,7 @@ class AgentRuntime:
         *,
         provider: ModelProvider,
         resources: _RuntimeResources,
-        policy: ExecutionPolicy,
+        policy: ExecutionPolicy | None,
         approval_gate: _ExecutionApprovalGate | None,
         parallel_commands: frozenset[str],
         instruction: str | None,
@@ -92,7 +91,9 @@ class AgentRuntime:
                 Optional Host instruction appended to the canonical per-Session
                 system message.
             execution_policy (`ExecutionPolicy | None`):
-                Replaces the default executable Policy.
+                Optional Host-injected execution Policy. ``None`` fully skips
+                Policy evaluation; no default Policy or implicit decision is
+                constructed.
             execution_approver (`ExecutionApprover | None`):
                 Resolves ASK evaluations for this Runtime.
             parallel_commands (`frozenset[str] | None`):
@@ -138,14 +139,13 @@ class AgentRuntime:
             repertoire=repertoire,
             on_diagnostic=on_diagnostic,
         )
-        effective_policy = ExecutablePolicy() if policy is None else policy
         approval_gate = (
             None if approver is None else _ExecutionApprovalGate(approver)
         )
         return cls(
             provider=provider,
             resources=resources,
-            policy=effective_policy,
+            policy=policy,
             approval_gate=approval_gate,
             parallel_commands=parallel_commands,
             instruction=instruction,
@@ -255,6 +255,7 @@ class AgentRuntime:
             approval_gate=self._approval_gate,
             approval_session_id=session_id,
             parallel_commands=self._parallel_commands,
+            on_diagnostic=self._on_diagnostic,
         )
 
     def _emit_diagnostic(

@@ -295,7 +295,6 @@ def test_skill_is_discoverable_and_loaded_on_demand(
         "ApprovalResponse",
         "AssistantMessage",
         "ShellParseResult",
-        "ExecutablePolicy",
         "ExecutionApprover",
         "ExecutionApprovalRequest",
         "ExecutionPolicy",

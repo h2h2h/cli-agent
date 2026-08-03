@@ -35,7 +35,6 @@ def test_exposes_host_execution_policy_contracts() -> None:
         "ShellParseResult",
         "PolicyAction",
         "PolicyEvaluation",
-        "ExecutablePolicy",
         "ExecutionPolicy",
         "ExecutionApprovalRequest",
         "ApprovalResponse",

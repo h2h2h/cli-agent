@@ -4,6 +4,7 @@ import shlex
 from pathlib import Path
 
 import pytest
+from policy_fakes import _AskForWritesPolicy
 
 from cli_agent.runtime import (
     ApprovalResponse,
@@ -103,6 +104,7 @@ def test_approved_output_redirection_copies_up_before_shell_spawn(
         kernel = EnvironmentKernel(
             workspace,
             capability_view=view,
+            policy=_AskForWritesPolicy(),
             approval_gate=_ExecutionApprovalGate(approver),
         )
         try:
@@ -136,6 +138,7 @@ def test_denied_modification_does_not_copy_up(tmp_path: Path) -> None:
         kernel = EnvironmentKernel(
             workspace,
             capability_view=view,
+            policy=_AskForWritesPolicy(),
             approval_gate=_ExecutionApprovalGate(
                 _RecordingApprover(ApprovalResponse.DENY)
             ),
@@ -270,11 +273,13 @@ def test_copy_up_is_atomic_across_concurrent_sessions(tmp_path: Path) -> None:
         first = EnvironmentKernel(
             workspace,
             capability_view=view,
+            policy=_AskForWritesPolicy(),
             approval_gate=gate,
         )
         second = EnvironmentKernel(
             workspace,
             capability_view=view,
+            policy=_AskForWritesPolicy(),
             approval_gate=gate,
         )
         try:
@@ -346,6 +351,7 @@ def test_copy_up_rejects_symbolic_link_directory_traversal(
         kernel = EnvironmentKernel(
             workspace,
             capability_view=view,
+            policy=_AskForWritesPolicy(),
             approval_gate=_ExecutionApprovalGate(
                 _RecordingApprover(ApprovalResponse.ALLOW)
             ),
@@ -428,6 +434,7 @@ def _run_approved(
         kernel = EnvironmentKernel(
             workspace,
             capability_view=view,
+            policy=_AskForWritesPolicy(),
             approval_gate=_ExecutionApprovalGate(
                 _RecordingApprover(ApprovalResponse.ALLOW)
             ),

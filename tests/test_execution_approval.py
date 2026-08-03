@@ -4,156 +4,17 @@ import sys
 from pathlib import Path
 
 import pytest
+from policy_fakes import _AskExecutablePolicy
 
 from cli_agent.runtime import (
     ApprovalResponse,
-    ExecutablePolicy,
     ExecutionApprovalRequest,
-    PolicyAction,
     ToolCall,
     ToolResult,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.policy import _ExecutionApprovalGate
-
-
-def test_executable_policy_evaluates_disjoint_sets_and_default() -> None:
-    async def scenario() -> None:
-        policy = ExecutablePolicy(
-            allowed_executables=frozenset({"cat"}),
-            denied_executables=frozenset({"rm"}),
-            asked_executables=frozenset({"mv"}),
-            default_action=PolicyAction.ASK,
-        )
-
-        allowed = await policy.evaluate(parse_shell_ast("cat file.txt"))
-        denied = await policy.evaluate(parse_shell_ast("rm file.txt"))
-        asked = await policy.evaluate(parse_shell_ast("mv old new"))
-        defaulted = await policy.evaluate(parse_shell_ast("python task.py"))
-
-        assert allowed.action is PolicyAction.ALLOW
-        assert allowed.reason is None
-        assert denied.action is PolicyAction.DENY
-        assert denied.reason == "direct invocation of 'rm' is denied by policy"
-        assert asked.action is PolicyAction.ASK
-        assert asked.reason == "direct invocation of 'mv' requires Host approval"
-        assert defaulted.action is PolicyAction.ASK
-        assert defaulted.rule_id == "default.ask"
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize(
-    "command",
-    (
-        "chmod 600 file.txt",
-        "chown user file.txt",
-        "cp source target",
-        "dd if=source of=target",
-        "install source target",
-        "ln source target",
-        "mkdir output",
-        "mv source target",
-        "patch file.diff",
-        "rm file.txt",
-        "rmdir output",
-        "tee output.txt",
-        "touch file.txt",
-        "truncate -s 0 file.txt",
-        "unlink file.txt",
-    ),
-)
-def test_default_policy_asks_for_direct_filesystem_mutators(
-    command: str,
-) -> None:
-    async def scenario() -> None:
-        evaluation = await ExecutablePolicy().evaluate(parse_shell_ast(command))
-
-        assert evaluation.action is PolicyAction.ASK
-        assert evaluation.reason is not None
-        assert "requires Host approval" in evaluation.reason
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize(
-    "command",
-    (
-        "cat file.txt",
-        "git status",
-        "python task.py",
-        "rg pattern",
-        "sed -n 1p file.txt",
-        "sh script.sh",
-    ),
-)
-def test_default_policy_allows_unclassified_direct_executables(
-    command: str,
-) -> None:
-    async def scenario() -> None:
-        evaluation = await ExecutablePolicy().evaluate(parse_shell_ast(command))
-
-        assert evaluation.action is PolicyAction.ALLOW
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize(
-    "command",
-    (
-        "echo value > file.txt",
-        "echo value >>file.txt",
-        "printf value 2> errors.txt",
-        "cat <> state.txt",
-        "sed -i 's/old/new/' file.txt",
-    ),
-)
-def test_default_policy_asks_for_explicit_writes(command: str) -> None:
-    async def scenario() -> None:
-        evaluation = await ExecutablePolicy().evaluate(parse_shell_ast(command))
-
-        assert evaluation.action is PolicyAction.ASK
-        assert evaluation.reason is not None
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize(
-    "command",
-    (
-        "cat < file.txt",
-        "echo value 2>&1",
-        "sed -n 1p file.txt",
-    ),
-)
-def test_default_policy_does_not_treat_read_or_fd_redirection_as_file_write(
-    command: str,
-) -> None:
-    async def scenario() -> None:
-        evaluation = await ExecutablePolicy().evaluate(parse_shell_ast(command))
-
-        assert evaluation.action is PolicyAction.ALLOW
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    (
-        {
-            "allowed_executables": frozenset({"same"}),
-            "denied_executables": frozenset({"same"}),
-        },
-        {"asked_executables": frozenset({"/bin/rm"})},
-        {"default_action": "allow"},
-    ),
-)
-def test_executable_policy_rejects_ambiguous_configuration(
-    kwargs: dict[str, object],
-) -> None:
-    with pytest.raises(ValueError):
-        ExecutablePolicy(**kwargs)  # type: ignore[arg-type]
 
 
 def test_host_approval_allows_one_exact_command(tmp_path: Path) -> None:
@@ -457,9 +318,11 @@ class _BlockingApprover:
         return ApprovalResponse.ALLOW
 
 
-def _ask_for_python_policy() -> ExecutablePolicy:
-    return ExecutablePolicy(
-        asked_executables=frozenset({Path(sys.executable).name}),
+def _ask_for_python_policy() -> _AskExecutablePolicy:
+    return _AskExecutablePolicy(
+        frozenset({Path(sys.executable).name}),
+        rule_id="shell.ask-executable.python",
+        reason="direct invocation of python requires Host approval",
     )
 
 

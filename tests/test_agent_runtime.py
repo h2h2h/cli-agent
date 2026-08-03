@@ -3,15 +3,16 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+from policy_fakes import _DenyExecutablePolicy
 
 import cli_agent.runtime.runtime as runtime_module
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
-    ExecutablePolicy,
     ModelCompletion,
     ModelEvent,
     ModelProvider,
+    PolicyAction,
     PolicyEvaluation,
     RuntimeClosedError,
     ScriptedModelProvider,
@@ -115,8 +116,9 @@ def test_host_configures_runtime_lifetime_executable_deny_set(
         async with await AgentRuntime.open(
             workspace=tmp_path,
             provider=provider,
-            execution_policy=ExecutablePolicy(
-                denied_executables=frozenset({"echo"}),
+            execution_policy=_DenyExecutablePolicy(
+                frozenset({"echo"}),
+                reason="direct invocation of 'echo' is denied by policy",
             ),
         ) as runtime:
             await _collect_turn(runtime, "session", UserMessage.text("Run echo"))
@@ -589,7 +591,11 @@ def test_host_owned_dependencies_stay_outside_the_aggregate(
             self.closed = False
 
         async def evaluate(self, command: object) -> PolicyEvaluation:
-            return PolicyEvaluation.allow(command)
+            del command
+            return PolicyEvaluation(
+                action=PolicyAction.ALLOW,
+                rule_id="test.allow",
+            )
 
         def close(self) -> None:
             self.closed = True
@@ -650,6 +656,7 @@ class _TrackingEnvironmentKernel:
         approval_gate: object,
         approval_session_id: str,
         parallel_commands: frozenset[str],
+        on_diagnostic: object | None,
     ) -> None:
         self.workspace = Path(workspace)
         self.base_env = dict(base_env or {})
@@ -660,6 +667,7 @@ class _TrackingEnvironmentKernel:
         self.approval_gate = approval_gate
         self.approval_session_id = approval_session_id
         self.parallel_commands = parallel_commands
+        self.on_diagnostic = on_diagnostic
         self.close_count = 0
         self.events: list[str] = []
         self.instances.append(self)

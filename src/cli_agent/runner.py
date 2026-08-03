@@ -12,6 +12,7 @@ from cli_agent.runtime import (
     AgentRuntime,
     ApprovalResponse,
     ExecutionApprovalRequest,
+    ExecutionPolicy,
     ModelCompletion,
     ModelProvider,
     TextDelta,
@@ -23,6 +24,7 @@ async def run_agent(
     config: CliConfig,
     provider: ModelProvider,
     *,
+    execution_policy: ExecutionPolicy | None = None,
     stdin: TextIO,
     stdout: TextIO,
     stderr: TextIO,
@@ -35,6 +37,7 @@ async def run_agent(
         workspace=config.workspace,
         repertoire=config.repertoire,
         provider=provider,
+        execution_policy=execution_policy,
         execution_approver=_TerminalExecutionApprover(
             stdin=stdin,
             stderr=stderr,
