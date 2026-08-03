@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from cli_agent.runtime._capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
@@ -15,7 +15,7 @@ from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 
 
 def _prepare_cd(
-    command: CommandParseResult,
+    command: ShellParseResult,
     context: _CommandContext,
 ) -> _InlineExecution:
     """Prepare a cwd mutation without applying it before execution starts."""

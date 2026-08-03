@@ -16,9 +16,10 @@ from typing import AsyncIterator, Literal
 
 from cli_agent.runtime._capability.command_parser import (
     _DIRECT_MUTATORS,
-    CommandParseResult,
+    ShellParseResult,
     _sed_is_in_place,
-    _shell_output_redirection_targets,
+    _strip_quotes,
+    collect_redirects,
 )
 from cli_agent.runtime._capability.workspace import _ensure_real_directory
 
@@ -64,9 +65,7 @@ class _CapabilityView:
 
         repertoire_root = _prepare_repertoire(repertoire)
         if _paths_overlap(workspace / ".workspace", repertoire_root):
-            raise ValueError(
-                "repertoire must be outside the Workspace state directory"
-            )
+            raise ValueError("repertoire must be outside the Workspace state directory")
 
         view = cls(workspace, repertoire_root)
         view._prepare_layout()
@@ -76,7 +75,7 @@ class _CapabilityView:
     @asynccontextmanager
     async def prepare_shell(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
         cwd: Path,
         *,
         cancelled: Callable[[], bool],
@@ -142,9 +141,7 @@ class _CapabilityView:
         return _CapabilityInspection(
             relative_path=relative.as_posix(),
             provenance=provenance,
-            shadows_repertoire=(
-                provenance == "workspace" and _lexists(lower_path)
-            ),
+            shadows_repertoire=(provenance == "workspace" and _lexists(lower_path)),
             valid=valid,
             validation_error=validation_error,
         )
@@ -197,7 +194,9 @@ class _CapabilityView:
         lower_directory: Path,
         relative_directory: Path,
     ) -> None:
-        for lower_entry in sorted(lower_directory.iterdir(), key=lambda path: path.name):
+        for lower_entry in sorted(
+            lower_directory.iterdir(), key=lambda path: path.name
+        ):
             mode = lower_entry.lstat().st_mode
             if stat.S_ISLNK(mode):
                 raise ValueError(
@@ -259,12 +258,14 @@ class _CapabilityView:
 
     def _write_paths(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
         cwd: Path,
     ) -> tuple[Path, ...]:
-        targets = list(
-            _shell_output_redirection_targets(command.raw_command)
-        )
+        targets = [
+            _strip_quotes(redirect.target.text)
+            for redirect in collect_redirects(command.root)
+            if redirect.is_output and redirect.target is not None
+        ]
         executable = command.executable_basename
         operands = _operands(command.tokens[1:])
 
@@ -289,7 +290,7 @@ class _CapabilityView:
 
     def _delete_paths(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
         cwd: Path,
     ) -> tuple[Path, ...]:
         executable = command.executable_basename
@@ -310,9 +311,7 @@ class _CapabilityView:
             if not target or target == "-":
                 continue
             if any(character in target for character in "*?[{~$`"):
-                return tuple(
-                    self.root / name for name in _CAPABILITY_DIRECTORIES
-                )
+                return tuple(self.root / name for name in _CAPABILITY_DIRECTORIES)
             candidate = Path(target)
             if not candidate.is_absolute():
                 candidate = cwd / candidate
@@ -363,9 +362,7 @@ class _CapabilityView:
                 if lower is None or not lower.is_file():
                     continue
                 if _is_exact_lower_link(candidate, lower):
-                    snapshots.append(
-                        _DeleteSnapshot(candidate, lower, lower_link=True)
-                    )
+                    snapshots.append(_DeleteSnapshot(candidate, lower, lower_link=True))
                 elif _lexists(candidate) and not candidate.is_dir():
                     snapshots.append(
                         _DeleteSnapshot(candidate, lower, lower_link=False)
@@ -395,8 +392,7 @@ class _CapabilityView:
 
     def _is_in_view(self, path: Path) -> bool:
         return any(
-            _is_relative_to(path, self.root / name)
-            for name in _CAPABILITY_DIRECTORIES
+            _is_relative_to(path, self.root / name) for name in _CAPABILITY_DIRECTORIES
         )
 
     def _lower_for_view_path(self, path: Path) -> Path | None:
@@ -503,13 +499,12 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     return True
 
 
-def _may_mutate(command: CommandParseResult) -> bool:
+def _may_mutate(command: ShellParseResult) -> bool:
     return (
         command.contains_output_redirection
         or command.executable_basename in _DIRECT_MUTATORS
         and (
-            command.executable_basename != "sed"
-            or _sed_is_in_place(command.tokens[1:])
+            command.executable_basename != "sed" or _sed_is_in_place(command.tokens[1:])
         )
     )
 

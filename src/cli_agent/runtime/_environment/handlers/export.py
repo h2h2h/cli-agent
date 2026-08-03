@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cli_agent.runtime._capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
@@ -12,7 +12,7 @@ from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 
 
 def _prepare_export(
-    command: CommandParseResult,
+    command: ShellParseResult,
     context: _CommandContext,
 ) -> _InlineExecution:
     """Prepare an environment mutation without applying it before execution."""

@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from cli_agent.runtime import ToolCall, ToolResult
-from cli_agent.runtime._capability.command_parser import parse_shell_command
+from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
@@ -52,17 +52,13 @@ def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> No
         custom_registry=registry,
     )
 
-    export_route = router.route(
-        ExecutionDecision.allow(parse_shell_command("export A=1"))
-    )
+    export_route = router.route(ExecutionDecision.allow(parse_shell_ast("export A=1")))
     read_route = router.route(
-        ExecutionDecision.allow(parse_shell_command("cli_read file.txt"))
+        ExecutionDecision.allow(parse_shell_ast("cli_read file.txt"))
     )
-    cat_route = router.route(
-        ExecutionDecision.allow(parse_shell_command("cat file.txt"))
-    )
+    cat_route = router.route(ExecutionDecision.allow(parse_shell_ast("cat file.txt")))
     pipeline_route = router.route(
-        ExecutionDecision.allow(parse_shell_command("cat file.txt | head"))
+        ExecutionDecision.allow(parse_shell_ast("cat file.txt | head"))
     )
 
     assert isinstance(export_route.command, _CustomCommand)
@@ -137,9 +133,7 @@ def test_parallel_shell_batch_respects_serial_custom_barrier(
                 _wait_for_path(second_started),
             )
 
-            barrier = _output(
-                await _exec(kernel, "export BARRIER=passed", wait_ms=0)
-            )
+            barrier = _output(await _exec(kernel, "export BARRIER=passed", wait_ms=0))
             observer = _output(
                 await _exec(
                     kernel,
@@ -160,12 +154,12 @@ def test_parallel_shell_batch_respects_serial_custom_barrier(
 
             first_release.touch()
             second_release.touch()
-            assert (
-                await _read_until_terminal(kernel, str(barrier["exec_id"]))
-            )["status"] == "exited"
-            assert (
-                await _read_until_terminal(kernel, str(observer["exec_id"]))
-            )["status"] == "exited"
+            assert (await _read_until_terminal(kernel, str(barrier["exec_id"])))[
+                "status"
+            ] == "exited"
+            assert (await _read_until_terminal(kernel, str(observer["exec_id"])))[
+                "status"
+            ] == "exited"
             assert observed.read_text() == "passed"
         finally:
             first_release.touch(exist_ok=True)

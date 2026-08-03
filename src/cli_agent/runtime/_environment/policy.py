@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from cli_agent.runtime._capability.command_parser import (
     _DIRECT_MUTATORS,
-    CommandParseResult,
+    ShellParseResult,
     _sed_is_in_place,
 )
 
@@ -29,14 +29,14 @@ class PolicyEvaluation:
     """An allow, deny, or ask evaluation for one exact parsed command."""
 
     action: PolicyAction
-    parse_result: CommandParseResult
+    parse_result: ShellParseResult
     rule_id: str
     reason: str | None = None
 
     @classmethod
     def allow(
         cls,
-        parse_result: CommandParseResult,
+        parse_result: ShellParseResult,
         *,
         rule_id: str = "default.allow",
     ) -> PolicyEvaluation:
@@ -49,7 +49,7 @@ class PolicyEvaluation:
     @classmethod
     def deny(
         cls,
-        parse_result: CommandParseResult,
+        parse_result: ShellParseResult,
         *,
         rule_id: str,
         reason: str,
@@ -64,7 +64,7 @@ class PolicyEvaluation:
     @classmethod
     def ask(
         cls,
-        parse_result: CommandParseResult,
+        parse_result: ShellParseResult,
         *,
         rule_id: str,
         reason: str,
@@ -81,14 +81,14 @@ class PolicyEvaluation:
 class ExecutionDecision:
     """Final immutable authorization for one exact parsed command."""
 
-    parse_result: CommandParseResult
+    parse_result: ShellParseResult
     rule_id: str
     approval_request_id: str | None = None
 
     @classmethod
     def allow(
         cls,
-        parse_result: CommandParseResult,
+        parse_result: ShellParseResult,
         *,
         rule_id: str = "default.allow",
         approval_request_id: str | None = None,
@@ -105,7 +105,7 @@ class ExecutionPolicy(Protocol):
 
     async def evaluate(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
     ) -> PolicyEvaluation:
         """Evaluate one parsed command without performing its operation."""
 
@@ -131,9 +131,7 @@ class ExecutablePolicy:
         }
         for action, names in configured.items():
             invalid = sorted(
-                name
-                for name in names
-                if not name or Path(name).name != name
+                name for name in names if not name or Path(name).name != name
             )
             if invalid:
                 raise ValueError(
@@ -141,11 +139,9 @@ class ExecutablePolicy:
                 )
 
         overlaps = (
-            configured[PolicyAction.ALLOW] & configured[PolicyAction.DENY]
-        ) | (
-            configured[PolicyAction.ALLOW] & configured[PolicyAction.ASK]
-        ) | (
-            configured[PolicyAction.DENY] & configured[PolicyAction.ASK]
+            (configured[PolicyAction.ALLOW] & configured[PolicyAction.DENY])
+            | (configured[PolicyAction.ALLOW] & configured[PolicyAction.ASK])
+            | (configured[PolicyAction.DENY] & configured[PolicyAction.ASK])
         )
         if overlaps:
             raise ValueError("executable policy sets must be disjoint")
@@ -155,7 +151,7 @@ class ExecutablePolicy:
 
     async def evaluate(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
     ) -> PolicyEvaluation:
         executable = command.executable_basename
         action = self._default_action
@@ -173,11 +169,7 @@ class ExecutablePolicy:
                 rule_id="shell.ask-output-redirection",
                 reason="Shell output redirection requires Host approval",
             )
-        if (
-            not matched
-            and executable == "sed"
-            and _sed_is_in_place(command.tokens[1:])
-        ):
+        if not matched and executable == "sed" and _sed_is_in_place(command.tokens[1:]):
             return PolicyEvaluation.ask(
                 command,
                 rule_id="shell.ask-in-place-edit",
@@ -287,9 +279,7 @@ class _ExecutionApprovalGate:
 
         async with self._lock:
             if self._active >= self._capacity:
-                raise _ApprovalResolutionError(
-                    "execution approval capacity is full"
-                )
+                raise _ApprovalResolutionError("execution approval capacity is full")
             self._active += 1
 
         request = ExecutionApprovalRequest(
@@ -298,9 +288,7 @@ class _ExecutionApprovalGate:
             raw_command=evaluation.parse_result.raw_command,
             tokens=evaluation.parse_result.tokens,
             executable_basename=evaluation.parse_result.executable_basename,
-            tokenization_succeeded=(
-                evaluation.parse_result.tokenization_succeeded
-            ),
+            tokenization_succeeded=(evaluation.parse_result.tokenization_succeeded),
             contains_shell_composition=(
                 evaluation.parse_result.contains_shell_composition
             ),
@@ -315,9 +303,7 @@ class _ExecutionApprovalGate:
                 async with asyncio.timeout(self._timeout_seconds):
                     response = await self._approver.approve(request)
             except TimeoutError as exc:
-                raise _ApprovalResolutionError(
-                    "execution approval timed out"
-                ) from exc
+                raise _ApprovalResolutionError("execution approval timed out") from exc
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

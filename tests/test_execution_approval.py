@@ -13,7 +13,7 @@ from cli_agent.runtime import (
     ToolCall,
     ToolResult,
 )
-from cli_agent.runtime._capability.command_parser import parse_shell_command
+from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.policy import _ExecutionApprovalGate
 
@@ -27,10 +27,10 @@ def test_executable_policy_evaluates_disjoint_sets_and_default() -> None:
             default_action=PolicyAction.ASK,
         )
 
-        allowed = await policy.evaluate(parse_shell_command("cat file.txt"))
-        denied = await policy.evaluate(parse_shell_command("rm file.txt"))
-        asked = await policy.evaluate(parse_shell_command("mv old new"))
-        defaulted = await policy.evaluate(parse_shell_command("python task.py"))
+        allowed = await policy.evaluate(parse_shell_ast("cat file.txt"))
+        denied = await policy.evaluate(parse_shell_ast("rm file.txt"))
+        asked = await policy.evaluate(parse_shell_ast("mv old new"))
+        defaulted = await policy.evaluate(parse_shell_ast("python task.py"))
 
         assert allowed.action is PolicyAction.ALLOW
         assert allowed.reason is None
@@ -68,9 +68,7 @@ def test_default_policy_asks_for_direct_filesystem_mutators(
     command: str,
 ) -> None:
     async def scenario() -> None:
-        evaluation = await ExecutablePolicy().evaluate(
-            parse_shell_command(command)
-        )
+        evaluation = await ExecutablePolicy().evaluate(parse_shell_ast(command))
 
         assert evaluation.action is PolicyAction.ASK
         assert evaluation.reason is not None
@@ -94,9 +92,7 @@ def test_default_policy_allows_unclassified_direct_executables(
     command: str,
 ) -> None:
     async def scenario() -> None:
-        evaluation = await ExecutablePolicy().evaluate(
-            parse_shell_command(command)
-        )
+        evaluation = await ExecutablePolicy().evaluate(parse_shell_ast(command))
 
         assert evaluation.action is PolicyAction.ALLOW
 
@@ -115,9 +111,7 @@ def test_default_policy_allows_unclassified_direct_executables(
 )
 def test_default_policy_asks_for_explicit_writes(command: str) -> None:
     async def scenario() -> None:
-        evaluation = await ExecutablePolicy().evaluate(
-            parse_shell_command(command)
-        )
+        evaluation = await ExecutablePolicy().evaluate(parse_shell_ast(command))
 
         assert evaluation.action is PolicyAction.ASK
         assert evaluation.reason is not None
@@ -137,9 +131,7 @@ def test_default_policy_does_not_treat_read_or_fd_redirection_as_file_write(
     command: str,
 ) -> None:
     async def scenario() -> None:
-        evaluation = await ExecutablePolicy().evaluate(
-            parse_shell_command(command)
-        )
+        evaluation = await ExecutablePolicy().evaluate(parse_shell_ast(command))
 
         assert evaluation.action is PolicyAction.ALLOW
 
@@ -169,9 +161,7 @@ def test_host_approval_allows_one_exact_command(tmp_path: Path) -> None:
     policy = _ask_for_python_policy()
     gate = _ExecutionApprovalGate(approver)
     proof = tmp_path / "approved"
-    command = _python_command(
-        f"from pathlib import Path; Path({str(proof)!r}).touch()"
-    )
+    command = _python_command(f"from pathlib import Path; Path({str(proof)!r}).touch()")
 
     async def scenario() -> None:
         kernel = EnvironmentKernel(
@@ -198,7 +188,7 @@ def test_host_approval_allows_one_exact_command(tmp_path: Path) -> None:
             assert state.decision.parse_result.raw_command == command
             assert request.session_id is None
             assert request.raw_command == command
-            assert request.tokens == parse_shell_command(command).tokens
+            assert request.tokens == parse_shell_ast(command).tokens
             assert request.executable_basename == Path(sys.executable).name
             assert request.contains_shell_composition is False
             assert not hasattr(request, "tool")
@@ -261,9 +251,7 @@ def test_approval_callback_failures_create_no_execution(
 ) -> None:
     async def scenario() -> None:
         approver = (
-            _FailingApprover()
-            if approver_kind == "failing"
-            else _InvalidApprover()
+            _FailingApprover() if approver_kind == "failing" else _InvalidApprover()
         )
         kernel = EnvironmentKernel(
             tmp_path,
@@ -477,9 +465,7 @@ def _ask_for_python_policy() -> ExecutablePolicy:
 
 
 def _touch_command(path: Path) -> str:
-    return _python_command(
-        f"from pathlib import Path; Path({str(path)!r}).touch()"
-    )
+    return _python_command(f"from pathlib import Path; Path({str(path)!r}).touch()")
 
 
 def _python_command(source: str) -> str:

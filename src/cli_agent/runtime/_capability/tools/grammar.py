@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import re
 
-from cli_agent.runtime._capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.facts import ToolCommand
 
@@ -17,7 +17,7 @@ _RUN_PREFIX = re.compile(r"\Atools[ \t]+run(?:[ \t]+(?P<argument>.*))?\Z")
 
 
 def parse_tool_command(
-    command: CommandParseResult,
+    command: ShellParseResult,
     catalog: _ToolCatalog,
 ) -> ToolCommand | None:
     """Parse reserved Tools grammar into independent capability facts."""
@@ -27,7 +27,7 @@ def parse_tool_command(
     return _tool_facts(command, catalog)
 
 
-def _tool_facts(command: CommandParseResult, catalog: _ToolCatalog) -> ToolCommand:
+def _tool_facts(command: ShellParseResult, catalog: _ToolCatalog) -> ToolCommand:
     if (
         command.tokenization_succeeded
         and command.tokens == ("tools", "list")
@@ -106,7 +106,7 @@ def _run_facts(code: str, catalog: _ToolCatalog) -> ToolCommand:
     )
 
 
-def _is_reserved_tool_head(command: CommandParseResult) -> bool:
+def _is_reserved_tool_head(command: ShellParseResult) -> bool:
     if command.tokens and command.tokens[0] == "tools":
         return True
     return bool(re.match(r"\A[ \t]*tools(?:[ \t\r\n]|\Z)", command.raw_command))

@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from cli_agent.runtime import ToolCall, ToolResult
-from cli_agent.runtime._capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.execution_state import _ExecutionState
 from cli_agent.runtime._environment.policy import PolicyEvaluation
@@ -28,7 +28,7 @@ class _CountingPolicy:
 
     async def evaluate(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
     ) -> PolicyEvaluation:
         self.calls += 1
         return PolicyEvaluation.allow(command)
@@ -41,7 +41,7 @@ class _BlockingPolicy:
 
     async def evaluate(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
     ) -> PolicyEvaluation:
         self.entered.set()
         await self.release.wait()
@@ -303,12 +303,10 @@ def test_sessions_run_shell_work_concurrently_without_cross_session_hol(
             assert not a_promoted.exists() and not b_promoted.exists()
 
             assert [
-                state.submission_sequence
-                for state in binding_a._executions.values()
+                state.submission_sequence for state in binding_a._executions.values()
             ] == [0, 1]
             assert [
-                state.submission_sequence
-                for state in binding_b._executions.values()
+                state.submission_sequence for state in binding_b._executions.values()
             ] == [0, 1]
 
             a_release.touch()

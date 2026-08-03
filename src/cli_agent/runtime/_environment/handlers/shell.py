@@ -6,7 +6,7 @@ import asyncio
 import os
 from typing import TYPE_CHECKING
 
-from cli_agent.runtime._capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
@@ -27,7 +27,7 @@ class _ShellHandler:
 
     def prepare(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
         context: _CommandContext,
     ) -> _PreparedExecution:
         child_env = dict(os.environ) | context.environment
@@ -60,7 +60,7 @@ class _CapabilityShellExecution:
         self,
         process: _ProcessExecution,
         capability_view: _CapabilityView,
-        command: CommandParseResult,
+        command: ShellParseResult,
         context: _CommandContext,
     ) -> None:
         self._process = process

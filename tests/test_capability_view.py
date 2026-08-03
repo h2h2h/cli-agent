@@ -11,7 +11,7 @@ from cli_agent.runtime import (
     ToolCall,
     ToolResult,
 )
-from cli_agent.runtime._capability.command_parser import parse_shell_command
+from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import (
@@ -309,7 +309,7 @@ def test_cancelled_shell_execution_does_not_copy_up(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         execution = _ShellHandler(view).prepare(
-            parse_shell_command("touch .workspace/tools/cancelled.txt"),
+            parse_shell_ast("touch .workspace/tools/cancelled.txt"),
             _CommandContext(
                 workspace=workspace,
                 cwd=workspace,

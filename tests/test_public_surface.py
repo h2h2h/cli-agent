@@ -32,7 +32,7 @@ def test_exposes_provider_neutral_model_types() -> None:
 
 def test_exposes_host_execution_policy_contracts() -> None:
     public_policy_names = {
-        "CommandParseResult",
+        "ShellParseResult",
         "PolicyAction",
         "PolicyEvaluation",
         "ExecutablePolicy",

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 
-from cli_agent.runtime._capability.command_parser import parse_shell_command
+from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.view import _CapabilityView
@@ -157,10 +157,7 @@ class EnvironmentKernel:
 
         return tuple(
             await asyncio.gather(
-                *(
-                    self._await_initial_exec(call, result)
-                    for call, result in admitted
-                )
+                *(self._await_initial_exec(call, result) for call, result in admitted)
             )
         )
 
@@ -173,7 +170,7 @@ class EnvironmentKernel:
         args = _validate_arguments(call, _SCHEMA_BY_NAME["exec"])
         if isinstance(args, ToolResult):
             return args
-        command = parse_shell_command(args["command"])
+        command = parse_shell_ast(args["command"])
         try:
             evaluation = await self._policy.evaluate(command)
         except Exception:
@@ -192,7 +189,7 @@ class EnvironmentKernel:
                 message="execution policy failed closed",
             )
         # evaluation is one of `allow`, `deny`, or `ask`
-        # if `ask`, the approver_gate will be used in _authroze 
+        # if `ask`, the approver_gate will be used in _authroze
         authorization = await self._authorize(
             call.call_id,
             evaluation,

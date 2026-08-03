@@ -9,8 +9,8 @@ import pytest
 
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._capability.command_parser import (
-    CommandParseResult,
-    parse_shell_command,
+    ShellParseResult,
+    parse_shell_ast,
 )
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
@@ -176,7 +176,7 @@ def test_policy_failure_fails_closed_without_starting_command(tmp_path: Path) ->
     class FailingPolicy:
         async def evaluate(
             self,
-            command: CommandParseResult,
+            command: ShellParseResult,
         ) -> object:
             raise RuntimeError(command.raw_command)
 
@@ -213,7 +213,7 @@ def test_policy_cannot_replace_the_parsed_command(tmp_path: Path) -> None:
     class RewritingPolicy:
         async def evaluate(
             self,
-            command: CommandParseResult,
+            command: ShellParseResult,
         ) -> PolicyEvaluation:
             return PolicyEvaluation.allow(
                 replace(
@@ -252,7 +252,7 @@ def test_policy_cannot_replace_the_parsed_command(tmp_path: Path) -> None:
 def test_direct_guard_documents_wrapper_noncoverage(tmp_path: Path) -> None:
     async def scenario() -> None:
         policy = ExecutablePolicy()
-        command = parse_shell_command("env rm proof.txt")
+        command = parse_shell_ast("env rm proof.txt")
 
         evaluation = await policy.evaluate(command)
 
@@ -980,7 +980,7 @@ def test_killing_queued_execution_wakes_exec_and_output_waiters(
 
 
 def test_pending_kill_and_promotion_have_one_atomic_winner() -> None:
-    decision = ExecutionDecision.allow(parse_shell_command("true"))
+    decision = ExecutionDecision.allow(parse_shell_ast("true"))
 
     cancel_wins = _ExecutionScheduler(queue_limit=1)
     running_admission = cancel_wins.admit(
@@ -1272,9 +1272,7 @@ def test_closes_kernel_idempotently(tmp_path: Path) -> None:
         await kernel.close()
         await kernel.close()
         closed_result = await kernel.dispatch(
-            ToolCall(
-                call_id="closed_kernel", name="exec", arguments={"command": "pwd"}
-            )
+            ToolCall(call_id="closed_kernel", name="exec", arguments={"command": "pwd"})
         )
         assert _error(closed_result)["code"] == "internal"
 

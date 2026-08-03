@@ -13,7 +13,7 @@ from cli_agent.runtime import (
     ToolCall,
     ToolResult,
 )
-from cli_agent.runtime._capability.command_parser import parse_shell_command
+from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.tools.facts import ToolCommand
@@ -148,7 +148,9 @@ def test_system_message_embeds_only_compact_tools_catalog(
 ) -> None:
     repertoire = _repertoire(tmp_path)
     lower = repertoire / "tools" / "lower.py"
-    lower.write_text('"""Lower arithmetic Tool."""\n\ndef add(a, b):\n    return a + b\n')
+    lower.write_text(
+        '"""Lower arithmetic Tool."""\n\ndef add(a, b):\n    return a + b\n'
+    )
 
     _prepare_workspace(tmp_path)
     view = _CapabilityView.open(tmp_path, repertoire)
@@ -183,9 +185,7 @@ def test_system_message_tools_section_omitted_without_catalog(
 
 def test_default_policy_allows_every_reserved_tool_form(tmp_path: Path) -> None:
     repertoire = _repertoire(tmp_path)
-    (repertoire / "tools" / "echo.py").write_text(
-        "def value():\n    return 'ok'\n"
-    )
+    (repertoire / "tools" / "echo.py").write_text("def value():\n    return 'ok'\n")
     _prepare_workspace(tmp_path)
     view = _CapabilityView.open(tmp_path, repertoire)
     catalog = _ToolCatalog.reconcile(view)
@@ -201,7 +201,7 @@ def test_default_policy_allows_every_reserved_tool_form(tmp_path: Path) -> None:
         )
         operations = ("list", "inspect", "run", "run", "invalid")
         for raw, operation in zip(commands, operations, strict=True):
-            command = parse_shell_command(raw)
+            command = parse_shell_ast(raw)
             facts = parse_tool_command(command, catalog)
             assert isinstance(facts, ToolCommand)
             assert facts.operation == operation
@@ -240,7 +240,7 @@ def test_reserved_tool_grammar_cannot_fall_through_to_shell(
     view = _CapabilityView.open(tmp_path, repertoire)
     catalog = _ToolCatalog.reconcile(view)
 
-    command = parse_shell_command(raw)
+    command = parse_shell_ast(raw)
     facts = parse_tool_command(command, catalog)
 
     assert (facts is not None) is reserved
@@ -251,7 +251,7 @@ def test_reserved_tool_grammar_cannot_fall_through_to_shell(
 def test_host_can_override_default_tool_allow_by_executable_name(
     tmp_path: Path,
 ) -> None:
-    command = parse_shell_command("tools list")
+    command = parse_shell_ast("tools list")
 
     async def scenario() -> None:
         evaluation = await ExecutablePolicy(
@@ -275,7 +275,7 @@ def test_tools_list_info_and_reserved_invalid_syntax_use_tool_handler(
         kernel = await _kernel(tmp_path, repertoire)
         try:
             registered = kernel._router._custom_registry.resolve(
-                parse_shell_command("tools list")
+                parse_shell_ast("tools list")
             )
             assert registered is not None
             assert registered.name == "tools"
@@ -425,15 +425,14 @@ def test_fresh_tool_workers_isolate_module_state_and_use_private_python(
             prefix = _output(
                 await _exec(
                     kernel,
-                    'tools run "__import__(\'sys\').prefix"',
+                    "tools run \"__import__('sys').prefix\"",
                 )
             )
             assert _text(first, "stdout") == "1\n"
             assert _text(second, "stdout") == "1\n"
-            assert (
-                str(tmp_path / ".workspace" / ".tool-environment" / ".venv")
-                in _text(prefix, "stdout")
-            )
+            assert str(
+                tmp_path / ".workspace" / ".tool-environment" / ".venv"
+            ) in _text(prefix, "stdout")
             assert _text(prefix, "stdout").strip() != sys.prefix
         finally:
             await kernel.close()
@@ -516,9 +515,7 @@ def test_unavailable_tool_environment_fails_run_without_host_fallback(
             info = _output(await _exec(kernel, "tools info example"))
             assert info["status"] == "exited"
 
-            result = _output(
-                await _exec(kernel, 'tools run "tools.example.VALUE"')
-            )
+            result = _output(await _exec(kernel, 'tools run "tools.example.VALUE"'))
             assert result["status"] == "failed"
             assert "sync failed" in _text(result, "stderr")
         finally:
@@ -681,9 +678,7 @@ def test_dependency_sync_failure_is_fail_soft_for_catalog_operations(
         try:
             listed = _output(await _exec(kernel, "tools list"))
             info = _output(await _exec(kernel, "tools info visible"))
-            run = _output(
-                await _exec(kernel, 'tools run "tools.visible.VALUE"')
-            )
+            run = _output(await _exec(kernel, 'tools run "tools.visible.VALUE"'))
             assert listed["status"] == "exited"
             assert info["status"] == "exited"
             assert run["status"] == "failed"
@@ -699,9 +694,7 @@ def test_tool_waits_behind_serial_shell_barrier(
 ) -> None:
     repertoire = _repertoire(tmp_path)
     (repertoire / "tools" / "marker.py").write_text(
-        "from pathlib import Path\n"
-        "def touch(path):\n"
-        "    Path(path).touch()\n"
+        "from pathlib import Path\ndef touch(path):\n    Path(path).touch()\n"
     )
     shell_started = tmp_path / "shell-started"
     shell_release = tmp_path / "shell-release"
@@ -721,10 +714,7 @@ def test_tool_waits_behind_serial_shell_barrier(
             tool = _output(
                 await _exec(
                     kernel,
-                    (
-                        "tools run "
-                        f'"tools.marker.touch({str(tool_finished)!r})"'
-                    ),
+                    (f'tools run "tools.marker.touch({str(tool_finished)!r})"'),
                     wait_ms=0,
                 )
             )
@@ -733,9 +723,9 @@ def test_tool_waits_behind_serial_shell_barrier(
             assert not tool_finished.exists()
 
             shell_release.touch(exist_ok=True)
-            assert (
-                await _read_until_terminal(kernel, str(tool["exec_id"]))
-            )["status"] == "exited"
+            assert (await _read_until_terminal(kernel, str(tool["exec_id"])))[
+                "status"
+            ] == "exited"
             assert tool_finished.exists()
         finally:
             shell_release.touch(exist_ok=True)
@@ -747,9 +737,7 @@ def test_tool_waits_behind_serial_shell_barrier(
 def test_tool_shares_parallel_capacity_with_shell(tmp_path: Path) -> None:
     repertoire = _repertoire(tmp_path)
     (repertoire / "tools" / "marker.py").write_text(
-        "from pathlib import Path\n"
-        "def touch(path):\n"
-        "    Path(path).touch()\n"
+        "from pathlib import Path\ndef touch(path):\n    Path(path).touch()\n"
     )
     shell_started = tmp_path / "parallel-shell-started"
     shell_release = tmp_path / "parallel-shell-release"
@@ -784,9 +772,9 @@ def test_tool_shares_parallel_capacity_with_shell(tmp_path: Path) -> None:
             assert not tool_finished.exists()
 
             shell_release.touch(exist_ok=True)
-            assert (
-                await _read_until_terminal(kernel, str(tool["exec_id"]))
-            )["status"] == "exited"
+            assert (await _read_until_terminal(kernel, str(tool["exec_id"])))[
+                "status"
+            ] == "exited"
             assert tool_finished.exists()
         finally:
             shell_release.touch(exist_ok=True)
@@ -805,9 +793,7 @@ def test_catalog_tool_metadata_controls_parallel_scheduling(
     async def scenario() -> None:
         kernel = await _kernel(tmp_path, repertoire)
         try:
-            allowed = _output(
-                await _exec(kernel, 'tools run "tools.allowed.VALUE"')
-            )
+            allowed = _output(await _exec(kernel, 'tools run "tools.allowed.VALUE"'))
             mixed = _output(
                 await _exec(
                     kernel,
@@ -815,19 +801,14 @@ def test_catalog_tool_metadata_controls_parallel_scheduling(
                 )
             )
             dynamic = _output(
-                await _exec(kernel, 'tools run "getattr(tools, \'allowed\').VALUE"')
+                await _exec(kernel, "tools run \"getattr(tools, 'allowed').VALUE\"")
             )
             assert (
-                kernel._executions[str(allowed["exec_id"])].route.parallel_safe
-                is True
+                kernel._executions[str(allowed["exec_id"])].route.parallel_safe is True
             )
+            assert kernel._executions[str(mixed["exec_id"])].route.parallel_safe is True
             assert (
-                kernel._executions[str(mixed["exec_id"])].route.parallel_safe
-                is True
-            )
-            assert (
-                kernel._executions[str(dynamic["exec_id"])].route.parallel_safe
-                is False
+                kernel._executions[str(dynamic["exec_id"])].route.parallel_safe is False
             )
         finally:
             await kernel.close()
@@ -901,7 +882,7 @@ def test_kill_terminates_tool_worker_through_shared_execution_path(
             running = _output(
                 await _exec(
                     kernel,
-                    'tools run "__import__(\'time\').sleep(30)"',
+                    "tools run \"__import__('time').sleep(30)\"",
                     wait_ms=0,
                 )
             )

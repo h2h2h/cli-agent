@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from cli_agent.runtime._capability.command_parser import parse_shell_command
+from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
     _Command,
@@ -41,13 +41,13 @@ def _successful_preparer(command, context):
 
 
 def test_parser_emits_only_generic_shell_syntax_facts() -> None:
-    command = parse_shell_command("tools list")
+    command = parse_shell_ast("tools list")
 
     assert not hasattr(command, "tool")
     assert tuple(command.__dataclass_fields__) == (
         "raw_command",
         "tokens",
-        "executable_basename",
+        "root",
         "tokenization_succeeded",
         "contains_shell_composition",
         "contains_output_redirection",
@@ -64,19 +64,17 @@ def test_custom_command_contract_and_registry_match_command_heads() -> None:
     registry = _CustomCommandRegistry((command,))
 
     assert isinstance(command, _Command)
-    assert command.matches(parse_shell_command("custom argument"))
-    assert command.matches(parse_shell_command('custom "unterminated'))
-    assert registry.resolve(parse_shell_command("custom argument")) is command
-    assert registry.resolve(parse_shell_command("./custom argument")) is None
-    assert command.parallel_safe(parse_shell_command("custom argument")) is True
+    assert command.matches(parse_shell_ast("custom argument"))
+    assert command.matches(parse_shell_ast('custom "unterminated'))
+    assert registry.resolve(parse_shell_ast("custom argument")) is command
+    assert registry.resolve(parse_shell_ast("./custom argument")) is None
+    assert command.parallel_safe(parse_shell_ast("custom argument")) is True
     assert command.isolated is False
 
 
 def test_registry_rejects_duplicate_custom_command_names() -> None:
     registry = _CustomCommandRegistry()
-    registry.register(
-        _CustomCommand(name="duplicate", prepare=_successful_preparer)
-    )
+    registry.register(_CustomCommand(name="duplicate", prepare=_successful_preparer))
 
     with pytest.raises(ValueError, match="already registered"):
         registry.register(
@@ -94,19 +92,17 @@ def test_router_returns_command_and_parallel_safe_without_driver_fields() -> Non
         custom_registry=registry,
     )
 
-    custom_route = router.route(
-        ExecutionDecision.allow(parse_shell_command("export A=1"))
-    )
-    shell_route = router.route(
-        ExecutionDecision.allow(parse_shell_command("cat file.txt"))
-    )
+    custom_route = router.route(ExecutionDecision.allow(parse_shell_ast("export A=1")))
+    shell_route = router.route(ExecutionDecision.allow(parse_shell_ast("cat file.txt")))
 
     assert isinstance(custom_route, _ExecutionRoute)
     assert custom_route.command.name == "export"
     assert custom_route.parallel_safe is False
     assert shell_route.command.name is None
     assert shell_route.parallel_safe is True
-    assert tuple(field.name for field in _ExecutionRoute.__dataclass_fields__.values()) == (
+    assert tuple(
+        field.name for field in _ExecutionRoute.__dataclass_fields__.values()
+    ) == (
         "command",
         "parallel_safe",
     )
@@ -120,7 +116,7 @@ def test_prepare_does_not_mutate_session_before_execution(tmp_path: Path) -> Non
             cwd=tmp_path,
             environment=environment,
         )
-        command = parse_shell_command("export KEY=value")
+        command = parse_shell_ast("export KEY=value")
         custom = _builtin_custom_commands()[1]
 
         execution = custom.prepare(command, context)

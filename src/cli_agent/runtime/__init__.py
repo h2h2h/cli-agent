@@ -1,6 +1,6 @@
 """Provider-neutral building blocks for the cli-agent Runtime."""
 
-from cli_agent.runtime._capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.policy import (
     ApprovalResponse,
     ExecutablePolicy,
@@ -40,7 +40,7 @@ __all__ = (
     "AgentRuntime",
     "ApprovalResponse",
     "AssistantMessage",
-    "CommandParseResult",
+    "ShellParseResult",
     "ExecutablePolicy",
     "ExecutionApprover",
     "ExecutionApprovalRequest",

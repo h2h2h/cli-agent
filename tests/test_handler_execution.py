@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Literal
 
 from cli_agent.runtime import ToolCall
-from cli_agent.runtime._capability.command_parser import parse_shell_command
+from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
@@ -51,7 +51,7 @@ def test_custom_command_prepares_export_and_shell_handler_prepares_process(
         )
         registry = _CustomCommandRegistry(_builtin_custom_commands())
 
-        export = parse_shell_command("export A=1 MESSAGE='two words'")
+        export = parse_shell_ast("export A=1 MESSAGE='two words'")
         export_spec = registry.resolve(export)
         assert export_spec is not None
         execution = export_spec.prepare(export, context)
@@ -63,7 +63,7 @@ def test_custom_command_prepares_export_and_shell_handler_prepares_process(
         assert environment == {"A": "1", "MESSAGE": "two words"}
 
         process_execution = _ShellHandler().prepare(
-            parse_shell_command("pwd"),
+            parse_shell_ast("pwd"),
             context,
         )
         assert isinstance(process_execution, _ProcessExecution)
@@ -77,7 +77,7 @@ def test_inline_export_cancelled_before_run_does_not_mutate_session(
     async def scenario() -> None:
         environment: dict[str, str] = {}
         registry = _CustomCommandRegistry(_builtin_custom_commands())
-        command = parse_shell_command("export CANCELLED=yes")
+        command = parse_shell_ast("export CANCELLED=yes")
         spec = registry.resolve(command)
         assert spec is not None
         execution = spec.prepare(
@@ -124,7 +124,7 @@ def test_invalid_inline_export_reports_failure_without_mutation(
         environment = {"PRESERVED": "yes"}
         output = _BufferOutput()
         registry = _CustomCommandRegistry(_builtin_custom_commands())
-        command = parse_shell_command("export VALID=value BROKEN")
+        command = parse_shell_ast("export VALID=value BROKEN")
         spec = registry.resolve(command)
         assert spec is not None
         execution = spec.prepare(
@@ -212,7 +212,7 @@ def test_kernel_runs_and_cancels_prepared_execution_without_branch(
             chunk_limit=10,
             byte_limit=1_000,
         )
-        decision = ExecutionDecision.allow(parse_shell_command("fake command"))
+        decision = ExecutionDecision.allow(parse_shell_ast("fake command"))
         state = kernel._supervisor.admit(
             decision,
             _shell_route(handler),
@@ -300,7 +300,7 @@ def test_handler_preparation_failure_releases_serial_slot_for_queued_execution(
             chunk_limit=10,
             byte_limit=1_000,
         )
-        decision = ExecutionDecision.allow(parse_shell_command("fake command"))
+        decision = ExecutionDecision.allow(parse_shell_ast("fake command"))
         failed = kernel._supervisor.admit(
             decision,
             _shell_route(_FailingHandler()),

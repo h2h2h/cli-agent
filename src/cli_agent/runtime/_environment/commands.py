@@ -6,7 +6,7 @@ import shlex
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 
-from cli_agent.runtime._capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _PreparedExecution,
@@ -14,8 +14,8 @@ from cli_agent.runtime._environment.handlers.base import (
 from cli_agent.runtime._environment.handlers.cd import _prepare_cd
 from cli_agent.runtime._environment.handlers.export import _prepare_export
 
-_CommandPreparer = Callable[[CommandParseResult, _CommandContext], _PreparedExecution]
-_ParallelSafety = bool | Callable[[CommandParseResult], bool]
+_CommandPreparer = Callable[[ShellParseResult, _CommandContext], _PreparedExecution]
+_ParallelSafety = bool | Callable[[ShellParseResult], bool]
 
 
 class _Command(ABC):
@@ -25,17 +25,17 @@ class _Command(ABC):
     isolated: bool
 
     @abstractmethod
-    def matches(self, command: CommandParseResult) -> bool:
+    def matches(self, command: ShellParseResult) -> bool:
         """Return whether this command owns the parsed command."""
 
     @abstractmethod
-    def parallel_safe(self, command: CommandParseResult) -> bool:
+    def parallel_safe(self, command: ShellParseResult) -> bool:
         """Return whether this command may enter a parallel batch."""
 
     @abstractmethod
     def prepare(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
         context: _CommandContext,
     ) -> _PreparedExecution:
         """Prepare an execution without starting work or mutating Session state."""
@@ -52,8 +52,10 @@ class _CustomCommand(_Command):
         parallel_safe: _ParallelSafety = False,
         isolated: bool = True,
     ) -> None:
-        if not name or name.strip() != name or any(
-            character.isspace() for character in name
+        if (
+            not name
+            or name.strip() != name
+            or any(character.isspace() for character in name)
         ):
             raise ValueError("custom command name must be one non-empty token")
         if not isinstance(isolated, bool):
@@ -65,12 +67,12 @@ class _CustomCommand(_Command):
         self._prepare = prepare
         self._parallel_safe = parallel_safe
 
-    def matches(self, command: CommandParseResult) -> bool:
+    def matches(self, command: ShellParseResult) -> bool:
         """Return whether the first command token matches this command name."""
 
         return _command_head(command.raw_command) == self.name
 
-    def parallel_safe(self, command: CommandParseResult) -> bool:
+    def parallel_safe(self, command: ShellParseResult) -> bool:
         """Evaluate this command's fixed or command-specific schedule fact."""
 
         value = self._parallel_safe
@@ -78,7 +80,7 @@ class _CustomCommand(_Command):
 
     def prepare(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
         context: _CommandContext,
     ) -> _PreparedExecution:
         """Construct the command execution without starting it."""
@@ -110,13 +112,13 @@ class _ShellCommand(_Command):
         self._prepare = prepare
         self._parallel_commands = parallel_commands
 
-    def matches(self, command: CommandParseResult) -> bool:
+    def matches(self, command: ShellParseResult) -> bool:
         """Return true because Shell is the fallback for every unmatched command."""
 
         del command
         return True
 
-    def parallel_safe(self, command: CommandParseResult) -> bool:
+    def parallel_safe(self, command: ShellParseResult) -> bool:
         """Return whether the parsed Shell command is trusted for parallel use."""
 
         return bool(
@@ -127,7 +129,7 @@ class _ShellCommand(_Command):
 
     def prepare(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
         context: _CommandContext,
     ) -> _PreparedExecution:
         """Construct the Shell execution without starting it."""
@@ -154,7 +156,7 @@ class _CustomCommandRegistry:
 
     def resolve(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
     ) -> _CustomCommand | None:
         """Return the custom command selected by the command-head rule."""
 

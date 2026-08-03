@@ -4,13 +4,13 @@ import sys
 from pathlib import Path
 
 from cli_agent.runtime import ToolCall, ToolResult
-from cli_agent.runtime._capability.command_parser import parse_shell_command
+from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
 
 
 def test_parser_reports_only_generic_shell_syntax_facts() -> None:
-    direct = parse_shell_command("  export A=1 MESSAGE='two words' EMPTY=  ")
-    malformed = parse_shell_command("export VALID=value BROKEN")
+    direct = parse_shell_ast("  export A=1 MESSAGE='two words' EMPTY=  ")
+    malformed = parse_shell_ast("export VALID=value BROKEN")
 
     assert direct.raw_command == "  export A=1 MESSAGE='two words' EMPTY=  "
     assert direct.tokens == (
@@ -37,7 +37,7 @@ def test_parser_reports_only_generic_shell_syntax_facts() -> None:
         "export A=`printf child`",
         "A=1 true",
     ):
-        parsed = parse_shell_command(command)
+        parsed = parse_shell_ast(command)
         assert parsed.raw_command == command
 
 

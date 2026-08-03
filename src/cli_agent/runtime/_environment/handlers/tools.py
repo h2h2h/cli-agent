@@ -7,7 +7,7 @@ import json
 import os
 from importlib.resources import files
 
-from cli_agent.runtime._capability.command_parser import CommandParseResult
+from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.tools.grammar import parse_tool_command
@@ -34,7 +34,7 @@ class _ToolHandler:
         self._catalog = catalog
         self._environment = environment
 
-    def parallel_safe(self, command: CommandParseResult) -> bool:
+    def parallel_safe(self, command: ShellParseResult) -> bool:
         """Return the scheduling fact for one parsed Tools command."""
 
         if self._catalog is None:
@@ -57,7 +57,7 @@ class _ToolHandler:
 
     def prepare(
         self,
-        command: CommandParseResult,
+        command: ShellParseResult,
         context: _CommandContext,
     ) -> _PreparedExecution:
         catalog = self._catalog
@@ -85,7 +85,11 @@ class _ToolHandler:
                 success=False,
             )
         environment = self._environment
-        if environment is None or not environment.available or environment.python is None:
+        if (
+            environment is None
+            or not environment.available
+            or environment.python is None
+        ):
             error = (
                 "Tool environment is unavailable"
                 if environment is None
@@ -103,8 +107,7 @@ class _ToolHandler:
                 "cwd": str(context.cwd),
                 "tools_directory": str(context.workspace / ".workspace" / "tools"),
                 "tool_paths": {
-                    entry.name: str(entry.path)
-                    for entry in catalog.valid_entries
+                    entry.name: str(entry.path) for entry in catalog.valid_entries
                 },
             },
             ensure_ascii=False,
@@ -143,10 +146,6 @@ def _text_execution(text: str, *, success: bool) -> _InlineExecution:
             "stdout" if success else "stderr",
             text.encode("utf-8"),
         )
-        return (
-            _ExecutionOutcome.exited()
-            if success
-            else _ExecutionOutcome.failed(1)
-        )
+        return _ExecutionOutcome.exited() if success else _ExecutionOutcome.failed(1)
 
     return _InlineExecution(execute)
