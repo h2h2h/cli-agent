@@ -156,7 +156,7 @@ Use the reserved AEP-compatible grammar through `exec`:
 tools list
 tools info math_tool
 tools run "tools.math_tool.add(2, 3)"
-tools run PY<<
+tools run <<'PY'
 values = [tools.math_tool.add(1, 2), 4]
 json.dumps(values)
 PY

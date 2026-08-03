@@ -184,8 +184,7 @@ def test_host_approval_allows_one_exact_command(tmp_path: Path) -> None:
             assert len(kernel._executions) == 1
             state = next(iter(kernel._executions.values()))
             request = approver.requests[0]
-            assert state.decision.approval_request_id == request.request_id
-            assert state.decision.parse_result.raw_command == command
+            assert state.command.raw_command == command
             assert request.session_id is None
             assert request.raw_command == command
             assert request.tokens == parse_shell_ast(command).tokens

@@ -18,7 +18,6 @@ from cli_agent.runtime._environment.handlers.base import (
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
-from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime._environment.routing import (
     _CommandRouter,
     _ExecutionRoute,
@@ -92,8 +91,8 @@ def test_router_returns_command_and_parallel_safe_without_driver_fields() -> Non
         custom_registry=registry,
     )
 
-    custom_route = router.route(ExecutionDecision.allow(parse_shell_ast("export A=1")))
-    shell_route = router.route(ExecutionDecision.allow(parse_shell_ast("cat file.txt")))
+    custom_route = router.resolve(parse_shell_ast("export A=1"))
+    shell_route = router.resolve(parse_shell_ast("cat file.txt"))
 
     assert isinstance(custom_route, _ExecutionRoute)
     assert custom_route.command.name == "export"
@@ -106,6 +105,27 @@ def test_router_returns_command_and_parallel_safe_without_driver_fields() -> Non
         "command",
         "parallel_safe",
     )
+
+
+def test_router_resolve_has_no_policy_or_scheduler_dependencies() -> None:
+    registry = _CustomCommandRegistry(_builtin_custom_commands())
+    router = _CommandRouter(
+        shell_command=_ShellCommand(
+            prepare=_ShellHandler().prepare,
+            parallel_commands=frozenset({"cat"}),
+        ),
+        custom_registry=registry,
+    )
+
+    assert set(vars(router)) == {"_shell_command", "_custom_registry"}
+    assert tuple(_ExecutionRoute.__dataclass_fields__) == (
+        "command",
+        "parallel_safe",
+    )
+    route = router.resolve(parse_shell_ast("cat file.txt"))
+    assert isinstance(route.command, _ShellCommand)
+    assert route.parallel_safe is True
+    assert router.resolve(parse_shell_ast("cat file.txt")) == route
 
 
 def test_prepare_does_not_mutate_session_before_execution(tmp_path: Path) -> None:

@@ -23,7 +23,6 @@ from cli_agent.runtime._environment.handlers.tools import _ToolHandler
 from cli_agent.runtime._environment.policy import (
     ApprovalResponse,
     ExecutablePolicy,
-    ExecutionDecision,
     ExecutionPolicy,
     PolicyAction,
     PolicyEvaluation,
@@ -171,6 +170,20 @@ class EnvironmentKernel:
         if isinstance(args, ToolResult):
             return args
         command = parse_shell_ast(args["command"])
+        if command.root is None:
+            return _protocol_error(
+                call.call_id,
+                code="invalid_argument",
+                message="invalid shell command",
+            )
+        try:
+            route = self._router.resolve(command)
+        except RuntimeError:
+            return _protocol_error(
+                call.call_id,
+                code="internal",
+                message="execution route is not supported",
+            )
         try:
             evaluation = await self._policy.evaluate(command)
         except Exception:
@@ -189,14 +202,13 @@ class EnvironmentKernel:
                 message="execution policy failed closed",
             )
         # evaluation is one of `allow`, `deny`, or `ask`
-        # if `ask`, the approver_gate will be used in _authroze
+        # if `ask`, the approver_gate will be used in _authorize
         authorization = await self._authorize(
             call.call_id,
             evaluation,
         )
         if isinstance(authorization, ToolResult):
             return authorization
-        decision = authorization
         if self._closed:
             return _protocol_error(
                 call.call_id,
@@ -204,16 +216,7 @@ class EnvironmentKernel:
                 message="environment session is closed",
             )
 
-        try:
-            route = self._router.route(decision)
-        except RuntimeError:
-            return _protocol_error(
-                call.call_id,
-                code="internal",
-                message="execution route is not supported",
-            )
-
-        state = self._supervisor.admit(decision, route)
+        state = self._supervisor.admit(command, route)
         if state is None:
             return _protocol_error(
                 call.call_id,
@@ -273,7 +276,7 @@ class EnvironmentKernel:
         self,
         call_id: str,
         evaluation: PolicyEvaluation,
-    ) -> ExecutionDecision | ToolResult:
+    ) -> bool | ToolResult:
         if evaluation.action is PolicyAction.DENY:
             return _protocol_error(
                 call_id,
@@ -281,10 +284,7 @@ class EnvironmentKernel:
                 message=evaluation.reason or "execution denied by policy",
             )
         if evaluation.action is PolicyAction.ALLOW:
-            return ExecutionDecision.allow(
-                evaluation.parse_result,
-                rule_id=evaluation.rule_id,
-            )
+            return True
 
         gate = self._approval_gate
         if gate is None:
@@ -327,11 +327,7 @@ class EnvironmentKernel:
                 code="policy_denied",
                 message="execution approval was denied by the Host",
             )
-        return ExecutionDecision.allow(
-            evaluation.parse_result,
-            rule_id=f"{evaluation.rule_id}.host-approved",
-            approval_request_id=resolution.request_id,
-        )
+        return True
 
     async def _output(self, call: ToolCall) -> ToolResult:
         args = _validate_arguments(call, _SCHEMA_BY_NAME["output"])

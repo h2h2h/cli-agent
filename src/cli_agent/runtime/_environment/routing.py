@@ -1,20 +1,20 @@
-"""Resolve authorized commands to unified Runtime command contracts."""
+"""Resolve parsed commands to unified Runtime command contracts."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.commands import (
     _Command,
     _CustomCommandRegistry,
     _ShellCommand,
 )
-from cli_agent.runtime._environment.policy import ExecutionDecision
 
 
 @dataclass(frozen=True, slots=True)
 class _ExecutionRoute:
-    """Bind an authorized command to its trusted scheduling decision."""
+    """Bind one parsed command to its selected Command and schedule fact."""
 
     command: _Command
     parallel_safe: bool
@@ -36,15 +36,14 @@ class _CommandRouter:
         self._shell_command = shell_command
         self._custom_registry = custom_registry
 
-    def route(self, decision: ExecutionDecision) -> _ExecutionRoute:
-        """Resolve one final decision without performing its operation."""
+    def resolve(self, command: ShellParseResult) -> _ExecutionRoute:
+        """Select one Command and its schedule fact without performing work."""
 
-        parsed = decision.parse_result
-        command = self._custom_registry.resolve(parsed)
-        if command is None:
-            command = self._shell_command
+        selected = self._custom_registry.resolve(command)
+        if selected is None:
+            selected = self._shell_command
 
         return _ExecutionRoute(
-            command=command,
-            parallel_safe=command.parallel_safe(parsed),
+            command=selected,
+            parallel_safe=selected.parallel_safe(command),
         )

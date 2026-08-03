@@ -22,7 +22,6 @@ from cli_agent.runtime._environment.execution_state import _ExecutionState
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.policy import (
     ExecutablePolicy,
-    ExecutionDecision,
     PolicyAction,
     PolicyEvaluation,
 )
@@ -980,16 +979,16 @@ def test_killing_queued_execution_wakes_exec_and_output_waiters(
 
 
 def test_pending_kill_and_promotion_have_one_atomic_winner() -> None:
-    decision = ExecutionDecision.allow(parse_shell_ast("true"))
+    command = parse_shell_ast("true")
 
     cancel_wins = _ExecutionScheduler(queue_limit=1)
     running_admission = cancel_wins.admit(
-        decision,
-        _router().route(decision),
+        command,
+        _router().resolve(command),
     )
     queued_admission = cancel_wins.admit(
-        decision,
-        _router().route(decision),
+        command,
+        _router().resolve(command),
     )
     assert running_admission is not None
     assert queued_admission is not None
@@ -1004,12 +1003,12 @@ def test_pending_kill_and_promotion_have_one_atomic_winner() -> None:
 
     promotion_wins = _ExecutionScheduler(queue_limit=1)
     running_admission = promotion_wins.admit(
-        decision,
-        _router().route(decision),
+        command,
+        _router().resolve(command),
     )
     queued_admission = promotion_wins.admit(
-        decision,
-        _router().route(decision),
+        command,
+        _router().resolve(command),
     )
     assert running_admission is not None
     assert queued_admission is not None

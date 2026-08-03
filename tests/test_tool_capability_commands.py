@@ -196,7 +196,7 @@ def test_default_policy_allows_every_reserved_tool_form(tmp_path: Path) -> None:
             "tools list",
             "tools info echo",
             'tools run "tools.echo.value()"',
-            "tools run PY<<\ntools.echo.value()\nPY",
+            "tools run <<'PY'\ntools.echo.value()\nPY",
             "tools list | cat",
         )
         operations = ("list", "inspect", "run", "run", "invalid")
@@ -385,7 +385,7 @@ def test_tools_run_supports_quoted_and_heredoc_python(tmp_path: Path) -> None:
                 await _exec(
                     kernel,
                     (
-                        "tools run PY<<\n"
+                        "tools run <<'PY'\n"
                         "values = [tools.math_tool.add(1, 2), 4]\n"
                         "json.dumps(values)\n"
                         "PY"

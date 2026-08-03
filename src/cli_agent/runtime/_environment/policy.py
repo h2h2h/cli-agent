@@ -77,29 +77,6 @@ class PolicyEvaluation:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class ExecutionDecision:
-    """Final immutable authorization for one exact parsed command."""
-
-    parse_result: ShellParseResult
-    rule_id: str
-    approval_request_id: str | None = None
-
-    @classmethod
-    def allow(
-        cls,
-        parse_result: ShellParseResult,
-        *,
-        rule_id: str = "default.allow",
-        approval_request_id: str | None = None,
-    ) -> ExecutionDecision:
-        return cls(
-            parse_result=parse_result,
-            rule_id=rule_id,
-            approval_request_id=approval_request_id,
-        )
-
-
 class ExecutionPolicy(Protocol):
     """Host-owned Policy shared by one Runtime's Session Kernels."""
 

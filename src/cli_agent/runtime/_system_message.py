@@ -43,7 +43,7 @@ Workspace
 
 Capabilities
 - The effective capability files are under `.workspace/tools`, `.workspace/skills`, and `.workspace/library`.
-- Use `tools list` to discover Python Tools, `tools info <name>` to inspect one, and `tools run "<python code>"` or the exact `tools run PY<< ... PY` block form to execute them through the Workspace-private Tool Environment.
+- Use `tools list` to discover Python Tools, `tools info <name>` to inspect one, and `tools run "<python code>"` or the exact `tools run <<'PY' ... PY` heredoc block form to execute them through the Workspace-private Tool Environment.
 - Each Tool is exposed as an attribute of the `tools` namespace, so call it as `tools.<name>.<function>(...)`, for example `tools run "tools.calculator.add(2, 3)"`. Plain function names like `add(2, 3)` are not defined.
 
 Built-in tools
