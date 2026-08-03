@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from interaction_fakes import _ScriptedInteraction
 
 import cli_agent.runtime as runtime_module
 from cli_agent.runtime import (
@@ -22,6 +23,9 @@ from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
+
+_user_interaction = _ScriptedInteraction("allow_once")
+
 
 _FIXTURE = Path(__file__).parent / "mcp_server_fixture.py"
 
@@ -172,6 +176,7 @@ def test_mcp_integration_keeps_model_visible_surface_and_public_exports(
 
     async def scenario() -> None:
         async with await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=workspace,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
@@ -238,6 +243,7 @@ def test_additional_sessions_do_not_reconcile_mcp_again(
 
     async def scenario() -> None:
         async with await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=workspace,
             repertoire=repertoire,
             provider=provider,

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
+from uuid import uuid4
 
-from cli_agent.runtime._capability.command_parser import parse_shell_ast
+from cli_agent.runtime._capability.command_parser import (
+    ShellParseResult,
+    parse_shell_ast,
+)
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.view import _CapabilityView
@@ -20,15 +24,16 @@ from cli_agent.runtime._environment.commands import (
 from cli_agent.runtime._environment.execution_state import _ExecutionState
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.handlers.tools import _ToolHandler
+from cli_agent.runtime._environment.interaction import (
+    UserAnswer,
+    UserInteraction,
+    UserOption,
+    UserQuestion,
+)
 from cli_agent.runtime._environment.policy import (
-    ApprovalResponse,
-    ExecutablePolicy,
-    ExecutionDecision,
     ExecutionPolicy,
     PolicyAction,
     PolicyEvaluation,
-    _ApprovalResolutionError,
-    _ExecutionApprovalGate,
 )
 from cli_agent.runtime._environment.protocol import (
     _SCHEMA_BY_NAME,
@@ -42,7 +47,13 @@ from cli_agent.runtime._environment.scheduler import (
     _DEFAULT_QUEUE_LIMIT,
 )
 from cli_agent.runtime._environment.supervisor import _ExecutionSupervisor
+from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import ToolCall, ToolResult
+
+_ALLOW_ONCE_OPTIONS = (
+    UserOption(value="allow_once", label="Allow once"),
+    UserOption(value="deny", label="Deny"),
+)
 
 
 class EnvironmentKernel:
@@ -60,16 +71,18 @@ class EnvironmentKernel:
         parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
         parallel_commands: frozenset[str] | None = None,
         registry: _CustomCommandRegistry | None = None,
-        approval_gate: _ExecutionApprovalGate | None = None,
-        approval_session_id: str | None = None,
+        user_interaction: UserInteraction | None = None,
+        session_id: str | None = None,
         capability_view: _CapabilityView | None = None,
         tool_catalog: _ToolCatalog | None = None,
         tool_environment: _ToolEnvironment | None = None,
+        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> None:
         self._workspace = Path(workspace).resolve()
-        self._policy = ExecutablePolicy() if policy is None else policy
-        self._approval_gate = approval_gate
-        self._approval_session_id = approval_session_id
+        self._policy = policy
+        self._user_interaction = user_interaction
+        self._session_id = session_id
+        self._on_diagnostic = on_diagnostic
         tool_handler = _ToolHandler(tool_catalog, tool_environment)
         tool_command = _CustomCommand(
             name="tools",
@@ -94,7 +107,7 @@ class EnvironmentKernel:
         self._env = dict(base_env or {})
         self._cwd = self._workspace
         self._executions: dict[str, _ExecutionState] = {}
-        self._approval_tasks: set[asyncio.Task[object]] = set()
+        self._interaction_tasks: set[asyncio.Task[object]] = set()
         self._closed = False
         self._supervisor = _ExecutionSupervisor(
             self,
@@ -110,11 +123,11 @@ class EnvironmentKernel:
         if self._closed:
             return
         self._closed = True
-        approval_tasks = tuple(self._approval_tasks)
-        for task in approval_tasks:
+        interaction_tasks = tuple(self._interaction_tasks)
+        for task in interaction_tasks:
             task.cancel()
-        if approval_tasks:
-            await asyncio.gather(*approval_tasks, return_exceptions=True)
+        if interaction_tasks:
+            await asyncio.gather(*interaction_tasks, return_exceptions=True)
         await self._supervisor.close()
         self._env.clear()
 
@@ -171,32 +184,31 @@ class EnvironmentKernel:
         if isinstance(args, ToolResult):
             return args
         command = parse_shell_ast(args["command"])
+        if command.root is None:
+            return _protocol_error(
+                call.call_id,
+                code="invalid_argument",
+                message="invalid shell command",
+            )
         try:
-            evaluation = await self._policy.evaluate(command)
-        except Exception:
+            route = self._router.resolve(command)
+        except RuntimeError:
             return _protocol_error(
                 call.call_id,
                 code="internal",
-                message="execution policy failed closed",
+                message="execution route is not supported",
             )
-        if (
-            not isinstance(evaluation, PolicyEvaluation)
-            or evaluation.parse_result != command
-        ):
-            return _protocol_error(
+        if self._policy is not None:
+            evaluation = await self._evaluate(command, call.call_id)
+            if isinstance(evaluation, ToolResult):
+                return evaluation
+            authorization = await self._authorize(
                 call.call_id,
-                code="internal",
-                message="execution policy failed closed",
+                evaluation,
+                command,
             )
-        # evaluation is one of `allow`, `deny`, or `ask`
-        # if `ask`, the approver_gate will be used in _authroze
-        authorization = await self._authorize(
-            call.call_id,
-            evaluation,
-        )
-        if isinstance(authorization, ToolResult):
-            return authorization
-        decision = authorization
+            if isinstance(authorization, ToolResult):
+                return authorization
         if self._closed:
             return _protocol_error(
                 call.call_id,
@@ -204,16 +216,7 @@ class EnvironmentKernel:
                 message="environment session is closed",
             )
 
-        try:
-            route = self._router.route(decision)
-        except RuntimeError:
-            return _protocol_error(
-                call.call_id,
-                code="internal",
-                message="execution route is not supported",
-            )
-
-        state = self._supervisor.admit(decision, route)
+        state = self._supervisor.admit(command, route)
         if state is None:
             return _protocol_error(
                 call.call_id,
@@ -269,11 +272,46 @@ class EnvironmentKernel:
             ),
         )
 
+    async def _evaluate(
+        self,
+        command: ShellParseResult,
+        call_id: str,
+    ) -> PolicyEvaluation | ToolResult:
+        policy = self._policy
+        if policy is None:
+            raise RuntimeError("policy evaluation requires a configured policy")
+        try:
+            evaluation = await policy.evaluate(command)
+        except Exception as exc:
+            self._emit_diagnostic(
+                "execution_policy.failed",
+                "execution policy raised an exception",
+                detail={"exception": repr(exc)},
+            )
+            return _protocol_error(
+                call_id,
+                code="policy_denied",
+                message="execution policy failed closed",
+            )
+        if not _is_valid_evaluation(evaluation):
+            self._emit_diagnostic(
+                "execution_policy.invalid_evaluation",
+                "execution policy returned an invalid evaluation",
+                detail={"evaluation": repr(evaluation)},
+            )
+            return _protocol_error(
+                call_id,
+                code="policy_denied",
+                message="execution policy failed closed",
+            )
+        return evaluation
+
     async def _authorize(
         self,
         call_id: str,
         evaluation: PolicyEvaluation,
-    ) -> ExecutionDecision | ToolResult:
+        command: ShellParseResult,
+    ) -> bool | ToolResult:
         if evaluation.action is PolicyAction.DENY:
             return _protocol_error(
                 call_id,
@@ -281,29 +319,27 @@ class EnvironmentKernel:
                 message=evaluation.reason or "execution denied by policy",
             )
         if evaluation.action is PolicyAction.ALLOW:
-            return ExecutionDecision.allow(
-                evaluation.parse_result,
-                rule_id=evaluation.rule_id,
-            )
+            return True
 
-        gate = self._approval_gate
-        if gate is None:
+        interaction = self._user_interaction
+        if interaction is None:
             return _protocol_error(
                 call_id,
                 code="policy_denied",
-                message="execution requires approval but no approver is configured",
+                message="execution requires user interaction but none is configured",
             )
 
-        task = asyncio.create_task(
-            gate.request(
-                evaluation,
-                session_id=self._approval_session_id,
-            )
+        question = UserQuestion(
+            request_id=uuid4().hex,
+            session_id=self._session_id,
+            prompt=_ask_prompt(evaluation, command),
+            options=_ALLOW_ONCE_OPTIONS,
         )
-        self._approval_tasks.add(task)
+        task = asyncio.create_task(interaction.ask(question))
+        self._interaction_tasks.add(task)
         try:
             try:
-                resolution = await task
+                answer = await task
             except asyncio.CancelledError:
                 if self._closed:
                     return _protocol_error(
@@ -312,25 +348,43 @@ class EnvironmentKernel:
                         message="environment session is closed",
                     )
                 raise
-            except _ApprovalResolutionError as exc:
+            except Exception as exc:
+                self._emit_diagnostic(
+                    "execution_interaction.failed",
+                    "execution interaction raised an exception",
+                    detail={"exception": repr(exc)},
+                )
                 return _protocol_error(
                     call_id,
                     code="policy_denied",
-                    message=str(exc),
+                    message="execution interaction failed closed",
                 )
         finally:
-            self._approval_tasks.discard(task)
+            self._interaction_tasks.discard(task)
 
-        if resolution.response is ApprovalResponse.DENY:
+        if not _is_valid_answer(answer, question.options):
+            self._emit_diagnostic(
+                "execution_interaction.invalid_answer",
+                "execution interaction returned an invalid answer",
+                detail={"answer": repr(answer)},
+            )
             return _protocol_error(
                 call_id,
                 code="policy_denied",
-                message="execution approval was denied by the Host",
+                message="execution interaction failed closed",
             )
-        return ExecutionDecision.allow(
-            evaluation.parse_result,
-            rule_id=f"{evaluation.rule_id}.host-approved",
-            approval_request_id=resolution.request_id,
+        if answer.value == "allow_once":
+            return True
+        if answer.value == "deny":
+            return _protocol_error(
+                call_id,
+                code="policy_denied",
+                message=evaluation.reason or "execution denied by policy",
+            )
+        return _protocol_error(
+            call_id,
+            code="policy_denied",
+            message="execution was not approved by the user",
         )
 
     async def _output(self, call: ToolCall) -> ToolResult:
@@ -381,3 +435,51 @@ class EnvironmentKernel:
 
     def _set_cwd(self, cwd: Path) -> None:
         self._cwd = cwd
+
+    def _emit_diagnostic(
+        self,
+        kind: str,
+        message: str,
+        *,
+        detail: Mapping[str, object] | None = None,
+    ) -> None:
+        """Emit one structured Host notice when a callback is configured."""
+
+        if self._on_diagnostic is None:
+            return
+        self._on_diagnostic(
+            RuntimeDiagnostic(
+                kind=kind,
+                message=message,
+                detail=detail or {},
+            )
+        )
+
+
+def _is_valid_evaluation(evaluation: object) -> bool:
+    """Return whether one Policy result is structurally valid."""
+
+    return (
+        isinstance(evaluation, PolicyEvaluation)
+        and evaluation.action in PolicyAction
+    )
+
+
+def _ask_prompt(
+    evaluation: PolicyEvaluation,
+    command: ShellParseResult,
+) -> str:
+    """Build the standard ASK question prompt from a Policy conclusion."""
+
+    reason = evaluation.reason or "execution requires Host approval"
+    return f"{reason}\ncommand: {command.raw_command}"
+
+
+def _is_valid_answer(answer: object, options: tuple[UserOption, ...]) -> bool:
+    """Return whether one interaction answer is structurally valid."""
+
+    if not isinstance(answer, UserAnswer):
+        return False
+    if answer.value is None:
+        return True
+    return answer.value in {option.value for option in options}

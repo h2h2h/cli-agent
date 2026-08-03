@@ -13,7 +13,7 @@ flowchart TB
         CONFIG["config.py<br/>CliConfig<br/>provider 构建"]
         RUNNER["runner.py<br/>one-shot / 交互循环<br/>Runtime 生命周期"]
         PRES["presentation.py<br/>stdout / stderr<br/>事件与诊断渲染"]
-        APPROVER["Terminal Approver<br/>ASK → allow once / deny"]
+        INTERACTION["Terminal UserInteraction<br/>标准问题 → allow_once / deny"]
 
         CLI --> CONFIG --> RUNNER
         RUNNER --> PRES
@@ -47,7 +47,7 @@ flowchart TB
 
             WS["workspace.py<br/>.workspace 引导<br/>dotenv 环境快照"]
             VIEW["view.py<br/>Capability View<br/>tools / skills / library / _mcp<br/>symlink · copy-up · whiteout"]
-            PARSER["command_parser.py<br/>POSIX shlex<br/>语法与重定向事实"]
+            PARSER["command_parser.py<br/>tree-sitter Shell AST<br/>不可变语法事实"]
 
             subgraph TOOLS["tools/"]
                 direction LR
@@ -104,9 +104,9 @@ flowchart TB
                 KERNEL["kernel.py<br/>EnvironmentKernel<br/>dispatch_batch · state · close"]
 
                 PROTO["protocol.py<br/>exec / output / kill<br/>参数校验与 Execution snapshot"]
-                POLICY["policy.py<br/>ALLOW / DENY / ASK<br/>Host-owned ExecutablePolicy"]
-                DECISION["ExecutionDecision<br/>最终、不可变、allow-only 授权边界"]
-                ROUTER["routing.py<br/>Custom registry + Shell fallback<br/>Command metadata"]
+                POLICY["policy.py<br/>ExecutionPolicy（可选）<br/>ALLOW / DENY / ASK"]
+                ROUTER["routing.py<br/>resolve(ShellParseResult)<br/>Custom registry + Shell fallback"]
+                INVALID["invalid_argument<br/>parse failure 短路<br/>不进入 Router / Policy"]
                 SCHED["scheduler.py<br/>single pending queue + barriers<br/>parallel_limit"]
                 SUPV["supervisor.py<br/>执行监督<br/>等待 · 取消 · 清理"]
                 EXEC["execution_state.py<br/>_ExecutionState<br/>bounded output · Cursor · lifecycle"]
@@ -121,14 +121,15 @@ flowchart TB
                     PROC["executions.py<br/>process group<br/>SIGTERM → KILL"]
                 end
 
-                KERNEL --> PROTO --> PARSER --> POLICY
-                POLICY -->|ALLOW| DECISION
-                POLICY -->|DENY| DENIED["policy_denied<br/>不创建 Execution / 不占用队列"]
-                POLICY -->|ASK| APPROVER
-                APPROVER -->|allow once| DECISION
-                APPROVER -->|deny / timeout / fail closed| DENIED
+                KERNEL --> PROTO --> PARSER
+                PARSER -->|parse failure| INVALID
+                PARSER -->|Parsed Command| ROUTER
+                POLICY -.->|可选注入<br/>route 后 admission 前| KERNEL
+                POLICY -->|DENY / 异常 / 非法| DENIED["policy_denied<br/>不创建 Execution / 不占用队列"]
+                POLICY -->|ASK| INTERACTION
+                INTERACTION -->|allow_once| SCHED
+                INTERACTION -->|deny / cancel / 非法| DENIED
 
-                DECISION --> ROUTER
                 ROUTER -.->|查找 Custom registry| CMDS
                 ROUTER -->|_ExecutionRoute| SCHED
                 SCHED --> SUPV --> HAND_BASE
@@ -159,7 +160,7 @@ flowchart TB
     end
 
     CONFIG -->|build_provider| PROVIDER
-    RUNNER -->|provider + approver + callbacks| RT
+    RUNNER -->|provider + user_interaction + callbacks| RT
 
     classDef host fill:#e8f3ff,stroke:#3978b9,stroke-width:1.5px
     classDef runtime fill:#fff4cf,stroke:#b88a00,stroke-width:1.5px
@@ -171,7 +172,7 @@ flowchart TB
     classDef boundary fill:#f2f4f7,stroke:#667085,stroke-width:2px
     classDef artifact fill:#f7f7f7,stroke:#8c8c8c,stroke-dasharray:5 3
 
-    class CLI,CONFIG,RUNNER,PRES,APPROVER host
+    class CLI,CONFIG,RUNNER,PRES,INTERACTION host
     class RT,DIAG,SYSMSG,SYSCALLS,MODEL runtime
     class PROVIDER adapter
     class WS,VIEW,PARSER,T_FACTS,T_CAT,T_GRAM,T_ENV,T_WORKER capability
@@ -179,7 +180,7 @@ flowchart TB
     class M_FACTS,M_CAT mcp
     class M_STUB artifact
     class SESSION_NODE,RES boundary
-    class KERNEL,PROTO,POLICY,DECISION,DENIED,ROUTER,SCHED,SUPV,EXEC,CMDS,HAND_BASE,SHELL_HANDLER,TOOL_HANDLER,PROC environment
+    class KERNEL,PROTO,POLICY,INVALID,DENIED,ROUTER,SCHED,SUPV,EXEC,CMDS,HAND_BASE,SHELL_HANDLER,TOOL_HANDLER,PROC environment
 ```
 
 ## Unified command execution
@@ -188,14 +189,28 @@ The model-visible surface remains the fixed `exec`, `output`, and `kill`
 syscalls. An `exec` call follows one Session lifecycle:
 
 ```text
-CommandParseResult
-    → Policy / Approval
-    → allow-only ExecutionDecision
-    → Custom-first Command Router
-    → one global Scheduler queue and barrier
-    → Supervisor + Command Handler
-    → backend-neutral Execution Snapshot
+exec(raw command)
+    -> parse_shell_ast
+       -> parse failure: invalid_argument ToolResult
+    -> Router.resolve(parsed command) -> _ExecutionRoute
+    -> optional ExecutionPolicy.evaluate(parsed command)
+       -> ALLOW: continue
+       -> DENY: policy_denied ToolResult
+       -> ASK: UserInteraction.ask(standard question)
+          -> allow_once: continue
+          -> deny / cancel / invalid / failure: policy_denied ToolResult
+    -> Supervisor.admit(parsed command, route)
+    -> Scheduler -> Execution
+    -> backend-neutral Execution Snapshot
 ```
+
+Router runs before any Policy and only selects the Command and the
+Runtime-trusted `parallel_safe` fact. Policy is an optional Host plugin:
+`execution_policy=None` fully skips evaluation and constructs no implicit
+decision. `user_interaction` is a required, Host-owned `AgentRuntime.open`
+dependency even when Policy is absent; Runtime close only cancels pending
+asks and never closes the interaction. The current design assumes one
+Runtime serves one Session at a time.
 
 `cd` and `export` are registered Custom commands with mutable Session context.
 The `tools` command is another Custom command; its Tool grammar and Catalog

@@ -259,7 +259,7 @@ def test_contains_shell_composition_is_derived_from_ast(
         ("ls >/dev/null 2>&1", True),
         ("cat <<EOF\nhello\nEOF", False),
         ("echo hi > out.txt 2>err.txt", True),
-        ("tools run PY<<\nx\nPY", False),
+        ("tools run <<'PY'\nx\nPY", False),
     ),
 )
 def test_contains_output_redirection_is_derived_from_ast(

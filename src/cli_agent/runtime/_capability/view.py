@@ -15,9 +15,7 @@ from pathlib import Path
 from typing import AsyncIterator, Literal
 
 from cli_agent.runtime._capability.command_parser import (
-    _DIRECT_MUTATORS,
     ShellParseResult,
-    _sed_is_in_place,
     _strip_quotes,
     collect_redirects,
 )
@@ -25,6 +23,32 @@ from cli_agent.runtime._capability.workspace import _ensure_real_directory
 
 _CAPABILITY_DIRECTORIES = ("tools", "skills", "library", "_mcp")
 _MCP_DIRECTORY = "_mcp"
+
+_DIRECT_MUTATORS = frozenset(
+    {
+        "chmod",
+        "chown",
+        "cp",
+        "dd",
+        "install",
+        "ln",
+        "mkdir",
+        "mv",
+        "patch",
+        "rm",
+        "rmdir",
+        "tee",
+        "touch",
+        "truncate",
+        "unlink",
+    }
+)
+
+
+def _sed_is_in_place(tokens: tuple[str, ...]) -> bool:
+    """Return whether the operand tokens request an in-place sed edit."""
+
+    return any(token.startswith("-i") for token in tokens)
 
 
 @dataclass(frozen=True, slots=True)

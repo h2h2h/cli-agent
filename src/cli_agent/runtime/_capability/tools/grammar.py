@@ -10,7 +10,8 @@ from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.facts import ToolCommand
 
 _HEREDOC_PATTERN = re.compile(
-    r"\Atools[ \t]+run[ \t]+PY<<[ \t]*\r?\n(?P<code>.*)\r?\nPY[ \t]*\Z",
+    r"\Atools[ \t]+run[ \t]+<<[ \t]*(?:'PY'|\"PY\"|PY)[ \t]*\r?\n"
+    r"(?P<code>.*)\r?\nPY[ \t]*\Z",
     re.DOTALL,
 )
 _RUN_PREFIX = re.compile(r"\Atools[ \t]+run(?:[ \t]+(?P<argument>.*))?\Z")
@@ -65,7 +66,7 @@ def _tool_facts(command: ShellParseResult, catalog: _ToolCatalog) -> ToolCommand
         valid=False,
         validation_error=(
             "Usage: tools <list|info|run>; run accepts one quoted Python "
-            "payload or exact PY<< ... PY syntax"
+            "payload or exact <<'PY' ... PY heredoc syntax"
         ),
     )
 

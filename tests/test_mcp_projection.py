@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from interaction_fakes import _ScriptedInteraction
 
 from cli_agent.runtime import AgentRuntime, ScriptedModelProvider
 from cli_agent.runtime._capability.mcp import catalog as mcp_catalog_module
@@ -13,6 +14,9 @@ from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+
+_user_interaction = _ScriptedInteraction("allow_once")
+
 
 _FIXTURE = Path(__file__).parent / "mcp_server_fixture.py"
 
@@ -279,6 +283,7 @@ def test_runtime_open_projects_mcp_stub_without_diagnostics(
 
     async def scenario() -> None:
         async with await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=workspace,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
@@ -308,6 +313,7 @@ def test_discovery_failure_keeps_runtime_open_without_partial_stub(
 
     async def scenario() -> None:
         async with await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=workspace,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
@@ -415,6 +421,7 @@ def test_runtime_open_reports_invalid_config_without_blocking(
 
     async def scenario() -> None:
         async with await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=workspace,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),

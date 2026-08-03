@@ -18,7 +18,6 @@ from cli_agent.runtime._environment.handlers.base import (
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
-from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime._environment.routing import (
     _CommandRouter,
 )
@@ -52,14 +51,10 @@ def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> No
         custom_registry=registry,
     )
 
-    export_route = router.route(ExecutionDecision.allow(parse_shell_ast("export A=1")))
-    read_route = router.route(
-        ExecutionDecision.allow(parse_shell_ast("cli_read file.txt"))
-    )
-    cat_route = router.route(ExecutionDecision.allow(parse_shell_ast("cat file.txt")))
-    pipeline_route = router.route(
-        ExecutionDecision.allow(parse_shell_ast("cat file.txt | head"))
-    )
+    export_route = router.resolve(parse_shell_ast("export A=1"))
+    read_route = router.resolve(parse_shell_ast("cli_read file.txt"))
+    cat_route = router.resolve(parse_shell_ast("cat file.txt"))
+    pipeline_route = router.resolve(parse_shell_ast("cat file.txt | head"))
 
     assert isinstance(export_route.command, _CustomCommand)
     assert export_route.command.name == "export"

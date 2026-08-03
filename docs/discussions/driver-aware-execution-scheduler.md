@@ -9,6 +9,11 @@ The Tool/Shell lane model in this historical discussion is not part of the
 current implementation. RFC-0007 replaces it with Command metadata and one
 global Scheduler barrier model.
 
+[RFC-0008](../rfcs/approved/RFC-0008-shell-ast-pluggable-policy-and-guided-exploration.md)
+supersedes the `ExecutionDecision` references in this record: admission now
+receives the raw parsed command and an `_ExecutionRoute`, and Policy metadata
+never enters the Scheduler.
+
 ## Question
 
 Should a Session serialize every Execution, or should it retain deterministic

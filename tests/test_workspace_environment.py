@@ -2,9 +2,13 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from interaction_fakes import _ScriptedInteraction
 
 import cli_agent.runtime.runtime as runtime_module
 from cli_agent.runtime import AgentRuntime, ScriptedModelProvider
+
+_user_interaction = _ScriptedInteraction("allow_once")
+
 
 
 def test_runtime_open_loads_complete_dotenv_environment(
@@ -34,6 +38,7 @@ def test_runtime_open_loads_complete_dotenv_environment(
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
         )
@@ -63,11 +68,13 @@ def test_workspace_environment_is_loaded_once_per_runtime(tmp_path: Path) -> Non
 
     async def scenario() -> None:
         first_runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
         )
         environment.write_text("VALUE=second\n", encoding="utf-8")
         second_runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
         )
@@ -112,6 +119,7 @@ def test_runtime_open_rejects_malformed_workspace_environment(
     async def scenario() -> None:
         with pytest.raises(ValueError, match=message) as raised:
             await AgentRuntime.open(
+                user_interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
             )
@@ -139,6 +147,7 @@ def test_runtime_open_rejects_workspace_environment_symbolic_link(
             match="must be a real regular file",
         ) as raised:
             await AgentRuntime.open(
+                user_interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
             )
@@ -158,6 +167,7 @@ def test_runtime_open_reports_first_invalid_dotenv_line(tmp_path: Path) -> None:
     async def scenario() -> None:
         with pytest.raises(ValueError, match="at line 2") as raised:
             await AgentRuntime.open(
+                user_interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
             )

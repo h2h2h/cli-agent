@@ -3,15 +3,17 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+from interaction_fakes import _ScriptedInteraction
+from policy_fakes import _DenyExecutablePolicy
 
 import cli_agent.runtime.runtime as runtime_module
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
-    ExecutablePolicy,
     ModelCompletion,
     ModelEvent,
     ModelProvider,
+    PolicyAction,
     PolicyEvaluation,
     RuntimeClosedError,
     ScriptedModelProvider,
@@ -28,6 +30,9 @@ from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._resources import _RuntimeResources
 
+_user_interaction = _ScriptedInteraction("allow_once")
+
+
 
 def test_opens_and_closes_runtime_explicitly(tmp_path: Path, monkeypatch) -> None:
     _TrackingEnvironmentKernel.instances.clear()
@@ -39,6 +44,7 @@ def test_opens_and_closes_runtime_explicitly(tmp_path: Path, monkeypatch) -> Non
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
         )
@@ -68,6 +74,7 @@ def test_closes_runtime_context_manager(tmp_path: Path, monkeypatch) -> None:
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
         )
@@ -113,10 +120,12 @@ def test_host_configures_runtime_lifetime_executable_deny_set(
 
     async def scenario() -> None:
         async with await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
-            execution_policy=ExecutablePolicy(
-                denied_executables=frozenset({"echo"}),
+            execution_policy=_DenyExecutablePolicy(
+                frozenset({"echo"}),
+                reason="direct invocation of 'echo' is denied by policy",
             ),
         ) as runtime:
             await _collect_turn(runtime, "session", UserMessage.text("Run echo"))
@@ -132,6 +141,16 @@ def test_host_configures_runtime_lifetime_executable_deny_set(
         provider.assert_exhausted()
 
     asyncio.run(scenario())
+
+
+def test_open_requires_user_interaction_and_creates_no_default(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(TypeError):
+        AgentRuntime.open(
+            workspace=tmp_path,
+            provider=ScriptedModelProvider(script=()),
+        )
 
 
 def test_passes_parallel_command_authorization_to_kernel(
@@ -153,10 +172,12 @@ def test_passes_parallel_command_authorization_to_kernel(
             script=((_completion(AssistantMessage.text("configured")),),)
         )
         default_runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=default_provider,
         )
         configured_runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=configured_provider,
             parallel_commands=frozenset({"cat", "rg"}),
@@ -177,7 +198,7 @@ def test_passes_parallel_command_authorization_to_kernel(
             for kernel in _TrackingEnvironmentKernel.instances
         ] == [frozenset(), frozenset({"cat", "rg"})]
         assert [
-            kernel.approval_session_id
+            kernel.session_id
             for kernel in _TrackingEnvironmentKernel.instances
         ] == ["default", "configured"]
 
@@ -207,6 +228,7 @@ def test_cleans_up_environment_when_open_fails(
             await FailingAgentRuntime.open(
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
+                user_interaction=_user_interaction,
             )
 
         assert _TrackingEnvironmentKernel.instances == []
@@ -235,6 +257,7 @@ def test_closes_new_kernel_when_agent_loop_construction_fails(
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
         )
@@ -269,6 +292,7 @@ def test_reuses_session_history_and_bound_provider(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=default_provider,
         )
@@ -323,6 +347,7 @@ def test_reusing_closed_session_id_creates_fresh_state(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
         )
@@ -362,6 +387,7 @@ def test_assembles_workspace_and_optional_host_instruction(
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             system_instruction="Prefer focused, reversible changes.",
@@ -405,6 +431,7 @@ def test_runtime_closes_every_session_kernel(
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
         )
@@ -431,6 +458,7 @@ def test_runtime_closes_every_session_kernel(
 def test_runtime_holds_single_resource_aggregate(tmp_path: Path) -> None:
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
         )
@@ -472,7 +500,7 @@ def test_sessions_borrow_the_same_workspace_resources(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider)
+        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider, user_interaction=_user_interaction)
         await _collect_turn(runtime, "session-a", UserMessage.text("A"))
         await _collect_turn(runtime, "session-b", UserMessage.text("B"))
 
@@ -511,7 +539,7 @@ def test_each_session_gets_an_independent_environment_copy(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider)
+        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider, user_interaction=_user_interaction)
         await _collect_turn(runtime, "session-a", UserMessage.text("A"))
         await _collect_turn(runtime, "session-b", UserMessage.text("B"))
 
@@ -543,7 +571,7 @@ def test_runtime_close_only_closes_session_owned_state(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider)
+        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider, user_interaction=_user_interaction)
         resources = runtime._resources
         await _collect_turn(runtime, "session-a", UserMessage.text("A"))
         await _collect_turn(runtime, "session-b", UserMessage.text("B"))
@@ -589,32 +617,36 @@ def test_host_owned_dependencies_stay_outside_the_aggregate(
             self.closed = False
 
         async def evaluate(self, command: object) -> PolicyEvaluation:
-            return PolicyEvaluation.allow(command)
+            del command
+            return PolicyEvaluation(
+                action=PolicyAction.ALLOW,
+                rule_id="test.allow",
+            )
 
         def close(self) -> None:
             self.closed = True
 
-    class _TrackingApprover:
+    class _TrackingInteraction:
         def __init__(self) -> None:
             self.closed = False
 
-        async def approve(self, request: object) -> object:
-            raise AssertionError("approver must not be invoked")
+        async def ask(self, request: object) -> object:
+            raise AssertionError("interaction must not be invoked")
 
         def close(self) -> None:
             self.closed = True
 
     provider = _TrackingProvider()
     policy = _TrackingPolicy()
-    approver = _TrackingApprover()
+    interaction = _TrackingInteraction()
     received: list[object] = []
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=interaction,
             workspace=tmp_path,
             provider=provider,
             execution_policy=policy,
-            execution_approver=approver,
             on_diagnostic=received.append,
         )
         await _collect_turn(runtime, "session-a", UserMessage.text("Work"))
@@ -622,11 +654,11 @@ def test_host_owned_dependencies_stay_outside_the_aggregate(
 
         field_names = set(_RuntimeResources.__dataclass_fields__)
         assert field_names.isdisjoint(
-            {"provider", "policy", "approval_gate", "on_diagnostic"}
+            {"provider", "policy", "user_interaction", "on_diagnostic"}
         )
         assert not provider.closed
         assert not policy.closed
-        assert not approver.closed
+        assert not interaction.closed
 
     asyncio.run(scenario())
 
@@ -647,9 +679,10 @@ class _TrackingEnvironmentKernel:
         capability_view: object,
         tool_catalog: object,
         tool_environment: object,
-        approval_gate: object,
-        approval_session_id: str,
+        user_interaction: object,
+        session_id: str,
         parallel_commands: frozenset[str],
+        on_diagnostic: object | None,
     ) -> None:
         self.workspace = Path(workspace)
         self.base_env = dict(base_env or {})
@@ -657,9 +690,10 @@ class _TrackingEnvironmentKernel:
         self.capability_view = capability_view
         self.tool_catalog = tool_catalog
         self.tool_environment = tool_environment
-        self.approval_gate = approval_gate
-        self.approval_session_id = approval_session_id
+        self.user_interaction = user_interaction
+        self.session_id = session_id
         self.parallel_commands = parallel_commands
+        self.on_diagnostic = on_diagnostic
         self.close_count = 0
         self.events: list[str] = []
         self.instances.append(self)

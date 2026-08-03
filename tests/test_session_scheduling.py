@@ -7,7 +7,7 @@ from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.execution_state import _ExecutionState
-from cli_agent.runtime._environment.policy import PolicyEvaluation
+from cli_agent.runtime._environment.policy import PolicyAction, PolicyEvaluation
 
 _UNKNOWN_EXECUTION = {
     "ok": False,
@@ -31,7 +31,10 @@ class _CountingPolicy:
         command: ShellParseResult,
     ) -> PolicyEvaluation:
         self.calls += 1
-        return PolicyEvaluation.allow(command)
+        return PolicyEvaluation(
+            action=PolicyAction.ALLOW,
+            rule_id="scheduling-test",
+        )
 
 
 class _BlockingPolicy:
@@ -45,7 +48,10 @@ class _BlockingPolicy:
     ) -> PolicyEvaluation:
         self.entered.set()
         await self.release.wait()
-        return PolicyEvaluation.allow(command)
+        return PolicyEvaluation(
+            action=PolicyAction.ALLOW,
+            rule_id="scheduling-test",
+        )
 
 
 def test_foreign_and_missing_handles_are_indistinguishable(

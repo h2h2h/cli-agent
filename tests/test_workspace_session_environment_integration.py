@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from interaction_fakes import _ScriptedInteraction
 
 from cli_agent.runtime import (
     AgentRuntime,
@@ -19,6 +20,8 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
+
+_user_interaction = _ScriptedInteraction("allow_once")
 
 
 def test_public_runtime_combines_workspace_session_and_host_environment(
@@ -57,6 +60,7 @@ def test_public_runtime_combines_workspace_session_and_host_environment(
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider_a,
         )
@@ -117,6 +121,7 @@ def test_public_runtime_combines_workspace_session_and_host_environment(
         await runtime.close()
 
         later_runtime = await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=later_provider,
         )
@@ -214,6 +219,8 @@ async def _collect_turn(
 
 
 def _assert_result_statuses(
+
+
     provider: ScriptedModelProvider,
     *,
     request_index: int,

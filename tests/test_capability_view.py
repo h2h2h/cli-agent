@@ -4,13 +4,10 @@ import shlex
 from pathlib import Path
 
 import pytest
+from interaction_fakes import _ScriptedInteraction
+from policy_fakes import _AskForWritesPolicy
 
-from cli_agent.runtime import (
-    ApprovalResponse,
-    ExecutionApprovalRequest,
-    ToolCall,
-    ToolResult,
-)
+from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -19,7 +16,6 @@ from cli_agent.runtime._environment.handlers.base import (
     _ExecutionOutcome,
 )
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
-from cli_agent.runtime._environment.policy import _ExecutionApprovalGate
 
 
 def test_attach_exposes_lower_files_and_preserves_workspace_overrides(
@@ -97,27 +93,26 @@ def test_approved_output_redirection_copies_up_before_shell_spawn(
     lower.write_text("lower\n", encoding="utf-8")
     view = _CapabilityView.open(workspace, repertoire)
     visible = workspace / ".workspace" / "tools" / "message.txt"
-    approver = _RecordingApprover(ApprovalResponse.ALLOW)
+    interaction = _ScriptedInteraction("allow_once")
+    command = "echo workspace > .workspace/tools/message.txt"
 
     async def scenario() -> None:
         kernel = EnvironmentKernel(
             workspace,
             capability_view=view,
-            approval_gate=_ExecutionApprovalGate(approver),
+            policy=_AskForWritesPolicy(),
+            user_interaction=interaction,
         )
         try:
-            result = await _exec(
-                kernel,
-                "echo workspace > .workspace/tools/message.txt",
-            )
+            result = await _exec(kernel, command)
             assert _output(result)["status"] == "exited"
         finally:
             await kernel.close()
 
     asyncio.run(scenario())
 
-    assert len(approver.requests) == 1
-    assert approver.requests[0].contains_output_redirection is True
+    assert len(interaction.questions) == 1
+    assert f"command: {command}" in interaction.questions[0].prompt
     assert lower.read_text(encoding="utf-8") == "lower\n"
     assert visible.is_file()
     assert not visible.is_symlink()
@@ -136,9 +131,8 @@ def test_denied_modification_does_not_copy_up(tmp_path: Path) -> None:
         kernel = EnvironmentKernel(
             workspace,
             capability_view=view,
-            approval_gate=_ExecutionApprovalGate(
-                _RecordingApprover(ApprovalResponse.DENY)
-            ),
+            policy=_AskForWritesPolicy(),
+            user_interaction=_ScriptedInteraction("deny"),
         )
         try:
             result = await _exec(
@@ -263,19 +257,20 @@ def test_copy_up_is_atomic_across_concurrent_sessions(tmp_path: Path) -> None:
     lower = repertoire / "tools" / "shared.txt"
     lower.write_text("lower\n", encoding="utf-8")
     view = _CapabilityView.open(workspace, repertoire)
-    approver = _RecordingApprover(ApprovalResponse.ALLOW)
-    gate = _ExecutionApprovalGate(approver)
+    interaction = _ScriptedInteraction("allow_once")
 
     async def scenario() -> None:
         first = EnvironmentKernel(
             workspace,
             capability_view=view,
-            approval_gate=gate,
+            policy=_AskForWritesPolicy(),
+            user_interaction=interaction,
         )
         second = EnvironmentKernel(
             workspace,
             capability_view=view,
-            approval_gate=gate,
+            policy=_AskForWritesPolicy(),
+            user_interaction=interaction,
         )
         try:
             await asyncio.gather(
@@ -346,9 +341,8 @@ def test_copy_up_rejects_symbolic_link_directory_traversal(
         kernel = EnvironmentKernel(
             workspace,
             capability_view=view,
-            approval_gate=_ExecutionApprovalGate(
-                _RecordingApprover(ApprovalResponse.ALLOW)
-            ),
+            policy=_AskForWritesPolicy(),
+            user_interaction=_ScriptedInteraction("allow_once"),
         )
         try:
             result = await _exec(
@@ -410,6 +404,26 @@ def test_allows_default_repertoire_beneath_workspace_ancestor(
     assert (workspace / ".workspace" / "tools").is_dir()
 
 
+def test_mutation_rules_are_owned_by_capability_view() -> None:
+    import cli_agent.runtime._capability.command_parser as parser_module
+    import cli_agent.runtime._capability.view as view_module
+
+    assert not hasattr(parser_module, "_DIRECT_MUTATORS")
+    assert not hasattr(parser_module, "_sed_is_in_place")
+    assert hasattr(view_module, "_DIRECT_MUTATORS")
+    assert hasattr(view_module, "_sed_is_in_place")
+
+
+def test_policy_test_fake_owns_its_mutation_list() -> None:
+    import policy_fakes
+
+    import cli_agent.runtime._capability.view as view_module
+
+    assert hasattr(policy_fakes, "_MUTATOR_EXECUTABLES")
+    assert not hasattr(policy_fakes, "_DIRECT_MUTATORS")
+    assert policy_fakes._MUTATOR_EXECUTABLES == view_module._DIRECT_MUTATORS
+
+
 def _roots(tmp_path: Path) -> tuple[Path, Path]:
     workspace = tmp_path / "workspace"
     repertoire = tmp_path / "repertoire"
@@ -428,9 +442,8 @@ def _run_approved(
         kernel = EnvironmentKernel(
             workspace,
             capability_view=view,
-            approval_gate=_ExecutionApprovalGate(
-                _RecordingApprover(ApprovalResponse.ALLOW)
-            ),
+            policy=_AskForWritesPolicy(),
+            user_interaction=_ScriptedInteraction("allow_once"),
         )
         try:
             assert _output(await _exec(kernel, command))["status"] == "exited"
@@ -454,19 +467,6 @@ def _output(result: ToolResult) -> dict[str, object]:
     assert result.error is None
     assert isinstance(result.output, dict)
     return result.output
-
-
-class _RecordingApprover:
-    def __init__(self, response: ApprovalResponse) -> None:
-        self.response = response
-        self.requests: list[ExecutionApprovalRequest] = []
-
-    async def approve(
-        self,
-        request: ExecutionApprovalRequest,
-    ) -> ApprovalResponse:
-        self.requests.append(request)
-        return self.response
 
 
 class _DiscardOutput:

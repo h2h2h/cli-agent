@@ -4,6 +4,8 @@ import socket
 import sys
 from pathlib import Path
 
+from interaction_fakes import _ScriptedInteraction
+
 import cli_agent.runtime as runtime_package
 from cli_agent.runtime import (
     AgentRuntime,
@@ -20,6 +22,9 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
+
+_user_interaction = _ScriptedInteraction("allow_once")
+
 
 
 def test_runs_the_smallest_deterministic_agent_loop(
@@ -78,6 +83,7 @@ def test_runs_the_smallest_deterministic_agent_loop(
 
     async def scenario() -> None:
         async with await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
         ) as runtime:
@@ -203,6 +209,7 @@ def test_skill_is_discoverable_and_loaded_on_demand(
 
     async def scenario() -> None:
         async with await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             repertoire=repertoire,
@@ -264,6 +271,7 @@ def test_skill_is_discoverable_and_loaded_on_demand(
 
     async def second_scenario() -> None:
         async with await AgentRuntime.open(
+            user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             repertoire=repertoire,
@@ -292,12 +300,8 @@ def test_skill_is_discoverable_and_loaded_on_demand(
 
     assert runtime_package.__all__ == (
         "AgentRuntime",
-        "ApprovalResponse",
         "AssistantMessage",
         "ShellParseResult",
-        "ExecutablePolicy",
-        "ExecutionApprover",
-        "ExecutionApprovalRequest",
         "ExecutionPolicy",
         "JSONValue",
         "ModelCompletion",
@@ -320,7 +324,11 @@ def test_skill_is_discoverable_and_loaded_on_demand(
         "ToolCallReady",
         "ToolResult",
         "ToolResultMessage",
+        "UserAnswer",
+        "UserInteraction",
         "UserMessage",
+        "UserOption",
+        "UserQuestion",
     )
 
 

@@ -21,7 +21,6 @@ from cli_agent.runtime._environment.handlers.executions import (
     _ProcessExecution,
 )
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
-from cli_agent.runtime._environment.policy import ExecutionDecision
 from cli_agent.runtime._environment.routing import (
     _ExecutionRoute,
 )
@@ -212,9 +211,8 @@ def test_kernel_runs_and_cancels_prepared_execution_without_branch(
             chunk_limit=10,
             byte_limit=1_000,
         )
-        decision = ExecutionDecision.allow(parse_shell_ast("fake command"))
         state = kernel._supervisor.admit(
-            decision,
+            parse_shell_ast("fake command"),
             _shell_route(handler),
         )
         assert state is not None
@@ -300,13 +298,12 @@ def test_handler_preparation_failure_releases_serial_slot_for_queued_execution(
             chunk_limit=10,
             byte_limit=1_000,
         )
-        decision = ExecutionDecision.allow(parse_shell_ast("fake command"))
         failed = kernel._supervisor.admit(
-            decision,
+            parse_shell_ast("fake command"),
             _shell_route(_FailingHandler()),
         )
         queued = kernel._supervisor.admit(
-            decision,
+            parse_shell_ast("fake command"),
             _shell_route(_SuccessfulHandler()),
         )
         assert failed is not None
