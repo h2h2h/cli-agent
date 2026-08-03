@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
-from cli_agent.runtime._capability.command_parser import (
-    _DIRECT_MUTATORS,
-    ShellParseResult,
-)
+from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.policy import PolicyAction, PolicyEvaluation
+
+_MUTATOR_EXECUTABLES = frozenset(
+    {
+        "chmod",
+        "chown",
+        "cp",
+        "dd",
+        "install",
+        "ln",
+        "mkdir",
+        "mv",
+        "patch",
+        "rm",
+        "rmdir",
+        "tee",
+        "touch",
+        "truncate",
+        "unlink",
+    }
+)
 
 
 class _AllowAllPolicy:
@@ -23,7 +40,7 @@ class _AskForWritesPolicy:
     async def evaluate(self, command: ShellParseResult) -> PolicyEvaluation:
         if (
             command.contains_output_redirection
-            or command.executable_basename in _DIRECT_MUTATORS
+            or command.executable_basename in _MUTATOR_EXECUTABLES
         ):
             return PolicyEvaluation(
                 action=PolicyAction.ASK,

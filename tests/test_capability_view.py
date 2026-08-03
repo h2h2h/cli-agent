@@ -404,6 +404,26 @@ def test_allows_default_repertoire_beneath_workspace_ancestor(
     assert (workspace / ".workspace" / "tools").is_dir()
 
 
+def test_mutation_rules_are_owned_by_capability_view() -> None:
+    import cli_agent.runtime._capability.command_parser as parser_module
+    import cli_agent.runtime._capability.view as view_module
+
+    assert not hasattr(parser_module, "_DIRECT_MUTATORS")
+    assert not hasattr(parser_module, "_sed_is_in_place")
+    assert hasattr(view_module, "_DIRECT_MUTATORS")
+    assert hasattr(view_module, "_sed_is_in_place")
+
+
+def test_policy_test_fake_owns_its_mutation_list() -> None:
+    import policy_fakes
+
+    import cli_agent.runtime._capability.view as view_module
+
+    assert hasattr(policy_fakes, "_MUTATOR_EXECUTABLES")
+    assert not hasattr(policy_fakes, "_DIRECT_MUTATORS")
+    assert policy_fakes._MUTATOR_EXECUTABLES == view_module._DIRECT_MUTATORS
+
+
 def _roots(tmp_path: Path) -> tuple[Path, Path]:
     workspace = tmp_path / "workspace"
     repertoire = tmp_path / "repertoire"
