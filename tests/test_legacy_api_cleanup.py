@@ -42,3 +42,18 @@ def test_architecture_docs_pin_the_rfc_0007_execution_model() -> None:
     assert "no Tool-specific lane" in architecture
     assert "Superseded by [RFC-0007]" in rfc_0003
     assert "`CommandParseResult.tool`" in rfc_0003
+
+
+def test_architecture_docs_pin_the_rfc_0008_execution_boundaries() -> None:
+    architecture = _ARCHITECTURE_DOC.read_text(encoding="utf-8")
+
+    assert "ExecutionPolicy（可选）" in architecture
+    assert "resolve(ShellParseResult)" in architecture
+    assert "Terminal UserInteraction" in architecture
+    assert "invalid_argument" in architecture
+    for removed in (
+        "ExecutablePolicy",
+        "ExecutionDecision",
+        "Terminal Approver",
+    ):
+        assert removed not in architecture, "removed term remains in architecture"

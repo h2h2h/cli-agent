@@ -8,6 +8,12 @@ The implementation details in this discussion are superseded and completed
 by [RFC-0007](../rfcs/proposed/RFC-0007-unified-command-routing-and-execution-refactor.md),
 which makes Command metadata and the global Scheduler barriers normative.
 
+[RFC-0008](../rfcs/proposed/RFC-0008-shell-ast-pluggable-policy-and-guided-exploration.md)
+additionally supersedes the Policy position in the flow below: the Router now
+resolves the parsed command before an optional Host Policy, `ExecutionDecision`
+and the dedicated approval types no longer exist, and `ASK` is answered through
+the Host-owned `UserInteraction` channel.
+
 ## Decision
 
 cli-agent uses the AEP Session command model as its execution baseline and adds

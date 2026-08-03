@@ -28,6 +28,13 @@ supports `ALLOW`, `DENY`, and `ASK`; only a final allow-only
 file mutations remain CLI operations, so optimistic conflict detection is not
 promised for arbitrary Shell writes.
 
+[RFC-0008](../rfcs/proposed/RFC-0008-shell-ast-pluggable-policy-and-guided-exploration.md)
+further supersedes the `ExecutionDecision` and dedicated Approver boundary
+described below. The Router now resolves `ShellParseResult` directly, Policy
+is an optional Host plugin that runs after routing, and `ASK` is answered
+through the always-present Host-owned `UserInteraction` channel instead of a
+dedicated approval gate with capacity and timeout.
+
 ## Question
 
 cli-agent is converging on one CLI-shaped environment surface:

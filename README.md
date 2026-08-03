@@ -63,42 +63,49 @@ commands can inspect or emit `CLI_AGENT_API_KEY` and any other exported value.
 Run the complete Runtime inside an external sandbox when that exposure is not
 acceptable.
 
-## Execution approval
+## Execution policy and user interaction
 
-The default Runtime Policy asks the Host to approve recognized direct
-filesystem-mutating commands:
+Policy is an optional Host-injected plugin: `execution_policy=None` fully skips
+Policy evaluation and constructs no implicit decision. A configured
+`ExecutionPolicy` evaluates every parsed, routed command with
+`evaluate(ShellParseResult)` and returns `ALLOW`, `DENY`, or `ASK`.
 
-```text
-chmod  chown  cp  dd  install  ln  mkdir  mv
-patch  rm  rmdir  tee  touch  truncate  unlink
-```
-
-Shell output redirection to a file and `sed -i` also require approval by
-default. Input redirection, file-descriptor duplication, and ordinary
-read-only `sed` invocations do not.
-
-Other executable names are allowed by default. The Reference CLI displays the
-exact command and reason on stderr:
+- `DENY` blocks the current command with `policy_denied` and the Policy reason.
+- `ASK` is converted by the Runtime into a standard question carrying the
+  Policy reason and the exact command, with the fixed `allow_once` and `deny`
+  options. The Reference CLI displays it on stderr:
 
 ```text
-[approval] direct invocation of 'rm' requires Host approval
-  command: rm report.txt
+[interaction] direct invocation of 'rm' requires Host approval
+command: rm report.txt
 Allow once? [y/N]
 ```
 
-Only `y` or `yes` allows that command once. Every other response, EOF, timeout,
-missing approver, callback failure, or invalid response fails closed without
-creating an Execution. An unresolved approval does not receive an `exec_id` or
-consume Execution queue capacity.
+Only `allow_once` allows that command once and never persists. `deny`,
+cancellation, interaction failure, and invalid answers fail closed without
+creating an Execution or consuming queue capacity. Policy exceptions and
+invalid evaluations also fail closed, are reported through the Host
+diagnostic, and leave the Session usable.
 
-Embedding Hosts can supply an `ExecutablePolicy` with disjoint allow, deny, and
-ask executable-name sets, a default `PolicyAction`, and an asynchronous
-`ExecutionApprover` through `AgentRuntime.open`. Executable-name inspection is
-a narrow admission guardrail augmented by explicit output-redirection and
-in-place-`sed` recognition. Wrappers, scripts, interpreters, compound commands,
-and arbitrary programs can still perform effects that are not visible from
-the first executable name. It is not an operating-system sandbox or
-comprehensive modification detector.
+Embedding Hosts pass a required `user_interaction` and an optional
+`execution_policy` to `AgentRuntime.open`:
+
+```python
+await AgentRuntime.open(
+    workspace=...,
+    provider=...,
+    user_interaction=terminal_interaction,
+    execution_policy=None,  # or any ExecutionPolicy implementation
+)
+```
+
+The Runtime never owns or closes the Host interaction, and Session or Runtime
+close only cancels pending asks. Executable-name inspection and
+redirection recognition are narrow admission guardrails at best: wrappers,
+scripts, interpreters, and compound commands can still perform effects that
+are not visible from the first executable name. Policy and interaction are
+plugin boundaries, not an operating-system sandbox or comprehensive
+modification detector.
 
 ## Capability View
 
@@ -128,8 +135,8 @@ files appear within them as file-level symbolic links, while Workspace-created
 files are ordinary files. A Workspace file at the same relative path shadows
 the Repertoire version.
 
-After Policy and optional Host approval, recognized modifying Shell commands
-copy a lower-backed target into the Workspace before the child process starts.
+After optional Policy evaluation, recognized modifying Shell commands copy a
+lower-backed target into the Workspace before the child process starts.
 Removing a lower-only file creates a persistent whiteout; removing a Workspace
 override reveals the lower file again; removing a Workspace-only file leaves
 it absent. Runtime-owned inspection derives source and shadow facts from the
@@ -180,16 +187,19 @@ pipelines, redirections, backgrounding, or malformed arguments fail on the
 Tool route rather than falling through to a Host executable. Use an explicit
 path to invoke a Host program also named `tools`.
 
-The default Policy currently allows all Tool invocations, including Workspace
-Tools and arbitrary Python payloads. Tool code inherits the child-process
-environment and is not filesystem, process, network, or Secret sandboxed.
-Embedding Hosts can replace the execution Policy, and should use an external
-sandbox where this authority is unacceptable.
+Without a configured execution Policy, all Tool invocations run without
+Policy evaluation, including Workspace Tools and arbitrary Python payloads.
+Tool code inherits the child-process environment and is not filesystem,
+process, network, or Secret sandboxed. Embedding Hosts can inject an
+execution Policy, and should use an external sandbox where this authority is
+unacceptable.
 
-Tool work has a bounded per-Session lane independent of Shell work.
-`AgentRuntime.open(parallel_tools=..., parallel_tool_execution_capacity=...)`
-can authorize named Tools for parallel execution. This authority comes only
-from Host configuration; Tool files and generated indexes cannot grant it.
+One global Scheduler batches consecutive parallel-safe commands.
+`AgentRuntime.open(parallel_commands=...)` authorizes executable basenames
+whose direct Shell invocations may run in a parallel batch; `tools list` /
+`tools info` and any Custom command may declare their own
+`parallel_safe` fact. This authority comes only from Runtime configuration
+and command metadata; Tool files and generated indexes cannot grant it.
 
 ## Workspace and Session environment
 
