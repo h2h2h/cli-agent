@@ -404,6 +404,116 @@ def test_allows_default_repertoire_beneath_workspace_ancestor(
     assert (workspace / ".workspace" / "tools").is_dir()
 
 
+def test_prepare_path_leaves_ordinary_files_untouched(tmp_path: Path) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    outside = workspace / "notes.txt"
+    outside.write_text("user\n", encoding="utf-8")
+    lower = repertoire / "tools" / "calc.py"
+    lower.write_text("LOWER = 1\n", encoding="utf-8")
+    override = workspace / ".workspace" / "tools" / "local.py"
+    override.parent.mkdir(parents=True)
+    override.write_text("LOCAL = 1\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+
+    view.prepare_path(outside)
+    view.prepare_path(override)
+
+    assert outside.read_text(encoding="utf-8") == "user\n"
+    assert override.is_file()
+    assert not override.is_symlink()
+    assert override.read_text(encoding="utf-8") == "LOCAL = 1\n"
+    assert lower.read_text(encoding="utf-8") == "LOWER = 1\n"
+    assert view.inspect("tools/local.py").provenance == "workspace"
+
+
+def test_prepare_path_copies_up_in_view_lower_link(tmp_path: Path) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "calc.py"
+    lower.write_text("LOWER = 1\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+    visible = workspace / ".workspace" / "tools" / "calc.py"
+    assert visible.is_symlink()
+
+    view.prepare_path(visible)
+
+    assert not visible.is_symlink()
+    assert visible.read_text(encoding="utf-8") == "LOWER = 1\n"
+    assert lower.read_text(encoding="utf-8") == "LOWER = 1\n"
+    assert view.inspect("tools/calc.py").provenance == "workspace"
+    assert view.inspect("tools/calc.py").shadows_repertoire is True
+
+
+def test_prepare_path_removes_whiteout_before_write(tmp_path: Path) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "hidden.py"
+    lower.write_text("lower\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+    visible = workspace / ".workspace" / "tools" / "hidden.py"
+
+    _run_approved(workspace, view, "rm .workspace/tools/hidden.py")
+    assert view.inspect("tools/hidden.py").provenance == "whiteout"
+
+    view.prepare_path(visible)
+
+    assert not os.path.lexists(visible)
+    assert view.inspect("tools/hidden.py").provenance is None
+    assert lower.is_file()
+    assert lower.read_text(encoding="utf-8") == "lower\n"
+
+
+def test_prepare_path_rejects_symlink_intermediate(tmp_path: Path) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower_directory = repertoire / "tools" / "nested"
+    lower_directory.mkdir()
+    lower = lower_directory / "protected.txt"
+    lower.write_text("lower\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+    visible_directory = workspace / ".workspace" / "tools" / "nested"
+    for entry in tuple(visible_directory.iterdir()):
+        entry.unlink()
+    visible_directory.rmdir()
+    visible_directory.symlink_to(lower_directory, target_is_directory=True)
+
+    with pytest.raises(
+        ValueError,
+        match="must not traverse symbolic",
+    ):
+        view.prepare_path(visible_directory / "protected.txt")
+
+    assert lower.read_text(encoding="utf-8") == "lower\n"
+
+
+def test_prepare_path_allows_new_file_under_real_directory(
+    tmp_path: Path,
+) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    view = _CapabilityView.open(workspace, repertoire)
+    target = workspace / ".workspace" / "tools" / "generated" / "new.py"
+    target.parent.mkdir(parents=True)
+
+    view.prepare_path(target)
+
+    assert not os.path.lexists(target)
+    assert view.inspect("tools/generated/new.py").provenance is None
+
+
+def test_prepare_path_rejects_invalid_lower_link(tmp_path: Path) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "real.py"
+    lower.write_text("lower\n", encoding="utf-8")
+    forged_target = tmp_path / "forged.py"
+    forged_target.write_text("forged\n", encoding="utf-8")
+    view = _CapabilityView.open(workspace, repertoire)
+    forged = workspace / ".workspace" / "tools" / "real.py"
+    forged.unlink()
+    forged.symlink_to(forged_target)
+
+    with pytest.raises(ValueError, match="invalid Workspace capability symbolic"):
+        view.prepare_path(forged)
+
+    assert lower.read_text(encoding="utf-8") == "lower\n"
+
+
 def test_mutation_rules_are_owned_by_capability_view() -> None:
     import cli_agent.runtime._capability.command_parser as parser_module
     import cli_agent.runtime._capability.view as view_module

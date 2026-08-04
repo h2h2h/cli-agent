@@ -170,6 +170,27 @@ class _CapabilityView:
             validation_error=validation_error,
         )
 
+    def prepare_path(self, path: Path) -> None:
+        """Prepare one managed view path for a direct file mutation.
+
+        Args:
+            path (`Path`):
+                The absolute target path a Runtime command is about to write.
+
+        Raises:
+            ValueError: If the path traverses a symbolic-link intermediate
+                directory or is an invalid lower link.
+        """
+
+        if not self._is_in_view(path):
+            return
+        self._reject_symlink_intermediates(path)
+        if path.is_symlink():
+            self._copy_up(path)
+            return
+        if not _lexists(path):
+            self._remove_whiteout(path.relative_to(self.root))
+
     def _prepare_layout(self) -> None:
         _ensure_real_directory(self.root, label="workspace state path")
         _ensure_real_directory(
