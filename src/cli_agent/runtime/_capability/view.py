@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import shutil
 import stat
 import tempfile
@@ -24,32 +23,6 @@ from cli_agent.runtime._capability.workspace import _ensure_real_directory
 _CAPABILITY_DIRECTORIES = ("tools", "skills", "library", "_mcp")
 _MCP_DIRECTORY = "_mcp"
 
-_DIRECT_MUTATORS = frozenset(
-    {
-        "chmod",
-        "chown",
-        "cp",
-        "dd",
-        "install",
-        "ln",
-        "mkdir",
-        "mv",
-        "patch",
-        "rm",
-        "rmdir",
-        "tee",
-        "touch",
-        "truncate",
-        "unlink",
-    }
-)
-
-
-def _sed_is_in_place(tokens: tuple[str, ...]) -> bool:
-    """Return whether the operand tokens request an in-place sed edit."""
-
-    return any(token.startswith("-i") for token in tokens)
-
 
 @dataclass(frozen=True, slots=True)
 class _CapabilityInspection:
@@ -60,13 +33,6 @@ class _CapabilityInspection:
     shadows_repertoire: bool
     valid: bool
     validation_error: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class _DeleteSnapshot:
-    view_path: Path
-    lower_path: Path
-    lower_link: bool
 
 
 class _CapabilityView:
@@ -104,7 +70,7 @@ class _CapabilityView:
         *,
         cancelled: Callable[[], bool],
     ) -> AsyncIterator[bool]:
-        """Prepare recognized view mutations and reconcile deletion effects."""
+        """Copy up output-redirected targets before one Shell command runs."""
 
         if not _may_mutate(command):
             yield not cancelled()
@@ -112,20 +78,11 @@ class _CapabilityView:
 
         async with self._mutation_lock:
             if cancelled():
-                deleted: tuple[_DeleteSnapshot, ...] = ()
-                prepared = False
-            else:
-                delete_paths = self._delete_paths(command, cwd)
-                deleted = self._snapshot_deletes(delete_paths)
-                for path in self._write_paths(command, cwd):
-                    self._copy_up(path)
-                prepared = True
-        try:
-            yield prepared
-        finally:
-            if prepared:
-                async with self._mutation_lock:
-                    self._reconcile_deletes(deleted)
+                yield False
+                return
+            for path in self._write_paths(command, cwd):
+                self._copy_up(path)
+            yield True
 
     def inspect(self, relative_path: str | Path) -> _CapabilityInspection:
         """Return trusted provenance and shadow facts for one view path."""
@@ -315,40 +272,7 @@ class _CapabilityView:
             and redirect.is_output
             and redirect.target is not None
         ]
-        executable = command.executable_basename
-        operands = _operands(command.tokens[1:])
-
-        if executable in {"chmod", "chown", "touch", "truncate", "tee"}:
-            targets.extend(operands)
-        elif executable in {"cp", "install", "ln"} and operands:
-            targets.append(operands[-1])
-        elif executable == "mv" and operands:
-            targets.extend(operands)
-        elif executable == "dd":
-            targets.extend(
-                token.split("=", 1)[1]
-                for token in command.tokens[1:]
-                if token.startswith("of=") and len(token) > 3
-            )
-        elif executable == "sed" and _sed_is_in_place(command.tokens[1:]):
-            targets.extend(operands)
-        elif executable == "patch":
-            return tuple(self.root / name for name in _CAPABILITY_DIRECTORIES)
-
         return self._normalize_targets(targets, cwd)
-
-    def _delete_paths(
-        self,
-        command: ShellParseResult,
-        cwd: Path,
-    ) -> tuple[Path, ...]:
-        executable = command.executable_basename
-        operands = _operands(command.tokens[1:])
-        if executable in {"rm", "rmdir", "unlink"}:
-            return self._normalize_targets(operands, cwd)
-        if executable == "mv" and len(operands) >= 2:
-            return self._normalize_targets(operands[:-1], cwd)
-        return ()
 
     def _normalize_targets(
         self,
@@ -395,50 +319,6 @@ class _CapabilityView:
                 if child.is_symlink():
                     self._copy_up(child)
 
-    def _snapshot_deletes(
-        self,
-        targets: tuple[Path, ...],
-    ) -> tuple[_DeleteSnapshot, ...]:
-        snapshots: list[_DeleteSnapshot] = []
-        for target in targets:
-            candidates = (
-                tuple(target.rglob("*"))
-                if target.is_dir() and not target.is_symlink()
-                else (target,)
-            )
-            for candidate in candidates:
-                lower = self._lower_for_view_path(candidate)
-                if lower is None or not lower.is_file():
-                    continue
-                if _is_exact_lower_link(candidate, lower):
-                    snapshots.append(_DeleteSnapshot(candidate, lower, lower_link=True))
-                elif _lexists(candidate) and not candidate.is_dir():
-                    snapshots.append(
-                        _DeleteSnapshot(candidate, lower, lower_link=False)
-                    )
-        return tuple(snapshots)
-
-    def _reconcile_deletes(
-        self,
-        snapshots: tuple[_DeleteSnapshot, ...],
-    ) -> None:
-        for snapshot in snapshots:
-            if _lexists(snapshot.view_path):
-                continue
-            relative = snapshot.view_path.relative_to(self.root)
-            if snapshot.lower_link:
-                self._create_whiteout(relative)
-                continue
-
-            self._remove_whiteout(relative)
-            snapshot.view_path.parent.mkdir(parents=True, exist_ok=True)
-            if snapshot.lower_path.is_file():
-                try:
-                    snapshot.view_path.symlink_to(snapshot.lower_path)
-                except FileExistsError:
-                    pass
-        self._prepare_layout()
-
     def _is_in_view(self, path: Path) -> bool:
         return any(
             _is_relative_to(path, self.root / name) for name in _CAPABILITY_DIRECTORIES
@@ -468,11 +348,6 @@ class _CapabilityView:
 
     def _whiteout_path(self, relative: Path) -> Path:
         return self._whiteouts / relative
-
-    def _create_whiteout(self, relative: Path) -> None:
-        marker = self._whiteout_path(relative)
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch(exist_ok=True)
 
     def _remove_whiteout(self, relative: Path) -> None:
         marker = self._whiteout_path(relative)
@@ -549,34 +424,4 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def _may_mutate(command: ShellParseResult) -> bool:
-    return (
-        command.contains_output_redirection
-        or command.executable_basename in _DIRECT_MUTATORS
-        and (
-            command.executable_basename != "sed" or _sed_is_in_place(command.tokens[1:])
-        )
-    )
-
-
-def _operands(tokens: tuple[str, ...]) -> list[str]:
-    operands: list[str] = []
-    options_done = False
-    skip_redirection_target = False
-    for token in tokens:
-        if skip_redirection_target:
-            skip_redirection_target = False
-            continue
-        if re.fullmatch(r"\d*(?:>>?|<>|>\|)", token):
-            skip_redirection_target = True
-            continue
-        if re.match(r"^\d*(?:>>?|<>|>\|).+", token):
-            continue
-        if token in {"&&", "||", "|", "&", ";"}:
-            break
-        if token == "--":
-            options_done = True
-            continue
-        if not options_done and token.startswith("-"):
-            continue
-        operands.append(token)
-    return operands
+    return command.contains_output_redirection

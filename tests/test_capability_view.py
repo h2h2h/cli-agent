@@ -150,28 +150,7 @@ def test_denied_modification_does_not_copy_up(tmp_path: Path) -> None:
     assert lower.read_text(encoding="utf-8") == "lower\n"
 
 
-def test_approved_direct_mutator_copies_up_lower_file(
-    tmp_path: Path,
-) -> None:
-    workspace, repertoire = _roots(tmp_path)
-    lower = repertoire / "tools" / "touched.txt"
-    lower.write_text("lower\n", encoding="utf-8")
-    lower_mtime = lower.stat().st_mtime_ns
-    view = _CapabilityView.open(workspace, repertoire)
-    visible = workspace / ".workspace" / "tools" / "touched.txt"
-
-    _run_approved(
-        workspace,
-        view,
-        "touch .workspace/tools/touched.txt",
-    )
-
-    assert not visible.is_symlink()
-    assert visible.read_text(encoding="utf-8") == "lower\n"
-    assert lower.stat().st_mtime_ns == lower_mtime
-
-
-def test_rm_lower_only_file_creates_persistent_whiteout(
+def test_rm_lower_link_removes_view_link_without_piercing_repertoire(
     tmp_path: Path,
 ) -> None:
     workspace, repertoire = _roots(tmp_path)
@@ -179,19 +158,21 @@ def test_rm_lower_only_file_creates_persistent_whiteout(
     lower.write_text("lower\n", encoding="utf-8")
     view = _CapabilityView.open(workspace, repertoire)
     visible = workspace / ".workspace" / "tools" / "hidden.py"
+    assert visible.is_symlink()
 
     _run_approved(workspace, view, "rm .workspace/tools/hidden.py")
 
     assert lower.is_file()
     assert not os.path.lexists(visible)
-    assert view.inspect("tools/hidden.py").provenance == "whiteout"
+    assert view.inspect("tools/hidden.py").provenance is None
 
     reopened = _CapabilityView.open(workspace, repertoire)
-    assert not os.path.lexists(visible)
-    assert reopened.inspect("tools/hidden.py").provenance == "whiteout"
+    assert visible.is_symlink()
+    assert visible.read_text(encoding="utf-8") == "lower\n"
+    assert reopened.inspect("tools/hidden.py").provenance == "repertoire"
 
 
-def test_rm_workspace_override_reveals_lower_immediately(
+def test_rm_workspace_override_removes_entity_until_reopen(
     tmp_path: Path,
 ) -> None:
     workspace, repertoire = _roots(tmp_path)
@@ -204,9 +185,13 @@ def test_rm_workspace_override_reveals_lower_immediately(
 
     _run_approved(workspace, view, "rm .workspace/tools/restored.py")
 
+    assert not os.path.lexists(upper)
+    assert view.inspect("tools/restored.py").provenance is None
+
+    reopened = _CapabilityView.open(workspace, repertoire)
     assert upper.is_symlink()
     assert upper.read_text(encoding="utf-8") == "lower\n"
-    assert view.inspect("tools/restored.py").provenance == "repertoire"
+    assert reopened.inspect("tools/restored.py").provenance == "repertoire"
 
 
 def test_rm_workspace_only_file_leaves_path_absent(tmp_path: Path) -> None:
@@ -222,7 +207,7 @@ def test_rm_workspace_only_file_leaves_path_absent(tmp_path: Path) -> None:
     assert view.inspect("tools/local.py").provenance is None
 
 
-def test_removing_capability_root_recreates_managed_directory(
+def test_removing_capability_root_is_recreated_on_reopen(
     tmp_path: Path,
 ) -> None:
     workspace, repertoire = _roots(tmp_path)
@@ -231,6 +216,9 @@ def test_removing_capability_root_recreates_managed_directory(
 
     _run_approved(workspace, view, "rmdir .workspace/tools")
 
+    assert not tools.exists()
+
+    _CapabilityView.open(workspace, repertoire)
     assert tools.is_dir()
     assert not tools.is_symlink()
 
@@ -304,7 +292,7 @@ def test_cancelled_shell_execution_does_not_copy_up(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         execution = _ShellHandler(view).prepare(
-            parse_shell_ast("touch .workspace/tools/cancelled.txt"),
+            parse_shell_ast("echo x > .workspace/tools/cancelled.txt"),
             _CommandContext(
                 workspace=workspace,
                 cwd=workspace,
@@ -449,8 +437,17 @@ def test_prepare_path_removes_whiteout_before_write(tmp_path: Path) -> None:
     lower.write_text("lower\n", encoding="utf-8")
     view = _CapabilityView.open(workspace, repertoire)
     visible = workspace / ".workspace" / "tools" / "hidden.py"
-
-    _run_approved(workspace, view, "rm .workspace/tools/hidden.py")
+    whiteout = (
+        workspace
+        / ".workspace"
+        / ".capability-view"
+        / "whiteouts"
+        / "tools"
+        / "hidden.py"
+    )
+    whiteout.parent.mkdir(parents=True)
+    whiteout.touch()
+    visible.unlink()
     assert view.inspect("tools/hidden.py").provenance == "whiteout"
 
     view.prepare_path(visible)
@@ -514,24 +511,22 @@ def test_prepare_path_rejects_invalid_lower_link(tmp_path: Path) -> None:
     assert lower.read_text(encoding="utf-8") == "lower\n"
 
 
-def test_mutation_rules_are_owned_by_capability_view() -> None:
+def test_shell_mutator_heuristics_are_removed_from_view() -> None:
     import cli_agent.runtime._capability.command_parser as parser_module
     import cli_agent.runtime._capability.view as view_module
 
-    assert not hasattr(parser_module, "_DIRECT_MUTATORS")
-    assert not hasattr(parser_module, "_sed_is_in_place")
-    assert hasattr(view_module, "_DIRECT_MUTATORS")
-    assert hasattr(view_module, "_sed_is_in_place")
-
-
-def test_policy_test_fake_owns_its_mutation_list() -> None:
-    import policy_fakes
-
-    import cli_agent.runtime._capability.view as view_module
-
-    assert hasattr(policy_fakes, "_MUTATOR_EXECUTABLES")
-    assert not hasattr(policy_fakes, "_DIRECT_MUTATORS")
-    assert policy_fakes._MUTATOR_EXECUTABLES == view_module._DIRECT_MUTATORS
+    for symbol in (
+        "_DIRECT_MUTATORS",
+        "_sed_is_in_place",
+        "_operands",
+        "_DeleteSnapshot",
+        "_delete_paths",
+        "_snapshot_deletes",
+        "_reconcile_deletes",
+        "_create_whiteout",
+    ):
+        assert not hasattr(view_module, symbol)
+        assert not hasattr(parser_module, symbol)
 
 
 def _roots(tmp_path: Path) -> tuple[Path, Path]:
