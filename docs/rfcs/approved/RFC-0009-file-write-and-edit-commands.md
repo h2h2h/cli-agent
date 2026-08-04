@@ -1,13 +1,13 @@
 ---
 rfc_id: RFC-0009
 title: File Write and Edit Commands for Trusted File Mutations
-status: PROPOSED
+status: APPROVED
 author: cli-agent maintainers
 reviewers:
   - name: project owner
-    status: pending
+    status: approved
 created: 2026-08-03
-last_updated: 2026-08-03
+last_updated: 2026-08-04
 related_prds: []
 related_rfcs:
   - RFC-0001-host-mediated-execution-approval.md
@@ -484,7 +484,7 @@ v1 不做 fuzzy 归一化匹配，避免行为不确定。
 
 ## 决策记录
 
-**状态**：PROPOSED
+**状态**：APPROVED
 
 **日期**：2026-08-03
 
@@ -494,6 +494,13 @@ v1 不做 fuzzy 归一化匹配，避免行为不确定。
 `handlers/files.py` 单模块，不新增 `_capability/files/` 能力域——`files`
 是 Runtime-owned 命令而非 Repertoire 驱动的能力域，facts 无跨层共享，
 与 `cd.py`/`export.py`/`tools.py` 的目录语义一致。
+
+**2026-08-04 评审通过**：issues 01-07 全部实现并验收（端到端测试证明
+`files` 与既有命令在同一 Execution lifecycle 下协同、非法形态不落
+Shell、in-view 写入不穿透 Repertoire）。`_DIRECT_MUTATORS` 与 Shell
+变更启发式按 RFC 阶段 4 删除，`prepare_shell` 仅保留 AST 输出重定向的
+写前 copy-up（评审确认保留：重定向是精确 AST 事实而非启发式，作为模型
+未遵循 `files` 指引时的兜底）。
 
 ## 参考
 

@@ -232,6 +232,56 @@ def test_files_command_cannot_be_silently_overridden(tmp_path: Path) -> None:
         EnvironmentKernel(tmp_path, registry=registry)
 
 
+@pytest.mark.parametrize(
+    "raw",
+    (
+        "./files write f <<'EOF'\nx\nEOF",
+        "/bin/files write f <<'EOF'\nx\nEOF",
+        "/usr/local/bin/files write f <<'EOF'\nx\nEOF",
+        "env files write f <<'EOF'\nx\nEOF",
+    ),
+)
+def test_files_head_is_not_matched_by_path_qualified_commands(
+    tmp_path: Path,
+    raw: str,
+) -> None:
+    kernel = EnvironmentKernel(tmp_path)
+
+    resolved = kernel._router._custom_registry.resolve(parse_shell_ast(raw))
+
+    assert resolved is None
+    assert kernel._router.resolve(parse_shell_ast(raw)).command.name is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        "files nonsense f",
+        "files write f",
+        "files write f | cat",
+        "files write f <<'EOF' > out.txt\nx\nEOF",
+        'files write "$VAR" <<\'EOF\'\nx\nEOF',
+        "files edit f <<'EDI'\nnot json\nEDI",
+    ),
+)
+def test_malformed_files_forms_fail_on_files_route_not_shell(
+    tmp_path: Path,
+    raw: str,
+) -> None:
+    async def scenario() -> None:
+        kernel = EnvironmentKernel(tmp_path)
+        try:
+            snapshot = _output(await _exec(kernel, raw))
+            assert snapshot["status"] == "failed"
+            state = kernel._executions[str(snapshot["exec_id"])]
+            assert state.route.command.name == "files"
+            assert state.route.parallel_safe is False
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+
 async def _exec(
     kernel: EnvironmentKernel,
     command: str,
