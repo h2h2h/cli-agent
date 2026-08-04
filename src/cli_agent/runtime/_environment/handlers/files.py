@@ -1,15 +1,20 @@
-"""Reserved Files command grammar and mutation facts.
+"""Reserved Files command grammar, mutation facts, and handler.
 
 The ``files`` command family is a single-module Runtime command: grammar
-facts, pure parsing, and (in later phases) the ``_FileHandler`` live
-together, mirroring ``cd.py``/``export.py``/``tools.py``.
+facts, pure parsing, and the ``_FileHandler`` live together, mirroring
+``cd.py``/``export.py``/``tools.py``.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import stat
+import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 from cli_agent.runtime._capability.command_parser import (
     HereDocRedirect,
@@ -18,6 +23,20 @@ from cli_agent.runtime._capability.command_parser import (
     ShellWord,
     SimpleCommand,
 )
+from cli_agent.runtime._environment.handlers.base import (
+    _CommandContext,
+    _ExecutionOutcome,
+    _ExecutionOutput,
+    _PreparedExecution,
+)
+from cli_agent.runtime._environment.handlers.cd import _target_path
+from cli_agent.runtime._environment.handlers.executions import (
+    _InlineExecution,
+    _text_execution,
+)
+
+if TYPE_CHECKING:
+    from cli_agent.runtime._capability.view import _CapabilityView
 
 _USAGE = (
     "Usage: files write <path> <<'EOF' ... EOF; "
@@ -175,3 +194,89 @@ def _invalid(reason: str) -> FileCommand:
     """Return one stable usage diagnostic for an unsupported Files shape."""
 
     return FileCommand(operation="invalid", valid=False, validation_error=reason)
+
+
+class _FileHandler:
+    """Prepare files write and edit operations from trusted Files facts."""
+
+    def __init__(self, capability_view: _CapabilityView | None = None) -> None:
+        self._capability_view = capability_view
+
+    def prepare(
+        self,
+        command: ShellParseResult,
+        context: _CommandContext,
+    ) -> _PreparedExecution:
+        facts = parse_files_command(command)
+        if facts is None:
+            raise RuntimeError("File handler received an ordinary command")
+        if not facts.valid:
+            return _text_execution(
+                (facts.validation_error or "Invalid files command") + "\n",
+                success=False,
+            )
+        if facts.operation == "write" and facts.path is not None:
+            return _write_execution(
+                facts.path,
+                facts.content or "",
+                context,
+                self._capability_view,
+            )
+        return _text_execution("files edit is not implemented yet\n", success=False)
+
+
+def _write_execution(
+    path: str,
+    content: str,
+    context: _CommandContext,
+    capability_view: _CapabilityView | None,
+) -> _InlineExecution:
+    target = Path(os.path.normpath(str(_target_path(path, context.cwd))))
+
+    async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+        if capability_view is not None:
+            try:
+                capability_view.prepare_path(target)
+            except ValueError as exc:
+                await output.write("stderr", f"{exc}\n".encode())
+                return _ExecutionOutcome.failed(1)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            data = content.encode("utf-8")
+            _atomic_write(target, data)
+        except (OSError, ValueError) as exc:
+            await output.write(
+                "stderr",
+                f"failed to write {target}: {exc}\n".encode(),
+            )
+            return _ExecutionOutcome.failed(1)
+        await output.write(
+            "stdout",
+            f"wrote {len(data)} bytes to {target}\n".encode(),
+        )
+        return _ExecutionOutcome.exited()
+
+    return _InlineExecution(execute)
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Atomically replace one file, preserving its mode when present."""
+
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode) if os.path.lexists(path) else None
+    except OSError:
+        mode = None
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=".cli-agent-write-",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            os.fchmod(stream.fileno(), 0o644 if mode is None else mode)
+        os.replace(temporary, path)
+    finally:
+        if os.path.lexists(temporary):
+            with suppress(OSError):
+                temporary.unlink()

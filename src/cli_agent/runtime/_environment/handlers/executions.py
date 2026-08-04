@@ -143,3 +143,16 @@ def _signal_process(
             process.kill()
         else:
             process.terminate()
+
+
+def _text_execution(text: str, *, success: bool) -> _InlineExecution:
+    """Build one inline execution that writes text to a single stream."""
+
+    async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+        await output.write(
+            "stdout" if success else "stderr",
+            text.encode("utf-8"),
+        )
+        return _ExecutionOutcome.exited() if success else _ExecutionOutcome.failed(1)
+
+    return _InlineExecution(execute)

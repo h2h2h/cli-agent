@@ -13,13 +13,11 @@ from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.tools.grammar import parse_tool_command
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
-    _ExecutionOutput,
     _PreparedExecution,
 )
 from cli_agent.runtime._environment.handlers.executions import (
-    _InlineExecution,
     _ProcessExecution,
+    _text_execution,
 )
 
 
@@ -138,14 +136,3 @@ class _ToolHandler:
             )
 
         return _ProcessExecution(spawn_worker, input_data=payload)
-
-
-def _text_execution(text: str, *, success: bool) -> _InlineExecution:
-    async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
-        await output.write(
-            "stdout" if success else "stderr",
-            text.encode("utf-8"),
-        )
-        return _ExecutionOutcome.exited() if success else _ExecutionOutcome.failed(1)
-
-    return _InlineExecution(execute)
