@@ -230,3 +230,90 @@ parallel-safe commands share a batch, a serial command creates a barrier, and
 later work cannot cross that barrier. Every admitted command therefore shares
 the same output, cursor, cancellation, close, and Session-private Handle
 contract regardless of its handler.
+
+## Session Context Management
+
+Each Session owns one `_ContextManager` (with `_ContextLedger`,
+`_TokenMeter`, `_ToolResultReducer`, and `_ContextSummarizer`) as the single
+owner of conversation history, revisions, usage anchors, and compaction state.
+`AgentLoop` only orchestrates: append, prepare, generate, observe, dispatch.
+
+```text
+append(UserMessage)
+        |
+        v
+prepare_request() ----> Provider.generate(normal request)
+                              |
+                              v
+                        observe(usage)
+                              |
+                              v
+                    append(AssistantMessage)
+                              |
+                 +------------+------------+
+                 |                         |
+             no ToolCall                 ToolCall
+                 |                         |
+             Turn ends              dispatch tools
+                                           |
+                                           v
+                                append(ToolResultMessage)
+                                           |
+                                           v
+                                  prepare_request()
+```
+
+The input budget is `context_window - output_reserve - safety_margin` from the
+Host-supplied `ContextPolicy` (the Reference CLI resolves the model's maximum
+window from a built-in registry, overridable via `CLI_AGENT_CONTEXT_WINDOW`).
+Before each normal request the manager projects input tokens and runs the
+four tiers in order; pressure is re-measured after each tier, so an initial
+95% pressure does not unconditionally call the summarizer:
+
+| Tier | Trigger | Target | Action |
+|---|---|---|---|
+| Snip | 60% | 55% | bounded head/tail placeholder for the oldest stale success Tool Results outside the Protected Suffix |
+| Prune | 80% | 70% | snipped results reduced to identification + reclaimed marker |
+| Summarize | 95% | 55% | oldest completed turns merged into a no-tools summary |
+| Oversized guard | >100% | budget | newest re-readable result compacted; unrecoverable input fails closed |
+
+The Protected Suffix always includes the Active Turn and the most recent
+complete turns, expanded to complete User Turn boundaries. Tool Exchanges are
+atomic: Assistant Tool Calls and their `ToolResultMessage` stay paired by
+`call_id` sets, and compaction never deletes or splits them. Result states are
+monotonic (`raw -> snipped -> pruned -> summarized`) and repeated prepares are
+idempotent; each actual modification must reclaim at least
+`minimum_reclaim_tokens` unless recovering from overflow.
+
+Usage anchors: after each completion the manager records the Provider-reported
+`input_tokens` against the sent request revision. Later projections are the
+anchor plus a conservative estimate of appended deltas, labeled `estimated`;
+`total_tokens` is never used as the next input watermark. The estimator is
+deterministic (CJK characters count as one token, other text as a quarter
+token, plus message and Tool schema overhead) and is pinned by tests; a
+Provider count hook can replace it later without changing Runtime semantics.
+
+Tier 3 uses a restricted `_ContextSummarizer`: `ModelRequest(..., tools=())`,
+consumes Text Deltas internally, and fails atomically on Tool Calls, missing
+completions, exceptions, or overflow. The prompt fixes the four sections
+`## Progress` / `## Files` / `## Todo` / `## Context`, treats the transcript as
+untrusted data, and merges the old summary with new completed turns. On success
+the summary is committed as a delimited Assistant Message after the System
+Message (never promoted to a System role), the consumed turns are deleted, and
+the Summary Frontier advances; on any failure nothing changes.
+
+Provider-reported Context Overflow (`ModelContextOverflowError`) enters a
+recovery path: the usage anchor is invalidated, all deterministic tiers and,
+when a complete prefix exists, Tier 3 run with `reason=overflow_recovery`, the
+hard budget is re-checked, and the same model step is retried exactly once.
+Recovery never repeats Tool dispatch (it happens before any Completion), a
+second overflow or unrecoverable input raises a stable error, and the Session
+stays closable.
+
+Compaction is observable through the Host `RuntimeDiagnostic` callback with
+kinds `context.snipped`, `context.pruned`, `context.summarized`,
+`context.oversized_result`, `context.overflow_recovery`, and
+`context.compaction_failed`. Diagnostics carry only session ID, revisions,
+tier, usage source, before/after projected tokens, changed entries, summarized
+turns, and the trigger reason - never message bodies, Tool payloads, summary
+text, commands, environment values, or Secrets.

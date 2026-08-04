@@ -265,3 +265,51 @@ reopening the Runtime.
 
 This file is Agent-readable Workspace data, not a Secret store. Exclude
 `.workspace/env` from version control when it contains credentials.
+
+## Context budget and compaction
+
+Each Session manages its conversation against an explicit Context budget. The
+model's maximum Context Window comes from the built-in model registry (for
+example `deepseek-v4-flash` = 1M tokens); set `CLI_AGENT_CONTEXT_WINDOW` to
+override it for an unregistered model or a custom endpoint limit:
+
+```bash
+# Optional overrides; defaults come from the model registry and built-in budgets.
+# export CLI_AGENT_CONTEXT_WINDOW="128000"
+# export CLI_AGENT_OUTPUT_RESERVE="16384"
+# export CLI_AGENT_CONTEXT_SAFETY_MARGIN="4096"
+```
+
+`CLI_AGENT_OUTPUT_RESERVE` defaults to 16384 and `CLI_AGENT_CONTEXT_SAFETY_MARGIN`
+to 4096. The input budget is `window - output_reserve - safety_margin`; a
+non-positive budget fails fast at startup.
+
+Before every normal model request the Runtime projects the next request's input
+tokens and compacts old content with four tiers, without ever guessing a model
+specification or truncating User instructions:
+
+1. **Snip (60%)**: replace the oldest stale success Tool Results outside the
+   Protected Suffix with a bounded head/tail placeholder that keeps `exec_id`,
+   status, exit code, cursor, and a re-read hint (`output` can refetch retained
+   output for the same execution).
+2. **Prune (80%)**: reduce snipped results further to execution identification
+   plus a reclaimed marker.
+3. **Summarize (95%)**: merge the oldest completed turns into a structured
+   summary with `## Progress` / `## Files` / `## Todo` / `## Context` sections,
+   projected as delimited Assistant history data (never a second System
+   message), through a dedicated no-tools model request.
+4. **Oversized guard**: a single oversized but re-readable result in the
+   current turn is compacted to restore the budget; unrecoverable input raises
+   a stable `ContextOverflowError` instead of silently deleting content.
+
+The Active Turn and the most recent complete turns are protected; Tool Calls
+and Tool Results always stay paired by `call_id`. Reported Provider usage is
+anchored per request revision; everything appended after it is conservatively
+estimated and labeled `estimated`. When a Provider reports a Context Overflow,
+the Runtime forces compaction and retries that model step exactly once (never
+repeating Tool execution), then fails with a stable error.
+
+Compaction progress is visible through `RuntimeDiagnostic` kinds such as
+`context.snipped`, `context.pruned`, `context.summarized`,
+`context.oversized_result`, and `context.compaction_failed`, without leaking
+message bodies, command output, or Secrets.
