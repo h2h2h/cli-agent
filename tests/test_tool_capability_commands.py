@@ -225,7 +225,10 @@ def test_every_reserved_tool_form_evaluates_through_the_same_policy_hook(
         ("tools list &", True, "invalid"),
         ("tools list; echo bypass", True, "invalid"),
         ('tools run "print(1 > 0)"', True, "run"),
-        ('tools run "unterminated', True, "invalid"),
+        ('tools run "unterminated', False, None),
+        ("to\\ols list", True, "list"),
+        ("A=1 tools list", False, None),
+        ("$COMMAND list", False, None),
         ("env tools list", False, None),
         ("/usr/local/bin/tools list", False, None),
         ("./tools list", False, None),
@@ -249,6 +252,54 @@ def test_reserved_tool_grammar_cannot_fall_through_to_shell(
     assert (facts is not None) is reserved
     if facts is not None:
         assert facts.operation == operation
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        'tools info "$NAME"',
+        "tools run code",
+        "tools run <<'CODE'\nprint(1)\nCODE",
+        "tools run <<-'PY'\n\tprint(1)\n\tPY",
+        "tools run <<'PY' > ignored.txt\nprint(1)\nPY",
+    ),
+)
+def test_tool_grammar_rejects_unsupported_ast_shapes(
+    tmp_path: Path,
+    raw: str,
+) -> None:
+    repertoire = _repertoire(tmp_path)
+    _prepare_workspace(tmp_path)
+    catalog = _ToolCatalog.reconcile(_CapabilityView.open(tmp_path, repertoire))
+
+    facts = parse_tool_command(parse_shell_ast(raw), catalog)
+
+    assert facts is not None
+    assert facts.operation == "invalid"
+
+
+def test_tool_run_extracts_quoted_and_heredoc_payloads_from_ast(
+    tmp_path: Path,
+) -> None:
+    repertoire = _repertoire(tmp_path)
+    _prepare_workspace(tmp_path)
+    catalog = _ToolCatalog.reconcile(_CapabilityView.open(tmp_path, repertoire))
+
+    quoted = parse_tool_command(
+        parse_shell_ast("tools run \"print('hello')\""),
+        catalog,
+    )
+    heredoc = parse_tool_command(
+        parse_shell_ast("tools run <<'PY'\nprint('hello')\nPY"),
+        catalog,
+    )
+
+    assert quoted is not None
+    assert quoted.operation == "run"
+    assert quoted.code == "print('hello')"
+    assert heredoc is not None
+    assert heredoc.operation == "run"
+    assert heredoc.code == "print('hello')"
 
 
 def test_host_can_deny_tool_executable_through_the_policy_hook(

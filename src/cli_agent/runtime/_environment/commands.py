@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shlex
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 
@@ -70,7 +69,7 @@ class _CustomCommand(_Command):
     def matches(self, command: ShellParseResult) -> bool:
         """Return whether the first command token matches this command name."""
 
-        return _command_head(command.raw_command) == self.name
+        return command.command_head == self.name
 
     def parallel_safe(self, command: ShellParseResult) -> bool:
         """Evaluate this command's fixed or command-specific schedule fact."""
@@ -160,7 +159,7 @@ class _CustomCommandRegistry:
     ) -> _CustomCommand | None:
         """Return the custom command selected by the command-head rule."""
 
-        head = _command_head(command.raw_command)
+        head = command.command_head
         if head is None:
             return None
         return self._commands.get(head)
@@ -173,19 +172,3 @@ def _builtin_custom_commands() -> tuple[_CustomCommand, ...]:
         _CustomCommand(name="cd", prepare=_prepare_cd, isolated=False),
         _CustomCommand(name="export", prepare=_prepare_export, isolated=False),
     )
-
-
-def _command_head(raw_command: str) -> str | None:
-    """Read the first shell token even when a later token is malformed."""
-
-    lexer = shlex.shlex(
-        raw_command,
-        posix=True,
-        punctuation_chars="|&;<>",
-    )
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        return next(lexer)
-    except (StopIteration, ValueError):
-        return None

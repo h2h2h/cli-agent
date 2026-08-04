@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 import ast
-import re
 
-from cli_agent.runtime._capability.command_parser import ShellParseResult
+from cli_agent.runtime._capability.command_parser import (
+    HereDocRedirect,
+    ShellParseResult,
+    ShellWord,
+    SimpleCommand,
+)
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.facts import ToolCommand
-
-_HEREDOC_PATTERN = re.compile(
-    r"\Atools[ \t]+run[ \t]+<<[ \t]*(?:'PY'|\"PY\"|PY)[ \t]*\r?\n"
-    r"(?P<code>.*)\r?\nPY[ \t]*\Z",
-    re.DOTALL,
-)
-_RUN_PREFIX = re.compile(r"\Atools[ \t]+run(?:[ \t]+(?P<argument>.*))?\Z")
 
 
 def parse_tool_command(
@@ -23,43 +20,60 @@ def parse_tool_command(
 ) -> ToolCommand | None:
     """Parse reserved Tools grammar into independent capability facts."""
 
-    if not _is_reserved_tool_head(command):
+    if command.command_head != "tools":
         return None
-    return _tool_facts(command, catalog)
+    root = command.root
+    if not isinstance(root, SimpleCommand) or root.prefix_assignments:
+        return _invalid_tool_command()
+    return _tool_facts(root, catalog)
 
 
-def _tool_facts(command: ShellParseResult, catalog: _ToolCatalog) -> ToolCommand:
-    if (
-        command.tokenization_succeeded
-        and command.tokens == ("tools", "list")
-        and not command.contains_shell_composition
-    ):
-        return ToolCommand(operation="list", valid=True)
+def _tool_facts(command: SimpleCommand, catalog: _ToolCatalog) -> ToolCommand:
+    match command.argv, command.redirects:
+        case (ShellWord(value="list"),), ():
+            return ToolCommand(operation="list", valid=True)
 
-    if (
-        command.tokenization_succeeded
-        and len(command.tokens) == 3
-        and command.tokens[:2] == ("tools", "info")
-        and not command.contains_shell_composition
-    ):
-        name = command.tokens[2]
-        entry = catalog.get(name)
-        return ToolCommand(
-            operation="inspect",
-            valid=entry is not None,
-            validation_error=(None if entry is not None else f"Tool not found: {name}"),
-            name=name,
-            references=(entry,) if entry is not None else (),
-        )
+        case (ShellWord(value="info"), ShellWord(value=name)), () if name is not None:
+            return _info_facts(name, catalog)
 
-    normalized = command.raw_command.strip()
-    heredoc = _HEREDOC_PATTERN.fullmatch(normalized)
-    if heredoc is not None:
-        return _run_facts(heredoc.group("code"), catalog)
+        case (
+            (ShellWord(value="run"), ShellWord(quote=quote) as payload),
+            (),
+        ) if (
+            quote is not None and "\n" not in payload.text and "\r" not in payload.text
+        ):
+            code = payload.quoted_content
+            if code is not None:
+                return _run_facts(code, catalog)
 
-    quoted = _extract_quoted_run(normalized)
-    if quoted is not None:
-        return _run_facts(quoted, catalog)
+        case (
+            (ShellWord(value="run"),),
+            (HereDocRedirect() as heredoc,),
+        ) if heredoc.operator == "<<" and heredoc.delimiter.text in {
+            "PY",
+            "'PY'",
+            '"PY"',
+        }:
+            return _run_facts(_strip_terminal_line_break(heredoc.body.text), catalog)
+
+    return _invalid_tool_command()
+
+
+def _info_facts(name: str, catalog: _ToolCatalog) -> ToolCommand:
+    """Resolve one statically named Tool catalog entry."""
+
+    entry = catalog.get(name)
+    return ToolCommand(
+        operation="inspect",
+        valid=entry is not None,
+        validation_error=(None if entry is not None else f"Tool not found: {name}"),
+        name=name,
+        references=(entry,) if entry is not None else (),
+    )
+
+
+def _invalid_tool_command() -> ToolCommand:
+    """Return the stable diagnostic for an unsupported Tools command shape."""
 
     return ToolCommand(
         operation="invalid",
@@ -69,6 +83,14 @@ def _tool_facts(command: ShellParseResult, catalog: _ToolCatalog) -> ToolCommand
             "payload or exact <<'PY' ... PY heredoc syntax"
         ),
     )
+
+
+def _strip_terminal_line_break(text: str) -> str:
+    """Remove the line break separating a heredoc body from its delimiter."""
+
+    if text.endswith("\r\n"):
+        return text[:-2]
+    return text.removesuffix("\n")
 
 
 def _run_facts(code: str, catalog: _ToolCatalog) -> ToolCommand:
@@ -105,29 +127,6 @@ def _run_facts(code: str, catalog: _ToolCatalog) -> ToolCommand:
         references=tuple(entry for entry in entries if entry is not None),
         has_dynamic_references=dynamic,
     )
-
-
-def _is_reserved_tool_head(command: ShellParseResult) -> bool:
-    if command.tokens and command.tokens[0] == "tools":
-        return True
-    return bool(re.match(r"\A[ \t]*tools(?:[ \t\r\n]|\Z)", command.raw_command))
-
-
-def _extract_quoted_run(raw_command: str) -> str | None:
-    match = _RUN_PREFIX.fullmatch(raw_command)
-    if match is None:
-        return None
-    argument = match.group("argument")
-    if argument is None or "\n" in argument or "\r" in argument:
-        return None
-    for quote in ('"""', "'''", '"', "'"):
-        if (
-            argument.startswith(quote)
-            and argument.endswith(quote)
-            and len(argument) >= len(quote) * 2
-        ):
-            return argument[len(quote) : -len(quote)]
-    return None
 
 
 def _tool_references(tree: ast.AST) -> tuple[tuple[str, ...], bool]:

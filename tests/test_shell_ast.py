@@ -3,6 +3,9 @@
 import pytest
 
 from cli_agent.runtime._capability.command_parser import (
+    FileRedirect,
+    HereDocRedirect,
+    HereStringRedirect,
     Pipeline,
     RedirectedCommand,
     Sequence,
@@ -23,19 +26,35 @@ def test_simple_command_exposes_executable_and_argv() -> None:
     assert parsed.root.executable.text == "ls"
     assert parsed.root.executable.span.start == 0
     assert parsed.root.executable.span.end == 2
+    assert parsed.root.executable.value == "ls"
+    assert parsed.root.executable.quote is None
     assert tuple(word.text for word in parsed.root.argv) == ("-la",)
     assert tuple((word.span.start, word.span.end) for word in parsed.root.argv) == (
         (3, 6),
     )
 
 
-def test_word_spans_slice_back_into_raw_command() -> None:
-    parsed = parse_shell_ast("echo 'hi there'")
+def test_word_spans_slice_unicode_source_and_expose_quote_facts() -> None:
+    parsed = parse_shell_ast("echo 你好 'hi there'")
     root = parsed.root
     assert isinstance(root, SimpleCommand)
 
-    word = root.argv[0]
+    word = root.argv[1]
     assert parsed.raw_command[word.span.start : word.span.end] == word.text
+    assert root.argv[0].value == "你好"
+    assert word.value == "hi there"
+    assert word.quote == "single"
+    assert word.quoted_content == "hi there"
+
+
+def test_dynamic_words_have_no_static_value() -> None:
+    parsed = parse_shell_ast('$COMMAND "$ARG"')
+
+    assert isinstance(parsed.root, SimpleCommand)
+    assert parsed.root.executable.value is None
+    assert parsed.root.argv[0].value is None
+    assert parsed.root.argv[0].quote == "double"
+    assert parsed.root.argv[0].quoted_content == "$ARG"
 
 
 def test_pipeline_expresses_ordered_elements() -> None:
@@ -83,6 +102,7 @@ def test_redirections_classify_output_and_input_targets() -> None:
     parsed = parse_shell_ast("echo hi > out.txt 2>err.txt")
 
     assert isinstance(parsed.root, SimpleCommand)
+    assert all(isinstance(redirect, FileRedirect) for redirect in parsed.root.redirects)
     assert [
         (r.operator, r.is_output, r.target.text) for r in parsed.root.redirects
     ] == [
@@ -95,6 +115,7 @@ def test_fd_duplication_is_not_output_file_write() -> None:
     parsed = parse_shell_ast("ls >/dev/null 2>&1")
 
     assert isinstance(parsed.root, SimpleCommand)
+    assert all(isinstance(redirect, FileRedirect) for redirect in parsed.root.redirects)
     assert [(r.operator, r.is_output) for r in parsed.root.redirects] == [
         (">", True),
         ("2>&", False),
@@ -102,16 +123,35 @@ def test_fd_duplication_is_not_output_file_write() -> None:
 
 
 def test_heredoc_and_herestring_are_input_redirections() -> None:
-    parsed = parse_shell_ast("cat <<EOF\nhello\nEOF")
+    parsed = parse_shell_ast("cat <<'EOF'\nhello\nEOF")
 
     assert isinstance(parsed.root, SimpleCommand)
-    assert parsed.root.redirects[0].operator == "<<"
-    assert parsed.root.redirects[0].target.text == "EOF"
-    assert parsed.root.redirects[0].is_output is False
+    heredoc = parsed.root.redirects[0]
+    assert isinstance(heredoc, HereDocRedirect)
+    assert heredoc.operator == "<<"
+    assert heredoc.delimiter.value == "EOF"
+    assert heredoc.delimiter.quote == "single"
+    assert heredoc.body.text == "hello\n"
+    assert heredoc.strip_tabs is False
+    assert heredoc.expands is False
 
     parsed = parse_shell_ast("cmd <<< x")
-    assert parsed.root.redirects[0].operator == "<<<"
-    assert parsed.root.redirects[0].is_output is False
+    assert isinstance(parsed.root, SimpleCommand)
+    herestring = parsed.root.redirects[0]
+    assert isinstance(herestring, HereStringRedirect)
+    assert herestring.operator == "<<<"
+    assert herestring.value.value == "x"
+
+
+def test_tab_stripping_and_unquoted_heredoc_facts_are_preserved() -> None:
+    parsed = parse_shell_ast("cat <<-EOF\n\thello\n\tEOF")
+
+    assert isinstance(parsed.root, SimpleCommand)
+    heredoc = parsed.root.redirects[0]
+    assert isinstance(heredoc, HereDocRedirect)
+    assert heredoc.strip_tabs is True
+    assert heredoc.expands is True
+    assert heredoc.body.text == "\thello\n"
 
 
 def test_command_substitution_is_flagged() -> None:
@@ -147,8 +187,19 @@ def test_declaration_command_keeps_executable() -> None:
     parsed = parse_shell_ast("export A=1")
 
     assert isinstance(parsed.root, SimpleCommand)
+    assert parsed.root.prefix_assignments == ()
     assert parsed.root.executable.text == "export"
     assert tuple(word.text for word in parsed.root.argv) == ("A=1",)
+
+
+def test_prefix_assignments_are_separate_from_command_arguments() -> None:
+    parsed = parse_shell_ast("A=1 tools list")
+
+    assert isinstance(parsed.root, SimpleCommand)
+    assert tuple(word.value for word in parsed.root.prefix_assignments) == ("A=1",)
+    assert parsed.root.executable.value == "tools"
+    assert tuple(word.value for word in parsed.root.argv) == ("list",)
+    assert parsed.command_head is None
 
 
 def test_unsupported_statements_stay_conservative() -> None:
@@ -224,6 +275,29 @@ def test_executable_basename_is_derived_from_ast(
     raw: str, expected: str | None
 ) -> None:
     assert parse_shell_ast(raw).executable_basename == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (
+        ("tools list", "tools"),
+        ('"tools" list', "tools"),
+        ("to\\ols list", "tools"),
+        ("tools list | cat", "tools"),
+        ("tools list; cat", "tools"),
+        ("./tools list", "./tools"),
+        ("env tools list", "env"),
+        ("A=1 tools list", None),
+        ("$COMMAND list", None),
+        ("(tools list)", None),
+        ('tools "unterminated', None),
+    ),
+)
+def test_command_head_is_derived_from_top_level_static_syntax(
+    raw: str,
+    expected: str | None,
+) -> None:
+    assert parse_shell_ast(raw).command_head == expected
 
 
 @pytest.mark.parametrize(

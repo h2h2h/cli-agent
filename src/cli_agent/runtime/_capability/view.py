@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import AsyncIterator, Literal
 
 from cli_agent.runtime._capability.command_parser import (
+    FileRedirect,
     ShellParseResult,
-    _strip_quotes,
     collect_redirects,
 )
 from cli_agent.runtime._capability.workspace import _ensure_real_directory
@@ -286,9 +286,13 @@ class _CapabilityView:
         cwd: Path,
     ) -> tuple[Path, ...]:
         targets = [
-            _strip_quotes(redirect.target.text)
+            redirect.target.value
+            or redirect.target.quoted_content
+            or redirect.target.text
             for redirect in collect_redirects(command.root)
-            if redirect.is_output and redirect.target is not None
+            if isinstance(redirect, FileRedirect)
+            and redirect.is_output
+            and redirect.target is not None
         ]
         executable = command.executable_basename
         operands = _operands(command.tokens[1:])

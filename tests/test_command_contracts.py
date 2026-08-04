@@ -64,8 +64,9 @@ def test_custom_command_contract_and_registry_match_command_heads() -> None:
 
     assert isinstance(command, _Command)
     assert command.matches(parse_shell_ast("custom argument"))
-    assert command.matches(parse_shell_ast('custom "unterminated'))
+    assert not command.matches(parse_shell_ast('custom "unterminated'))
     assert registry.resolve(parse_shell_ast("custom argument")) is command
+    assert registry.resolve(parse_shell_ast('custom "unterminated')) is None
     assert registry.resolve(parse_shell_ast("./custom argument")) is None
     assert command.parallel_safe(parse_shell_ast("custom argument")) is True
     assert command.isolated is False
