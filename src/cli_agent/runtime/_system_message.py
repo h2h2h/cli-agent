@@ -84,11 +84,19 @@ def _render_tools_section(tool_catalog: _ToolCatalog) -> str:
     lines = [
         "**Tools**",
         (
-            "- The compact Tool catalog lists each discovered Tool by name, "
-            "status, summary, and parallel-safe fact only."
+            "- The Tools below are callable through the `tools` namespace and "
+            "inspectable with `tools info <name>`; full documentation stays in "
+            "the Tool files and is read on demand."
         ),
+        "",
     ]
     if tool_catalog.entries:
+        lines.extend(
+            [
+                "| Tool | Status | Parallel Safe | Summary |",
+                "|---|---|---|---|",
+            ]
+        )
         for entry in tool_catalog.entries:
             status = (
                 "valid"
@@ -96,15 +104,12 @@ def _render_tools_section(tool_catalog: _ToolCatalog) -> str:
                 else f"invalid: {entry.validation_error or 'unknown error'}"
             )
             lines.append(
-                f"- {entry.name} ({status}): {entry.summary} "
-                f"[parallel-safe: {'yes' if entry.parallel_safe else 'no'}]"
+                f"| {_cell(entry.name)} | {_cell(status)} | "
+                f"{'yes' if entry.parallel_safe else 'no'} | "
+                f"{_cell(entry.summary)} |"
             )
     else:
-        lines.append("- No Tools are currently discovered.")
-    lines.append(
-        "- Full documentation stays in the Tool files and is read on demand "
-        "with `tools info <name>`."
-    )
+        lines.append("No Tools are currently discovered.")
     return "\n".join(lines)
 
 
@@ -112,22 +117,32 @@ def _render_skills_section(skill_catalog: _SkillCatalog) -> str:
     lines = [
         "**Skills**",
         (
-            "- The compact Skill catalog lists each discovered Skill by name, "
-            "status, and summary only."
+            "- The Skills below are read on demand with "
+            'exec("cat .workspace/skills/<name>/SKILL.md"); the table lists '
+            "every discovered Skill."
         ),
+        "",
     ]
     if skill_catalog.entries:
+        lines.extend(
+            [
+                "| Skill | Status | Summary |",
+                "|---|---|---|",
+            ]
+        )
         for entry in skill_catalog.entries:
             status = (
                 "valid"
                 if entry.valid
                 else f"invalid: {entry.validation_error or 'unknown error'}"
             )
-            lines.append(f"- {entry.name} ({status}): {entry.summary}")
+            lines.append(
+                f"| {_cell(entry.name)} | {_cell(status)} | {_cell(entry.summary)} |"
+            )
     else:
-        lines.append("- No Skills are currently discovered.")
-    lines.append(
-        "- Full instructions stay in the Skill files and are read on demand "
-        'with exec("cat .workspace/skills/<name>/SKILL.md").'
-    )
+        lines.append("No Skills are currently discovered.")
     return "\n".join(lines)
+
+
+def _cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\r", " ").replace("\n", " ")

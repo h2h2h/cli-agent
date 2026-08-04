@@ -227,11 +227,11 @@ def test_system_message_embeds_only_compact_skills_catalog(
     body = "\n".join(block.text for block in message.content)
 
     assert "Skills" in body
-    assert "banner-skill (valid): Banner helper." in body
-    assert "broken-skill (invalid:" in body
+    assert "| banner-skill | valid | Banner helper. |" in body
+    assert "| broken-skill | invalid" in body
     assert "cat .workspace/skills/<name>/SKILL.md" in body
     assert "name: banner-skill" not in body
-    assert "---" not in body
+    assert "description: Banner helper." not in body
 
 
 def test_system_message_skill_section_omitted_without_catalog(

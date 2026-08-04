@@ -165,9 +165,9 @@ def test_system_message_embeds_only_compact_tools_catalog(
     body = "\n".join(block.text for block in message.content)
 
     assert "Tools" in body
-    assert "lower (valid): Lower arithmetic Tool." in body
-    assert "local (valid): Workspace Tool." in body
-    assert "broken (invalid:" in body
+    assert "| lower | valid | yes | Lower arithmetic Tool. |" in body
+    assert "| local | valid | yes | Workspace Tool. |" in body
+    assert "| broken | invalid" in body
     assert "tools info <name>" in body
     assert "def add(a, b)" not in body
     assert "repertoire" not in body
