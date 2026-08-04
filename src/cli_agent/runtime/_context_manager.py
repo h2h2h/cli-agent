@@ -344,6 +344,15 @@ class _ContextManager:
         """Project the next normal Model Request, compacting as needed."""
 
         operations: list[ContextOperation] = []
+
+        # ====================================================================
+        # Step 1: Gradually reclaim space with deterministic tool-result reductions
+        # ====================================================================
+        # Snip and prune only change Tool Result content without breaking Turn
+        # boundaries or Tool Call/Tool Result pairs, so they take precedence
+        # over summarization, which may discard semantic details. Re-project
+        # the request after every pass: one reduction may cross another
+        # watermark or expose another batch of compressible results.
         while True:
             projected, _ = self._projected()
             budget = self._policy.input_budget
@@ -359,6 +368,13 @@ class _ContextManager:
             if not changed:
                 break
 
+        # ====================================================================
+        # Step 2: Summarize the oldest complete Turns when reductions are not enough
+        # ====================================================================
+        # Tier 3 only processes closed Turns and preserves the recent Protected
+        # Suffix, avoiding interruption of the active interaction or leaving
+        # unmatched tool calls. Re-project after a successful summary because
+        # the summary also consumes input tokens and invalidates the usage anchor.
         projected, source = self._projected()
         if projected >= budget * self._policy.summarize_threshold:
             summarized, summary_operations = await self._run_tier3(projected)
@@ -366,6 +382,13 @@ class _ContextManager:
             if summarized:
                 projected, source = self._projected()
 
+        # ====================================================================
+        # Step 3: Reduce the newest compressible results if the hard budget is exceeded
+        # ====================================================================
+        # This is the fallback for oversized Tool Results: reduce results from
+        # newest to oldest to preserve recent context where possible. If all
+        # safe reductions are exhausted and the request still exceeds the
+        # budget, fail explicitly instead of producing an unusable request.
         if projected > self._policy.input_budget:
             projected, oversized_operations = self._compact_oversized()
             operations.extend(oversized_operations)
@@ -377,6 +400,12 @@ class _ContextManager:
                     "be reduced safely"
                 )
 
+        # ====================================================================
+        # Step 4: Finalize the request and expose the compaction results
+        # ====================================================================
+        # Build the request from the Ledger's latest immutable snapshot. The
+        # revision and pressure record this projection so that a later observe
+        # can anchor the Provider's reported usage to this exact request.
         request = ModelRequest(messages=self._ledger.history)
         pressure = ContextPressure(
             input_budget=self._policy.input_budget,
@@ -441,6 +470,13 @@ class _ContextManager:
     ) -> tuple[int, tuple[ContextOperation, ...]]:
         """Snip raw candidates until the Snip target, no candidates, or reclaim."""
 
+        # ====================================================================
+        # Tier 1: Snip raw execution snapshots
+        # ====================================================================
+        # Select raw, eligible Tool Results and replace each execution
+        # snapshot with bounded head/tail chunks plus execution metadata. This
+        # preserves the result's identity and re-read hints while removing the
+        # largest unstructured payloads without involving a model.
         return self._run_reductions(state="raw", prune=False, tier=1, force=force)
 
     def _run_tier2(
@@ -450,6 +486,12 @@ class _ContextManager:
     ) -> tuple[int, tuple[ContextOperation, ...]]:
         """Prune snipped candidates until the Prune target, no candidates, or reclaim."""
 
+        # ====================================================================
+        # Tier 2: Prune already-snipped execution snapshots
+        # ====================================================================
+        # Continue the monotonic reduction for results that have already been
+        # snipped. Keep only the execution identity and status metadata, so the
+        # model can still identify the result and re-read it when necessary.
         return self._run_reductions(state="snipped", prune=True, tier=2, force=force)
 
     def _run_reductions(
@@ -460,6 +502,9 @@ class _ContextManager:
         tier: int,
         force: bool = False,
     ) -> tuple[int, tuple[ContextOperation, ...]]:
+        # Tier 1 and Tier 2 share the same monotonic loop. Each tier has its
+        # own lower target: normal preparation stops once the projection is
+        # below that target, while force mode exhausts every safe candidate.
         policy = self._policy
         target = policy.input_budget * (
             policy.prune_target if prune else policy.snip_target
@@ -483,6 +528,9 @@ class _ContextManager:
                 result,
                 prune=prune,
             )
+            # Avoid spending a revision on a small reduction during normal
+            # watermark compaction. Overflow recovery deliberately ignores
+            # this minimum and keeps reducing until no candidate remains.
             if not force and reclaim < policy.minimum_reclaim_tokens:
                 skipped.add((message_index, result_index))
                 continue
@@ -517,6 +565,13 @@ class _ContextManager:
     ) -> tuple[bool, tuple[ContextOperation, ...]]:
         """Summarize the oldest closed Turns when deterministic tiers cannot."""
 
+        # ====================================================================
+        # Tier 3: Replace the oldest closed Turns with a bounded summary
+        # ====================================================================
+        # Semantic compression is intentionally delayed until deterministic
+        # Tool Result reductions are insufficient. Summarize only the oldest
+        # complete Turns after the current summary frontier and before the
+        # protected recent suffix; active Turns and tool exchanges stay intact.
         policy = self._policy
         if not force and self._ledger.revision == self._last_summarize_revision:
             return False, ()
@@ -540,6 +595,9 @@ class _ContextManager:
         max_summary_tokens = max(
             1, int(policy.summarize_target * policy.input_budget) - protected_tokens
         )
+        # Feed the previous summary and the selected delta to the summarizer,
+        # while capping the new summary so that it fits beside the protected
+        # suffix within the summary target.
         prompt = build_summary_messages(
             old_summary=self._ledger.summary,
             delta=history[delta_start:delta_end],
@@ -566,6 +624,10 @@ class _ContextManager:
             if isinstance(message, UserMessage)
         )
         revision_before = self._ledger.revision
+        # Validate the complete summary before atomically replacing the old
+        # summary and summarized Turns. Any failed validation leaves history
+        # unchanged and allows the caller to continue with the hard-budget
+        # fallback.
         self._ledger.commit_summary(text.strip(), protected_start)
         self._last_summarize_revision = self._ledger.revision
         self._invalidate_anchor()
