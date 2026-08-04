@@ -35,6 +35,7 @@ class AgentLoop:
         self._context = _ContextManager(
             system_message=system_message,
             context_policy=context_policy,
+            provider=provider,
         )
 
     @property

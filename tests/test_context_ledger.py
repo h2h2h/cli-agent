@@ -7,6 +7,7 @@ from cli_agent.runtime import (
     ContextPolicy,
     ModelRequest,
     ModelUsage,
+    ScriptedModelProvider,
     SystemMessage,
     ToolCall,
     ToolResult,
@@ -27,6 +28,7 @@ CONTEXT_POLICY = ContextPolicy(
     output_reserve_tokens=2_048,
     safety_margin_tokens=0,
 )
+PROVIDER = ScriptedModelProvider(script=())
 
 _exec = ToolCall(call_id="call_exec", name="exec", arguments={"command": "ls"})
 _output = ToolCall(call_id="call_output", name="output", arguments={"exec_id": "e1"})
@@ -166,6 +168,7 @@ def test_manager_prepares_immutable_requests_with_pressure() -> None:
     manager = _ContextManager(
         system_message=SYSTEM_MESSAGE,
         context_policy=CONTEXT_POLICY,
+        provider=PROVIDER,
     )
     user_message = UserMessage.text("Hello")
     manager.append(user_message)
@@ -186,6 +189,7 @@ def test_manager_prepares_before_every_model_step() -> None:
     manager = _ContextManager(
         system_message=SYSTEM_MESSAGE,
         context_policy=CONTEXT_POLICY,
+        provider=PROVIDER,
     )
     manager.append(UserMessage.text("Run"))
     first = asyncio.run(manager.prepare_request())
@@ -211,6 +215,7 @@ def test_manager_uses_reported_anchor_and_estimates_the_delta() -> None:
     manager = _ContextManager(
         system_message=SYSTEM_MESSAGE,
         context_policy=CONTEXT_POLICY,
+        provider=PROVIDER,
     )
     manager.append(UserMessage.text("Hello"))
     prepared = asyncio.run(manager.prepare_request())
@@ -234,6 +239,7 @@ def test_manager_reports_exact_anchor_when_nothing_was_appended() -> None:
     manager = _ContextManager(
         system_message=SYSTEM_MESSAGE,
         context_policy=CONTEXT_POLICY,
+        provider=PROVIDER,
     )
     manager.append(UserMessage.text("Hello"))
     prepared = asyncio.run(manager.prepare_request())
@@ -252,6 +258,7 @@ def test_manager_ignores_missing_usage_without_anchoring() -> None:
     manager = _ContextManager(
         system_message=SYSTEM_MESSAGE,
         context_policy=CONTEXT_POLICY,
+        provider=PROVIDER,
     )
     manager.append(UserMessage.text("Hello"))
     prepared = asyncio.run(manager.prepare_request())
@@ -269,6 +276,7 @@ def test_manager_rejects_stale_and_duplicate_observations() -> None:
     manager = _ContextManager(
         system_message=SYSTEM_MESSAGE,
         context_policy=CONTEXT_POLICY,
+        provider=PROVIDER,
     )
     manager.append(UserMessage.text("Hello"))
     prepared = asyncio.run(manager.prepare_request())

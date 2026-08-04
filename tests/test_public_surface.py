@@ -112,6 +112,7 @@ def test_keeps_runtime_internals_private() -> None:
         "_ContextLedger",
         "_ContextLedgerError",
         "_ContextManager",
+        "_ContextSummarizer",
         "_ToolResultReducer",
         "_RuntimeResources",
         "_reconcile_runtime_resources",

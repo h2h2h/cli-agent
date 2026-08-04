@@ -8,10 +8,17 @@ from dataclasses import dataclass
 from typing import AbstractSet, Literal
 
 from cli_agent.runtime._context import ContextPolicy
+from cli_agent.runtime._context_summarizer import (
+    _ContextSummarizer,
+    build_summary_messages,
+    has_all_summary_sections,
+    summary_message,
+)
 from cli_agent.runtime._tool_result_reducer import _ToolResultReducer
 from cli_agent.runtime.model import (
     AssistantMessage,
     ModelMessage,
+    ModelProvider,
     ModelRequest,
     ModelUsage,
     SystemMessage,
@@ -78,6 +85,7 @@ class _ContextLedger:
     def __init__(self, system_message: SystemMessage) -> None:
         self._messages: list[ModelMessage] = [system_message]
         self._revision = 0
+        self._summary: str | None = None
 
     @property
     def history(self) -> tuple[ModelMessage, ...]:
@@ -96,6 +104,63 @@ class _ContextLedger:
         """Return the number of messages owned by the Ledger."""
 
         return len(self._messages)
+
+    @property
+    def summary(self) -> str | None:
+        """Return the current summary text, or ``None`` before the first commit."""
+
+        return self._summary
+
+    @property
+    def summary_frontier(self) -> int:
+        """Return the message index after the last summarized content."""
+
+        return 2 if self._summary is not None else 1
+
+    def summarize_delta(
+        self,
+        protected_start: int,
+        demand_tokens: int,
+    ) -> tuple[int, int] | None:
+        """Return the oldest closed-turn range meeting the token demand.
+
+        Only complete closed Turns after the Summary Frontier and before the
+        Protected Suffix are eligible; Active Turns and Tool Exchanges are
+        never split.
+        """
+
+        frontier = self.summary_frontier
+        accumulated = 0
+        selected_start: int | None = None
+        selected_end = frontier
+        for start, end in self._turn_ranges():
+            if start < frontier or end > protected_start:
+                continue
+            if not self._turn_is_closed(start, end):
+                continue
+            if selected_start is None:
+                selected_start = start
+            accumulated += sum(
+                estimate_message_tokens(message)
+                for message in self._messages[start:end]
+            )
+            selected_end = end
+            if accumulated >= demand_tokens:
+                break
+        if selected_start is None:
+            return None
+        return selected_start, selected_end
+
+    def commit_summary(self, summary_text: str, protected_start: int) -> None:
+        """Atomically replace the summary and delete summarized delta turns."""
+
+        self._messages = [
+            self._messages[0],
+            summary_message(summary_text),
+            *self._messages[protected_start:],
+        ]
+        self._summary = summary_text
+        self._revision += 1
 
     def append(self, message: ModelMessage) -> None:
         """Append one message, rejecting protocol-illegal mutations."""
@@ -213,15 +278,18 @@ class _ContextManager:
         *,
         system_message: SystemMessage,
         context_policy: ContextPolicy,
+        provider: ModelProvider,
     ) -> None:
         self._ledger = _ContextLedger(system_message)
         self._policy = context_policy
         self._reducer = _ToolResultReducer(context_policy.excluded_tools)
+        self._summarizer = _ContextSummarizer(provider)
         self._anchor_revision: int | None = None
         self._anchor_message_count = 0
         self._anchor_input_tokens: int | None = None
         self._last_prepared_revision: int | None = None
         self._observed_revision: int | None = None
+        self._last_summarize_revision: int | None = None
 
     @property
     def history(self) -> tuple[ModelMessage, ...]:
@@ -282,6 +350,12 @@ class _ContextManager:
                 break
 
         projected, source = self._projected()
+        if projected >= budget * self._policy.summarize_threshold:
+            summarized, summary_operations = await self._run_tier3(projected)
+            operations.extend(summary_operations)
+            if summarized:
+                projected, source = self._projected()
+
         if projected > self._policy.input_budget:
             projected, oversized_operations = self._compact_oversized()
             operations.extend(oversized_operations)
@@ -371,6 +445,70 @@ class _ContextManager:
             reason="watermark",
         )
         return projected_after, (operation,)
+
+    async def _run_tier3(
+        self,
+        projected_before: int,
+    ) -> tuple[bool, tuple[ContextOperation, ...]]:
+        """Summarize the oldest closed Turns when deterministic tiers cannot."""
+
+        policy = self._policy
+        if self._ledger.revision == self._last_summarize_revision:
+            return False, ()
+        protected_start = self._protected_start()
+        demand = max(
+            1,
+            int(projected_before - policy.summarize_target * policy.input_budget),
+        )
+        delta_range = self._ledger.summarize_delta(protected_start, demand)
+        if delta_range is None:
+            return False, ()
+        delta_start, delta_end = delta_range
+        history = self._ledger.history
+        protected_tokens = sum(
+            estimate_message_tokens(message) for message in history[protected_start:]
+        )
+        max_summary_tokens = max(
+            1, int(policy.summarize_target * policy.input_budget) - protected_tokens
+        )
+        prompt = build_summary_messages(
+            old_summary=self._ledger.summary,
+            delta=history[delta_start:delta_end],
+            max_tokens=max_summary_tokens,
+        )
+        summary = await self._summarizer.summarize(prompt)
+        self._last_summarize_revision = self._ledger.revision
+        if summary is None:
+            return False, ()
+        text = "".join(
+            block.text for block in summary.content if isinstance(block, TextBlock)
+        )
+        if not text.strip() or not has_all_summary_sections(text):
+            return False, ()
+        if estimate_message_tokens(summary) > max_summary_tokens:
+            return False, ()
+        turns = sum(
+            1
+            for message in history[delta_start:delta_end]
+            if isinstance(message, UserMessage)
+        )
+        revision_before = self._ledger.revision
+        self._ledger.commit_summary(text.strip(), protected_start)
+        self._last_summarize_revision = self._ledger.revision
+        self._anchor_revision = None
+        self._anchor_message_count = 0
+        self._anchor_input_tokens = None
+        projected_after, _ = self._projected()
+        operation = ContextOperation(
+            tier=3,
+            revision_before=revision_before,
+            revision_after=self._ledger.revision,
+            input_tokens_before=projected_before,
+            input_tokens_after=projected_after,
+            entries_changed=turns,
+            reason="watermark",
+        )
+        return True, (operation,)
 
     def _compact_oversized(self) -> tuple[int, tuple[ContextOperation, ...]]:
         """Compact the newest compressible result to restore the Input Budget."""

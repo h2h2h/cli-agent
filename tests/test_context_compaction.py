@@ -5,6 +5,7 @@ import pytest
 from cli_agent.runtime import (
     AssistantMessage,
     ContextPolicy,
+    ScriptedModelProvider,
     SystemMessage,
     ToolCall,
     ToolResult,
@@ -17,6 +18,7 @@ from cli_agent.runtime._context_manager import (
 )
 
 SYSTEM_MESSAGE = SystemMessage.text("System")
+PROVIDER = ScriptedModelProvider(script=())
 
 
 def _snapshot(
@@ -114,7 +116,11 @@ def _run(prepare_coroutine):
 
 
 def test_tier1_snips_oldest_candidates_until_snip_target() -> None:
-    manager = _ContextManager(system_message=SYSTEM_MESSAGE, context_policy=_policy())
+    manager = _ContextManager(
+        system_message=SYSTEM_MESSAGE,
+        context_policy=_policy(),
+        provider=PROVIDER,
+    )
     _append_complete_turn(
         manager,
         user_text="zero",
@@ -153,7 +159,11 @@ def test_tier1_snips_oldest_candidates_until_snip_target() -> None:
 
 
 def test_tier2_prunes_snipped_candidates_when_tier1_cannot_reach_target() -> None:
-    manager = _ContextManager(system_message=SYSTEM_MESSAGE, context_policy=_policy())
+    manager = _ContextManager(
+        system_message=SYSTEM_MESSAGE,
+        context_policy=_policy(),
+        provider=PROVIDER,
+    )
     _append_complete_turn(
         manager,
         user_text="one",
@@ -180,7 +190,11 @@ def test_tier2_prunes_snipped_candidates_when_tier1_cannot_reach_target() -> Non
 
 
 def test_repeated_prepare_is_idempotent_and_monotonic() -> None:
-    manager = _ContextManager(system_message=SYSTEM_MESSAGE, context_policy=_policy())
+    manager = _ContextManager(
+        system_message=SYSTEM_MESSAGE,
+        context_policy=_policy(),
+        provider=PROVIDER,
+    )
     _append_complete_turn(
         manager,
         user_text="one",
@@ -211,6 +225,7 @@ def test_protected_suffix_keeps_active_and_recent_turns_untouched() -> None:
     manager = _ContextManager(
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(budget=100_000),
+        provider=PROVIDER,
     )
     _append_complete_turn(
         manager,
@@ -244,6 +259,7 @@ def test_excluded_tools_are_never_reduced() -> None:
     manager = _ContextManager(
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(excluded_tools=frozenset({"exec"})),
+        provider=PROVIDER,
     )
     exec_call = _call("call_exec", name="exec")
     output_call = _call("call_output", name="output")
@@ -275,7 +291,11 @@ def test_excluded_tools_are_never_reduced() -> None:
 
 
 def test_error_and_unknown_payloads_are_skipped() -> None:
-    manager = _ContextManager(system_message=SYSTEM_MESSAGE, context_policy=_policy())
+    manager = _ContextManager(
+        system_message=SYSTEM_MESSAGE,
+        context_policy=_policy(),
+        provider=PROVIDER,
+    )
     error_call = _call("call_error")
     unknown_call = _call("call_unknown")
     manager.append(UserMessage.text("one"))
@@ -314,6 +334,7 @@ def test_minimum_reclaim_blocks_small_results() -> None:
     manager = _ContextManager(
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(minimum_reclaim_tokens=100_000),
+        provider=PROVIDER,
     )
     _append_complete_turn(
         manager,
@@ -341,6 +362,7 @@ def test_oversized_guard_snips_the_active_turn_result() -> None:
     manager = _ContextManager(
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(budget=40_000),
+        provider=PROVIDER,
     )
     _append_active_turn(
         manager,
@@ -365,6 +387,7 @@ def test_oversized_user_input_fails_closed() -> None:
     manager = _ContextManager(
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(budget=40_000),
+        provider=PROVIDER,
     )
     manager.append(UserMessage.text("x" * 200_000))
 
@@ -373,7 +396,11 @@ def test_oversized_user_input_fails_closed() -> None:
 
 
 def test_compaction_preserves_call_id_pairing_and_message_order() -> None:
-    manager = _ContextManager(system_message=SYSTEM_MESSAGE, context_policy=_policy())
+    manager = _ContextManager(
+        system_message=SYSTEM_MESSAGE,
+        context_policy=_policy(),
+        provider=PROVIDER,
+    )
     first_call = _call("call_one")
     second_call = _call("call_two")
     _append_complete_turn(
