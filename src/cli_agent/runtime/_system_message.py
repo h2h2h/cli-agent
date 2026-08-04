@@ -52,6 +52,7 @@ def assemble_system_message(
 - A wait timeout leaves the Execution running. Use `output` with its stable Cursor to read later output, or `kill` to terminate the Execution.
 
 **Workspace file operations**
+First Principle: You shall always use the `files write` and `files edit` commands below to create or modify files. Shell commands are prohibited.
 
 Read
 - Build context before making assumptions. Use `rg --files` to discover files and `rg -n "pattern" path` to locate symbols or references; fall back to other CLI tools only when `rg` is unavailable.
@@ -62,8 +63,20 @@ Read
 
 Write
 - Keep observation and mutation separate. Before changing a file, inspect the exact target and surrounding context; afterward, inspect the changed region or `git diff` and run focused validation.
-- Create or overwrite files with `files write <path> <<'EOF' ... EOF` and make precise edits with `files edit <path> <<'EDI' {{...}} EDI`; one `files edit` call may contain multiple edits.
-- Do not write files with `tee`, `sed -i`, `cat >`, `echo >`, heredoc redirection, or Python scripts; the `files` commands handle Capability View preparation.
+- Create or overwrite a file with `files write <path> <<'EOF'`: put the complete new content on the following lines, then close with a line containing exactly `EOF`. Example:
+
+  files write src/main.py <<'EOF'
+  print("hello")
+  EOF
+
+- Edit one file in place with `files edit <path> <<'EDI'`: put a complete JSON document on the following line, then close with a line containing exactly `EDI`. The document must be a JSON object with an `edits` array of one or more `{{"oldText": "...", "newText": "..."}}` entries; `oldText` must match the file exactly, including whitespace, and occur exactly once. Example:
+
+  files edit src/main.py <<'EDI'
+  {{"edits": [{{"oldText": "hello", "newText": "hi"}}]}}
+  EDI
+
+- One `files edit` call can replace several disjoint regions: add one `{{"oldText", "newText"}}` entry per region inside the same `edits` array. Always pass the complete `{{"edits": [...]}}` JSON document inside the heredoc; never place it on the `files edit` command line and never omit it.
+- **Do not** write files with `tee`, `sed -i`, `cat >`, `echo >`, heredoc redirection, or Python scripts; the `files` commands handle Capability View preparation.
 
 **Working method**
 - Inspect relevant state before making changes.

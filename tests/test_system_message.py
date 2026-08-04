@@ -52,9 +52,13 @@ def test_guidance_references_only_actual_runtime_capabilities(
 def test_guidance_promotes_files_commands_for_mutations(tmp_path: Path) -> None:
     guidance = _guidance_text(tmp_path)
 
-    assert "`files write <path> <<'EOF' ... EOF`" in guidance
-    assert "`files edit <path> <<'EDI' {...} EDI`" in guidance
-    assert "one `files edit` call may contain multiple edits" in guidance
+    assert "`files write <path> <<'EOF'`" in guidance
+    assert "`files edit <path> <<'EDI'`" in guidance
+    assert "`edits` array" in guidance
+    assert "oldText" in guidance
+    assert "newText" in guidance
+    assert "disjoint regions" in guidance
+    assert "never omit it" in guidance
     for banned in ("`tee`", "`sed -i`", "`cat >`", "`echo >`", "Python scripts"):
         assert banned in guidance
     assert "Capability View preparation" in guidance
@@ -64,11 +68,14 @@ def test_guidance_splits_into_read_and_write_parts(tmp_path: Path) -> None:
     guidance = _guidance_text(tmp_path)
     read_part, write_part = guidance.split("\n\nWrite\n", maxsplit=1)
 
-    assert read_part.lstrip().startswith("Read\n")
+    assert "First Principle" in read_part
+    assert "Read\n" in read_part
     assert "`rg --files`" in read_part
     assert "`cat file`" in read_part
-    assert "files write" not in read_part
-    assert "`files write <path> <<'EOF' ... EOF`" in write_part
+    assert "`files write <path>" not in read_part
+    assert "`files write <path> <<'EOF'`" in write_part
+    assert "files write src/main.py" in write_part
+    assert "files edit src/main.py" in write_part
     assert "Keep observation and mutation separate" in write_part
 
 
