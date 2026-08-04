@@ -79,6 +79,6 @@ def _system_message_text(workspace: Path) -> str:
 
 def _guidance_text(workspace: Path) -> str:
     body = _system_message_text(workspace)
-    _, rest = body.split("Workspace file operations\n", maxsplit=1)
-    guidance, _ = rest.split("\n\nWorking method", maxsplit=1)
+    _, rest = body.split("**Workspace file operations**\n", maxsplit=1)
+    guidance, _ = rest.split("\n\n**Working method**", maxsplit=1)
     return guidance

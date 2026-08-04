@@ -26,7 +26,6 @@ from cli_agent.runtime import (
 _user_interaction = _ScriptedInteraction("allow_once")
 
 
-
 def test_runs_the_smallest_deterministic_agent_loop(
     tmp_path: Path,
     monkeypatch,
@@ -231,7 +230,7 @@ def test_skill_is_discoverable_and_loaded_on_demand(
             system_message = first_request.messages[0]
             assert isinstance(system_message, SystemMessage)
             system_body = "\n".join(block.text for block in system_message.content)
-            assert "banner-skill (valid): Add a proof banner." in system_body
+            assert "| banner-skill | valid | Add a proof banner. |" in system_body
             assert "name: banner-skill" not in system_body
             assert "# Banner skill" not in system_body
 
@@ -285,8 +284,8 @@ def test_skill_is_discoverable_and_loaded_on_demand(
             system_message = provider.requests[0].messages[0]
             assert isinstance(system_message, SystemMessage)
             system_body = "\n".join(block.text for block in system_message.content)
-            assert "banner-skill (valid): Add a proof banner." in system_body
-            assert "second-skill (valid): Second proof skill." in system_body
+            assert "| banner-skill | valid | Add a proof banner. |" in system_body
+            assert "| second-skill | valid | Second proof skill. |" in system_body
 
         for request in provider.requests:
             assert tuple(tool.name for tool in request.tools) == (
