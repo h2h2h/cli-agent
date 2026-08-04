@@ -4,3 +4,8 @@ PATH_add .venv/bin
 export CLI_AGENT_MODEL="your-model"
 export CLI_AGENT_BASE_URL="your-base-url"
 export CLI_AGENT_API_KEY="your-api-key"
+# Optional overrides; the model's maximum Context Window is resolved from the
+# built-in model registry and budgets use built-in defaults.
+# export CLI_AGENT_CONTEXT_WINDOW="128000"
+# export CLI_AGENT_OUTPUT_RESERVE="16384"
+# export CLI_AGENT_CONTEXT_SAFETY_MARGIN="4096"

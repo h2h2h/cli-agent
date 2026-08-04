@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol, TypeAlias
 
 from cli_agent.runtime._syscalls import (
@@ -92,13 +92,14 @@ ModelMessage: TypeAlias = (
 
 @dataclass(frozen=True, slots=True)
 class ModelRequest:
-    """The provider-neutral conversation and fixed environment protocol."""
+    """The provider-neutral conversation and explicit environment protocol.
+
+    Normal requests omit ``tools`` and inherit the built-in syscall schemas;
+    internal requests such as Tier 3 summarization pass ``tools=()``.
+    """
 
     messages: tuple[ModelMessage, ...]
-    tools: tuple[SyscallSchema, ...] = field(
-        default=BUILT_IN_SYSCALL_SCHEMAS,
-        init=False,
-    )
+    tools: tuple[SyscallSchema, ...] = BUILT_IN_SYSCALL_SCHEMAS
 
 
 @dataclass(frozen=True, slots=True)

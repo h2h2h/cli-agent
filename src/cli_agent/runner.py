@@ -6,7 +6,7 @@ import asyncio
 from typing import TextIO
 from uuid import uuid4
 
-from cli_agent.config import CliConfig
+from cli_agent.config import CliConfig, build_context_policy
 from cli_agent.presentation import render_diagnostic, render_event, render_prompt
 from cli_agent.runtime import (
     AgentRuntime,
@@ -38,6 +38,7 @@ async def run_agent(
         repertoire=config.repertoire,
         provider=provider,
         execution_policy=execution_policy,
+        context_policy=build_context_policy(config),
         user_interaction=_TerminalUserInteraction(
             stdin=stdin,
             stderr=stderr,

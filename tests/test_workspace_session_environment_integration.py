@@ -11,6 +11,7 @@ from interaction_fakes import _ScriptedInteraction
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    ContextPolicy,
     ModelCompletion,
     ModelEvent,
     ModelProvider,
@@ -22,6 +23,11 @@ from cli_agent.runtime import (
 )
 
 _user_interaction = _ScriptedInteraction("allow_once")
+_context_policy = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
 
 
 def test_public_runtime_combines_workspace_session_and_host_environment(
@@ -63,6 +69,7 @@ def test_public_runtime_combines_workspace_session_and_host_environment(
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider_a,
+            context_policy=_context_policy,
         )
         await _collect_turn(runtime, "session-a", "export and inspect")
         assert _load_json(tmp_path / "a-first.json") == {
@@ -124,6 +131,7 @@ def test_public_runtime_combines_workspace_session_and_host_environment(
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=later_provider,
+            context_policy=_context_policy,
         )
         await _collect_turn(later_runtime, "session-later", "inspect later Runtime")
         assert _load_json(tmp_path / "later-runtime.json") == {
@@ -219,8 +227,6 @@ async def _collect_turn(
 
 
 def _assert_result_statuses(
-
-
     provider: ScriptedModelProvider,
     *,
     request_index: int,

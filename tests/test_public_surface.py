@@ -7,7 +7,9 @@ from cli_agent import runtime
 
 def _runtime_source_files() -> list[Path]:
     root = Path(runtime.__file__).parent
-    return sorted(path for path in root.rglob("*.py") if "__pycache__" not in path.parts)
+    return sorted(
+        path for path in root.rglob("*.py") if "__pycache__" not in path.parts
+    )
 
 
 def test_exposes_provider_neutral_model_types() -> None:
@@ -39,6 +41,7 @@ def test_exposes_provider_neutral_model_types() -> None:
 
 def test_exposes_host_execution_policy_contracts() -> None:
     public_policy_names = {
+        "ContextPolicy",
         "ShellParseResult",
         "PolicyAction",
         "PolicyEvaluation",

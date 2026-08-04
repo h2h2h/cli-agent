@@ -6,10 +6,18 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
-from cli_agent.runtime import AgentRuntime, ScriptedModelProvider
+from cli_agent.runtime import (
+    AgentRuntime,
+    ContextPolicy,
+    ScriptedModelProvider,
+)
 
 _user_interaction = _ScriptedInteraction("allow_once")
-
+_context_policy = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
 
 
 def test_runtime_open_bootstraps_and_preserves_workspace_state(
@@ -23,6 +31,7 @@ def test_runtime_open_bootstraps_and_preserves_workspace_state(
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
+            context_policy=_context_policy,
         )
 
         assert workspace_state.is_dir()
@@ -30,12 +39,13 @@ def test_runtime_open_bootstraps_and_preserves_workspace_state(
         assert workspace_environment.is_file()
         assert not workspace_environment.is_symlink()
         assert workspace_environment.read_bytes() == b""
-        default_repertoire = (
-            Path.home() / ".config" / "cli-agent" / "repertoire"
-        )
-        assert {
-            path.name for path in default_repertoire.iterdir()
-        } == {"library", "skills", "tools", "_mcp"}
+        default_repertoire = Path.home() / ".config" / "cli-agent" / "repertoire"
+        assert {path.name for path in default_repertoire.iterdir()} == {
+            "library",
+            "skills",
+            "tools",
+            "_mcp",
+        }
         if os.name == "posix":
             assert stat.S_IMODE(workspace_state.stat().st_mode) & 0o077 == 0
             assert stat.S_IMODE(workspace_environment.stat().st_mode) & 0o077 == 0
@@ -68,6 +78,7 @@ def test_runtime_open_reuses_existing_workspace_state_without_changes(
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
+            context_policy=_context_policy,
         )
         await runtime.close()
 
@@ -95,6 +106,7 @@ def test_runtime_open_uses_explicit_repertoire(tmp_path: Path) -> None:
             workspace=workspace,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
+            context_policy=_context_policy,
         )
         try:
             assert runtime._resources.capability_view.repertoire == repertoire
@@ -123,6 +135,7 @@ def test_runtime_open_rejects_workspace_state_file_conflict(
                 user_interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
+                context_policy=_context_policy,
             )
 
     asyncio.run(scenario())
@@ -143,6 +156,7 @@ def test_runtime_open_rejects_workspace_environment_directory_conflict(
                 user_interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
+                context_policy=_context_policy,
             )
 
     asyncio.run(scenario())
@@ -179,6 +193,7 @@ def test_runtime_open_rejects_workspace_state_symbolic_links(
                 user_interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
+                context_policy=_context_policy,
             )
 
     asyncio.run(scenario())
@@ -194,6 +209,7 @@ def test_concurrent_runtime_opens_share_idempotent_bootstrap(
                     user_interaction=_user_interaction,
                     workspace=tmp_path,
                     provider=ScriptedModelProvider(script=()),
+                    context_policy=_context_policy,
                 )
                 for _ in range(4)
             )
@@ -230,6 +246,7 @@ def test_runtime_open_requires_existing_workspace(tmp_path: Path) -> None:
                 user_interaction=_user_interaction,
                 workspace=missing,
                 provider=ScriptedModelProvider(script=()),
+                context_policy=_context_policy,
             )
 
     asyncio.run(scenario())

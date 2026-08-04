@@ -10,6 +10,7 @@ import cli_agent.runtime as runtime_package
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    ContextPolicy,
     ModelCompletion,
     ModelEvent,
     ScriptedModelProvider,
@@ -24,6 +25,11 @@ from cli_agent.runtime import (
 )
 
 _user_interaction = _ScriptedInteraction("allow_once")
+_context_policy = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
 
 
 def test_runs_the_smallest_deterministic_agent_loop(
@@ -85,6 +91,7 @@ def test_runs_the_smallest_deterministic_agent_loop(
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
+            context_policy=_context_policy,
         ) as runtime:
             first_events = await _collect_turn(
                 runtime,
@@ -212,6 +219,7 @@ def test_skill_is_discoverable_and_loaded_on_demand(
             workspace=tmp_path,
             provider=provider,
             repertoire=repertoire,
+            context_policy=_context_policy,
         ) as runtime:
             events = await _collect_turn(
                 runtime,
@@ -274,6 +282,7 @@ def test_skill_is_discoverable_and_loaded_on_demand(
             workspace=tmp_path,
             provider=provider,
             repertoire=repertoire,
+            context_policy=_context_policy,
         ) as runtime:
             await _collect_turn(
                 runtime,
@@ -301,6 +310,7 @@ def test_skill_is_discoverable_and_loaded_on_demand(
         "AgentRuntime",
         "AssistantMessage",
         "ShellParseResult",
+        "ContextPolicy",
         "ExecutionPolicy",
         "JSONValue",
         "ModelCompletion",

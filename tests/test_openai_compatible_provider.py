@@ -112,6 +112,48 @@ def test_streams_a_real_model_request_through_the_provider_neutral_seam() -> Non
     )
 
 
+def test_omits_tools_field_for_internal_summary_requests() -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=(
+                'data: {"choices":[{"delta":{"content":"Summary"},'
+                '"finish_reason":null}]}\n\n'
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        )
+
+    provider = OpenAICompatibleModelProvider(
+        model="test-model",
+        api_key="secret-key",
+        base_url="https://models.example/v1",
+        transport=httpx.MockTransport(respond),
+    )
+    request = ModelRequest(
+        messages=(UserMessage.text("Summarize"),),
+        tools=(),
+    )
+
+    events = asyncio.run(_collect_events(provider, request))
+
+    assert len(requests) == 1
+    payload = json.loads(requests[0].content)
+    assert "tools" not in payload
+    assert events == (
+        TextDelta(text="Summary"),
+        ModelCompletion(
+            message=AssistantMessage.text("Summary"),
+            finish_reason="stop",
+            usage=None,
+        ),
+    )
+
+
 def test_encodes_tool_calls_and_expands_ordered_tool_results() -> None:
     requests: list[httpx.Request] = []
 

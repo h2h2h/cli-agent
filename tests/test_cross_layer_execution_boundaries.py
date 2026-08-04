@@ -19,6 +19,7 @@ from policy_fakes import _AllowAllPolicy, _AskExecutablePolicy, _DenyExecutableP
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    ContextPolicy,
     ModelCompletion,
     ModelEvent,
     ScriptedModelProvider,
@@ -30,6 +31,12 @@ from cli_agent.runtime import (
 )
 from cli_agent.runtime._environment import EnvironmentKernel
 
+_context_policy = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
+
 
 def test_unsupported_valid_syntax_falls_back_to_shell(tmp_path: Path) -> None:
     async def scenario() -> None:
@@ -40,9 +47,7 @@ def test_unsupported_valid_syntax_falls_back_to_shell(tmp_path: Path) -> None:
                 ToolCall(
                     call_id="unsupported-syntax",
                     name="exec",
-                    arguments={
-                        "command": f"if true; then {_touch_command(proof)}; fi"
-                    },
+                    arguments={"command": f"if true; then {_touch_command(proof)}; fi"},
                 )
             )
 
@@ -72,6 +77,7 @@ def test_policy_none_runs_end_to_end_without_interaction(tmp_path: Path) -> None
             workspace=tmp_path,
             provider=provider,
             user_interaction=interaction,
+            context_policy=_context_policy,
         )
         try:
             await _collect_turn(runtime, "session", "Run it")
@@ -105,6 +111,7 @@ def test_configured_policy_paths_end_to_end(tmp_path: Path) -> None:
                 frozenset({"touch"}),
                 reason="touch is denied by policy",
             ),
+            context_policy=_context_policy,
         )
         try:
             await _collect_turn(deny_runtime, "deny-session", "Deny it")
@@ -123,6 +130,7 @@ def test_configured_policy_paths_end_to_end(tmp_path: Path) -> None:
             ),
             user_interaction=_ScriptedInteraction("allow_once"),
             execution_policy=_AllowAllPolicy(),
+            context_policy=_context_policy,
         )
         try:
             await _collect_turn(allow_runtime, "allow-session", "Allow it")
@@ -154,6 +162,7 @@ def test_ask_interaction_allow_once_and_deny_end_to_end(tmp_path: Path) -> None:
             ),
             user_interaction=allow_interaction,
             execution_policy=_ask_python_policy(),
+            context_policy=_context_policy,
         )
         try:
             await _collect_turn(allow_runtime, "allow-session", "Allow it")
@@ -172,6 +181,7 @@ def test_ask_interaction_allow_once_and_deny_end_to_end(tmp_path: Path) -> None:
             ),
             user_interaction=deny_interaction,
             execution_policy=_ask_python_policy(),
+            context_policy=_context_policy,
         )
         try:
             await _collect_turn(deny_runtime, "deny-session", "Deny it")
@@ -212,6 +222,7 @@ def test_parse_failure_through_public_runtime_creates_no_execution(
                 rule_id="test.ask-echo",
                 reason="echo requires approval",
             ),
+            context_policy=_context_policy,
         )
         try:
             await _collect_turn(runtime, "malformed-session", "Run it")
@@ -245,6 +256,7 @@ def test_runtime_close_cancels_pending_ask_without_closing_interaction(
             provider=provider,
             user_interaction=interaction,
             execution_policy=_ask_python_policy(),
+            context_policy=_context_policy,
         )
         turn = asyncio.create_task(
             _collect_turn(runtime, "pending-session", "Ask for approval")
@@ -313,6 +325,7 @@ def test_session_remains_usable_after_denial(tmp_path: Path) -> None:
                 frozenset({"touch"}),
                 reason="touch is denied by policy",
             ),
+            context_policy=_context_policy,
         )
         try:
             await _collect_turn(runtime, "persistent-session", "Deny it")

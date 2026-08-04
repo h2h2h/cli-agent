@@ -459,9 +459,7 @@ def test_renderer_presents_a_runtime_diagnostic() -> None:
         stderr=stderr,
     )
 
-    assert stderr.getvalue() == (
-        "[mcp.discovery_failed] could not contact github\n"
-    )
+    assert stderr.getvalue() == ("[mcp.discovery_failed] could not contact github\n")
 
 
 class _TerminalOutput(StringIO):
@@ -480,6 +478,9 @@ def _config(
         base_url="https://models.example/v1",
         model="test-model",
         api_key="secret",
+        context_window_tokens=128_000,
+        output_reserve_tokens=4_000,
+        safety_margin_tokens=4_096,
     )
 
 

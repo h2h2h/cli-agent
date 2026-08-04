@@ -48,6 +48,19 @@ class OpenAICompatibleModelProvider:
         finish_reason: str | None = None
         usage: ModelUsage | None = None
 
+        payload: dict[str, object] = {
+            "model": self._model,
+            "messages": [
+                payload
+                for message in request.messages
+                for payload in _message_payloads(message)
+            ],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if request.tools:
+            payload["tools"] = [_tool_payload(tool) for tool in request.tools]
+
         async with httpx.AsyncClient(transport=self._transport) as client:
             async with client.stream(
                 "POST",
@@ -56,17 +69,7 @@ class OpenAICompatibleModelProvider:
                     "Authorization": f"Bearer {self._api_key}",
                     "Accept": "text/event-stream",
                 },
-                json={
-                    "model": self._model,
-                    "messages": [
-                        payload
-                        for message in request.messages
-                        for payload in _message_payloads(message)
-                    ],
-                    "tools": [_tool_payload(tool) for tool in request.tools],
-                    "stream": True,
-                    "stream_options": {"include_usage": True},
-                },
+                json=payload,
             ) as response:
                 response.raise_for_status()
 

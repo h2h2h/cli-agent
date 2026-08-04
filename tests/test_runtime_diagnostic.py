@@ -4,10 +4,19 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
-from cli_agent.runtime import AgentRuntime, RuntimeDiagnostic, ScriptedModelProvider
+from cli_agent.runtime import (
+    AgentRuntime,
+    ContextPolicy,
+    RuntimeDiagnostic,
+    ScriptedModelProvider,
+)
 
 _user_interaction = _ScriptedInteraction("allow_once")
-
+_context_policy = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
 
 
 def test_diagnostic_is_frozen() -> None:
@@ -22,6 +31,7 @@ def test_emission_is_silent_without_a_callback(tmp_path: Path) -> None:
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
+            context_policy=_context_policy,
         )
         runtime._emit_diagnostic("mcp.discovery_failed", "boom")
         await runtime.close()
@@ -38,6 +48,7 @@ def test_callback_receives_structured_diagnostics(tmp_path: Path) -> None:
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             on_diagnostic=received.append,
+            context_policy=_context_policy,
         )
         runtime._emit_diagnostic(
             "mcp.discovery_failed",
@@ -75,6 +86,7 @@ def test_callback_receives_tool_metadata_parse_diagnostic(tmp_path: Path) -> Non
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
             on_diagnostic=received.append,
+            context_policy=_context_policy,
         )
         await runtime.close()
 

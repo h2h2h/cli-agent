@@ -12,6 +12,7 @@ from policy_fakes import _AskExecutablePolicy
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    ContextPolicy,
     ModelCompletion,
     ModelEvent,
     ModelRequest,
@@ -27,7 +28,11 @@ from cli_agent.runtime import (
 from cli_agent.runtime._environment.execution_state import _ExecutionState
 
 _user_interaction = _ScriptedInteraction("deny")
-
+_context_policy = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
 
 
 class _CoordinatedProvider:
@@ -187,6 +192,7 @@ def test_public_runtime_proves_concurrent_session_scheduling(
                 rule_id="test.ask-rm",
                 reason="rm requires Host approval",
             ),
+            context_policy=_context_policy,
         )
         turn_a: asyncio.Task[tuple[ModelEvent, ...]] | None = None
         turn_b: asyncio.Task[tuple[ModelEvent, ...]] | None = None
@@ -286,8 +292,7 @@ def test_public_runtime_proves_concurrent_session_scheduling(
             assert old_kernel_a._closed is True
             assert old_kernel_a._executions == {}
             assert all(
-                state.status in {"killed", "exited", "failed"}
-                for state in old_states_a
+                state.status in {"killed", "exited", "failed"} for state in old_states_a
             )
             assert all(
                 state.completion_task is None or state.completion_task.done()
@@ -385,8 +390,7 @@ def test_public_runtime_proves_concurrent_session_scheduling(
             assert fresh_session is not old_session_a
             assert fresh_session.kernel is not old_kernel_a
             assert (
-                fresh_session.kernel._executions[fresh_exec_id].submission_sequence
-                == 0
+                fresh_session.kernel._executions[fresh_exec_id].submission_sequence == 0
             )
             fresh_provider.assert_exhausted()
             default_provider.assert_exhausted()

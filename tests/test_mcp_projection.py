@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
-from cli_agent.runtime import AgentRuntime, ScriptedModelProvider
+from cli_agent.runtime import (
+    AgentRuntime,
+    ContextPolicy,
+    ScriptedModelProvider,
+)
 from cli_agent.runtime._capability.mcp import catalog as mcp_catalog_module
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.view import _CapabilityView
@@ -16,6 +20,11 @@ from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 _user_interaction = _ScriptedInteraction("allow_once")
+_context_policy = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
 
 
 _FIXTURE = Path(__file__).parent / "mcp_server_fixture.py"
@@ -236,9 +245,7 @@ def test_reconcile_overwrites_a_locally_modified_stub(tmp_path: Path) -> None:
         stub = view.root / "tools" / "mcp_math.py"
         stub.write_text("# user-edited\n", encoding="utf-8")
 
-        catalog = await _MCPCatalog.reconcile(
-            view, on_diagnostic=received.append
-        )
+        catalog = await _MCPCatalog.reconcile(view, on_diagnostic=received.append)
 
         assert stub.read_text(encoding="utf-8").startswith(
             '"""\nMCP Server (stdio): math'
@@ -246,8 +253,7 @@ def test_reconcile_overwrites_a_locally_modified_stub(tmp_path: Path) -> None:
         assert "# user-edited" not in stub.read_text(encoding="utf-8")
         assert catalog.servers == ("math",)
         assert not any(
-            diagnostic.kind == "mcp.stub_modified"
-            for diagnostic in received
+            diagnostic.kind == "mcp.stub_modified" for diagnostic in received
         )
 
     asyncio.run(scenario())
@@ -288,6 +294,7 @@ def test_runtime_open_projects_mcp_stub_without_diagnostics(
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
             on_diagnostic=received.append,
+            context_policy=_context_policy,
         ) as runtime:
             stub = workspace / ".workspace" / "tools" / "mcp_math.py"
             assert stub.is_file()
@@ -318,14 +325,12 @@ def test_discovery_failure_keeps_runtime_open_without_partial_stub(
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
             on_diagnostic=received.append,
+            context_policy=_context_policy,
         ) as runtime:
-            assert not (
-                workspace / ".workspace" / "tools" / "mcp_broken.py"
-            ).exists()
+            assert not (workspace / ".workspace" / "tools" / "mcp_broken.py").exists()
             assert runtime._resources.tool_catalog.get("mcp_broken") is None
             assert any(
-                diagnostic.kind == "mcp.discovery_failed"
-                for diagnostic in received
+                diagnostic.kind == "mcp.discovery_failed" for diagnostic in received
             )
 
     asyncio.run(scenario())
@@ -391,16 +396,11 @@ def test_failed_reconcile_removes_a_previous_stub(tmp_path: Path) -> None:
         )
         refreshed = _open_view(workspace, repertoire)
         received: list[RuntimeDiagnostic] = []
-        catalog = await _MCPCatalog.reconcile(
-            refreshed, on_diagnostic=received.append
-        )
+        catalog = await _MCPCatalog.reconcile(refreshed, on_diagnostic=received.append)
 
         assert not stub.exists()
         assert catalog.servers == ()
-        assert any(
-            diagnostic.kind == "mcp.discovery_failed"
-            for diagnostic in received
-        )
+        assert any(diagnostic.kind == "mcp.discovery_failed" for diagnostic in received)
 
     asyncio.run(scenario())
 
@@ -426,14 +426,12 @@ def test_runtime_open_reports_invalid_config_without_blocking(
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
             on_diagnostic=received.append,
+            context_policy=_context_policy,
         ) as runtime:
             assert runtime._resources.tool_catalog.get("mcp_bad") is None
-            assert not (
-                workspace / ".workspace" / "tools" / "mcp_bad.py"
-            ).exists()
+            assert not (workspace / ".workspace" / "tools" / "mcp_bad.py").exists()
             assert any(
-                diagnostic.kind == "mcp.config_invalid"
-                for diagnostic in received
+                diagnostic.kind == "mcp.config_invalid" for diagnostic in received
             )
 
     asyncio.run(scenario())
@@ -493,15 +491,10 @@ def test_workspace_config_overrides_repertoire(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         received: list[RuntimeDiagnostic] = []
-        catalog = await _MCPCatalog.reconcile(
-            view, on_diagnostic=received.append
-        )
+        catalog = await _MCPCatalog.reconcile(view, on_diagnostic=received.append)
         assert not (view.root / "tools" / "mcp_math.py").exists()
         assert catalog.servers == ()
-        assert any(
-            diagnostic.kind == "mcp.discovery_failed"
-            for diagnostic in received
-        )
+        assert any(diagnostic.kind == "mcp.discovery_failed" for diagnostic in received)
 
     asyncio.run(scenario())
 
@@ -532,15 +525,12 @@ def test_workspace_whiteout_disables_repertoire_server(tmp_path: Path) -> None:
         whiteout.touch()
 
         received: list[RuntimeDiagnostic] = []
-        catalog = await _MCPCatalog.reconcile(
-            view, on_diagnostic=received.append
-        )
+        catalog = await _MCPCatalog.reconcile(view, on_diagnostic=received.append)
 
         assert not stub.exists()
         assert catalog.servers == ()
         assert not any(
-            diagnostic.kind == "mcp.config_missing"
-            for diagnostic in received
+            diagnostic.kind == "mcp.config_missing" for diagnostic in received
         )
 
     asyncio.run(scenario())

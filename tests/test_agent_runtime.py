@@ -10,6 +10,7 @@ import cli_agent.runtime.runtime as runtime_module
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    ContextPolicy,
     ModelCompletion,
     ModelEvent,
     ModelProvider,
@@ -31,7 +32,11 @@ from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._resources import _RuntimeResources
 
 _user_interaction = _ScriptedInteraction("allow_once")
-
+_context_policy = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
 
 
 def test_opens_and_closes_runtime_explicitly(tmp_path: Path, monkeypatch) -> None:
@@ -47,6 +52,7 @@ def test_opens_and_closes_runtime_explicitly(tmp_path: Path, monkeypatch) -> Non
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
+            context_policy=_context_policy,
         )
 
         assert not runtime.closed
@@ -77,6 +83,7 @@ def test_closes_runtime_context_manager(tmp_path: Path, monkeypatch) -> None:
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
+            context_policy=_context_policy,
         )
         async with runtime:
             assert not runtime.closed
@@ -127,6 +134,7 @@ def test_host_configures_runtime_lifetime_executable_deny_set(
                 frozenset({"echo"}),
                 reason="direct invocation of 'echo' is denied by policy",
             ),
+            context_policy=_context_policy,
         ) as runtime:
             await _collect_turn(runtime, "session", UserMessage.text("Run echo"))
 
@@ -175,12 +183,14 @@ def test_passes_parallel_command_authorization_to_kernel(
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=default_provider,
+            context_policy=_context_policy,
         )
         configured_runtime = await AgentRuntime.open(
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=configured_provider,
             parallel_commands=frozenset({"cat", "rg"}),
+            context_policy=_context_policy,
         )
         await _collect_turn(
             default_runtime,
@@ -194,12 +204,10 @@ def test_passes_parallel_command_authorization_to_kernel(
         )
 
         assert [
-            kernel.parallel_commands
-            for kernel in _TrackingEnvironmentKernel.instances
+            kernel.parallel_commands for kernel in _TrackingEnvironmentKernel.instances
         ] == [frozenset(), frozenset({"cat", "rg"})]
         assert [
-            kernel.session_id
-            for kernel in _TrackingEnvironmentKernel.instances
+            kernel.session_id for kernel in _TrackingEnvironmentKernel.instances
         ] == ["default", "configured"]
 
         await default_runtime.close()
@@ -229,6 +237,7 @@ def test_cleans_up_environment_when_open_fails(
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
                 user_interaction=_user_interaction,
+                context_policy=_context_policy,
             )
 
         assert _TrackingEnvironmentKernel.instances == []
@@ -260,6 +269,7 @@ def test_closes_new_kernel_when_agent_loop_construction_fails(
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
+            context_policy=_context_policy,
         )
 
         with pytest.raises(OpenFailure):
@@ -295,6 +305,7 @@ def test_reuses_session_history_and_bound_provider(tmp_path: Path) -> None:
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=default_provider,
+            context_policy=_context_policy,
         )
 
         first_events = await _collect_turn(
@@ -350,6 +361,7 @@ def test_reusing_closed_session_id_creates_fresh_state(tmp_path: Path) -> None:
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
+            context_policy=_context_policy,
         )
 
         await _collect_turn(runtime, "session-a", first_user)
@@ -391,6 +403,7 @@ def test_assembles_workspace_and_optional_host_instruction(
             workspace=tmp_path,
             provider=provider,
             system_instruction="Prefer focused, reversible changes.",
+            context_policy=_context_policy,
         )
 
         await _collect_turn(runtime, "session-a", UserMessage.text("Work"))
@@ -434,6 +447,7 @@ def test_runtime_closes_every_session_kernel(
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
+            context_policy=_context_policy,
         )
         await _collect_turn(runtime, "session-a", UserMessage.text("A"))
         await _collect_turn(runtime, "session-b", UserMessage.text("B"))
@@ -445,9 +459,10 @@ def test_runtime_closes_every_session_kernel(
         assert [
             kernel.close_count for kernel in _TrackingEnvironmentKernel.instances
         ] == [1, 1]
-        assert [
-            kernel.events for kernel in _TrackingEnvironmentKernel.instances
-        ] == [["kernel.close"], ["kernel.close"]]
+        assert [kernel.events for kernel in _TrackingEnvironmentKernel.instances] == [
+            ["kernel.close"],
+            ["kernel.close"],
+        ]
         await runtime.close_session("session-a")
         with pytest.raises(RuntimeClosedError, match="AgentRuntime is closed"):
             await _collect_turn(runtime, "session-a", UserMessage.text("closed"))
@@ -461,6 +476,7 @@ def test_runtime_holds_single_resource_aggregate(tmp_path: Path) -> None:
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
+            context_policy=_context_policy,
         )
 
         resources = runtime._resources
@@ -500,7 +516,12 @@ def test_sessions_borrow_the_same_workspace_resources(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider, user_interaction=_user_interaction)
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=provider,
+            user_interaction=_user_interaction,
+            context_policy=_context_policy,
+        )
         await _collect_turn(runtime, "session-a", UserMessage.text("A"))
         await _collect_turn(runtime, "session-b", UserMessage.text("B"))
 
@@ -539,7 +560,12 @@ def test_each_session_gets_an_independent_environment_copy(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider, user_interaction=_user_interaction)
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=provider,
+            user_interaction=_user_interaction,
+            context_policy=_context_policy,
+        )
         await _collect_turn(runtime, "session-a", UserMessage.text("A"))
         await _collect_turn(runtime, "session-b", UserMessage.text("B"))
 
@@ -571,22 +597,25 @@ def test_runtime_close_only_closes_session_owned_state(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider, user_interaction=_user_interaction)
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=provider,
+            user_interaction=_user_interaction,
+            context_policy=_context_policy,
+        )
         resources = runtime._resources
         await _collect_turn(runtime, "session-a", UserMessage.text("A"))
         await _collect_turn(runtime, "session-b", UserMessage.text("B"))
         await runtime.close_session("session-a")
 
         assert [
-            kernel.close_count
-            for kernel in _TrackingEnvironmentKernel.instances
+            kernel.close_count for kernel in _TrackingEnvironmentKernel.instances
         ] == [1, 0]
 
         await runtime.close()
 
         assert [
-            kernel.close_count
-            for kernel in _TrackingEnvironmentKernel.instances
+            kernel.close_count for kernel in _TrackingEnvironmentKernel.instances
         ] == [1, 1]
         assert not hasattr(resources, "close")
         assert resources.workspace == tmp_path.resolve()
@@ -604,9 +633,7 @@ def test_host_owned_dependencies_stay_outside_the_aggregate(
 ) -> None:
     class _TrackingProvider(ScriptedModelProvider):
         def __init__(self) -> None:
-            super().__init__(
-                script=((_completion(AssistantMessage.text("Done")),),)
-            )
+            super().__init__(script=((_completion(AssistantMessage.text("Done")),),))
             self.closed = False
 
         def close(self) -> None:
@@ -648,6 +675,7 @@ def test_host_owned_dependencies_stay_outside_the_aggregate(
             provider=provider,
             execution_policy=policy,
             on_diagnostic=received.append,
+            context_policy=_context_policy,
         )
         await _collect_turn(runtime, "session-a", UserMessage.text("Work"))
         await runtime.close()

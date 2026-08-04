@@ -9,6 +9,7 @@ from types import TracebackType
 from typing import Any
 
 from cli_agent.runtime._agent_loop import AgentLoop
+from cli_agent.runtime._context import ContextPolicy
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.interaction import UserInteraction
 from cli_agent.runtime._environment.policy import ExecutionPolicy
@@ -44,6 +45,7 @@ class AgentRuntime:
         parallel_commands: frozenset[str],
         instruction: str | None,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+        context_policy: ContextPolicy,
     ) -> None:
         self._provider = provider
         self._resources = resources
@@ -52,6 +54,7 @@ class AgentRuntime:
         self._parallel_commands = parallel_commands
         self._instruction = instruction
         self._on_diagnostic = on_diagnostic
+        self._context_policy = context_policy
         self._sessions: dict[str, _Session] = {}
         self._closed = False
 
@@ -62,6 +65,7 @@ class AgentRuntime:
         workspace: str | Path,
         provider: ModelProvider,
         user_interaction: UserInteraction,
+        context_policy: ContextPolicy,
         repertoire: str | Path | None = None,
         system_instruction: str | None = None,
         execution_policy: ExecutionPolicy | None = None,
@@ -84,6 +88,9 @@ class AgentRuntime:
             user_interaction (`UserInteraction`):
                 Host-owned Runtime-wide question channel; required even when
                 ``execution_policy`` is omitted.
+            context_policy (`ContextPolicy`):
+                Explicit Context budget and compaction policy for every
+                Session; there is no implicit model-name window registry.
             repertoire (`str | Path | None`):
                 User-maintained capability lower tree; defaults to
                 ``~/.config/cli-agent/repertoire``.
@@ -115,6 +122,7 @@ class AgentRuntime:
             user_interaction=user_interaction,
             parallel_commands=frozenset(parallel_commands or ()),
             on_diagnostic=on_diagnostic,
+            context_policy=context_policy,
         )
 
     @classmethod
@@ -129,6 +137,7 @@ class AgentRuntime:
         user_interaction: UserInteraction,
         parallel_commands: frozenset[str],
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+        context_policy: ContextPolicy,
     ) -> AgentRuntime:
         """Prepare Workspace-scoped resources and construct the Runtime."""
 
@@ -145,6 +154,7 @@ class AgentRuntime:
             parallel_commands=parallel_commands,
             instruction=instruction,
             on_diagnostic=on_diagnostic,
+            context_policy=context_policy,
         )
 
     @property

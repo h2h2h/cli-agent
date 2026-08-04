@@ -6,6 +6,7 @@ from interaction_fakes import _ScriptedInteraction
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    ContextPolicy,
     ModelCompletion,
     ModelEvent,
     ScriptedModelProvider,
@@ -14,7 +15,11 @@ from cli_agent.runtime import (
 from cli_agent.runtime._environment import EnvironmentKernel
 
 _user_interaction = _ScriptedInteraction("allow_once")
-
+_context_policy = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
 
 
 def test_sessions_own_isolated_copies_of_runtime_open_environment(
@@ -35,7 +40,12 @@ def test_sessions_own_isolated_copies_of_runtime_open_environment(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(workspace=tmp_path, provider=provider, user_interaction=_user_interaction)
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=provider,
+            user_interaction=_user_interaction,
+            context_policy=_context_policy,
+        )
 
         await _collect_turn(runtime, "session-a", "first a")
         await _collect_turn(runtime, "session-b", "first b")

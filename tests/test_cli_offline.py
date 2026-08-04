@@ -13,7 +13,9 @@ from cli_agent.cli import main
 from cli_agent.config import (
     API_KEY_ENV,
     BASE_URL_ENV,
+    CONTEXT_WINDOW_ENV,
     MODEL_ENV,
+    OUTPUT_RESERVE_ENV,
     build_provider,
 )
 from cli_agent.runtime import AgentRuntime, ModelUsage, ToolCall
@@ -170,6 +172,8 @@ def test_proves_cli_agent_offline_through_real_provider_adapter(
     monkeypatch.setenv(MODEL_ENV, "test-model")
     monkeypatch.setenv(BASE_URL_ENV, "https://models.invalid/v1")
     monkeypatch.setenv(API_KEY_ENV, "offline-placeholder-key")
+    monkeypatch.setenv(CONTEXT_WINDOW_ENV, "128000")
+    monkeypatch.setenv(OUTPUT_RESERVE_ENV, "4000")
 
     exit_code = main(
         [
@@ -289,6 +293,8 @@ def test_proves_interactive_history_offline_through_real_provider_adapter(
     monkeypatch.setenv(MODEL_ENV, "test-model")
     monkeypatch.setenv(BASE_URL_ENV, "https://models.invalid/v1")
     monkeypatch.setenv(API_KEY_ENV, "offline-placeholder-key")
+    monkeypatch.setenv(CONTEXT_WINDOW_ENV, "128000")
+    monkeypatch.setenv(OUTPUT_RESERVE_ENV, "4000")
 
     exit_code = main(
         [

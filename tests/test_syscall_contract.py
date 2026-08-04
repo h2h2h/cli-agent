@@ -8,7 +8,7 @@ from cli_agent.runtime import ModelRequest, UserMessage
 from cli_agent.runtime._syscalls import BUILT_IN_SYSCALL_SCHEMAS
 
 
-def test_model_request_exposes_the_exact_fixed_builtin_tools() -> None:
+def test_normal_requests_default_to_the_exact_fixed_builtin_tools() -> None:
     request = ModelRequest(messages=(UserMessage.text("inspect the workspace"),))
 
     assert request.tools is BUILT_IN_SYSCALL_SCHEMAS
@@ -19,6 +19,19 @@ def test_model_request_exposes_the_exact_fixed_builtin_tools() -> None:
         "kill",
     )
     assert [schema.to_json() for schema in request.tools] == _expected_schemas()
+
+
+def test_internal_requests_can_explicitly_supply_tools() -> None:
+    assert tuple(signature(ModelRequest).parameters) == ("messages", "tools")
+
+    summary_request = ModelRequest(messages=(), tools=())
+    assert summary_request.tools == ()
+
+    explicit_request = ModelRequest(
+        messages=(),
+        tools=BUILT_IN_SYSCALL_SCHEMAS,
+    )
+    assert explicit_request.tools is BUILT_IN_SYSCALL_SCHEMAS
 
 
 def test_builtin_tool_shape_is_json_serializable_and_immutable() -> None:
@@ -55,11 +68,17 @@ def test_runtime_capability_metadata_cannot_change_builtin_tools() -> None:
     }
 
 
-def test_callers_cannot_supply_different_tools_to_model_request() -> None:
-    assert tuple(signature(ModelRequest).parameters) == ("messages",)
+def test_internal_summary_requests_can_omit_all_tools() -> None:
+    assert tuple(signature(ModelRequest).parameters) == ("messages", "tools")
 
-    with pytest.raises(TypeError):
-        ModelRequest(messages=(), tools=())  # type: ignore[call-arg]
+    summary_request = ModelRequest(messages=(), tools=())
+    assert summary_request.tools == ()
+
+    explicit_request = ModelRequest(
+        messages=(),
+        tools=BUILT_IN_SYSCALL_SCHEMAS,
+    )
+    assert explicit_request.tools is BUILT_IN_SYSCALL_SCHEMAS
 
 
 def _expected_schemas() -> list[dict[str, object]]:

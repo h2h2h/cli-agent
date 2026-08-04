@@ -10,6 +10,7 @@ import cli_agent.runtime as runtime_module
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    ContextPolicy,
     ModelCompletion,
     ModelRequest,
     ScriptedModelProvider,
@@ -25,6 +26,11 @@ from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
 
 _user_interaction = _ScriptedInteraction("allow_once")
+_context_policy = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
 
 
 _FIXTURE = Path(__file__).parent / "mcp_server_fixture.py"
@@ -84,9 +90,7 @@ def test_generated_mcp_tool_runs_through_tools_run(tmp_path: Path) -> None:
     async def scenario() -> None:
         kernel = await _kernel(workspace, repertoire)
         try:
-            added = _output(
-                await _exec(kernel, 'tools run "tools.mcp_math.add(2, 3)"')
-            )
+            added = _output(await _exec(kernel, 'tools run "tools.mcp_math.add(2, 3)"'))
             assert added["status"] == "exited"
             assert _text(added, "stdout") == "5\n"
 
@@ -117,10 +121,7 @@ def test_local_and_mcp_tools_mix_in_one_code_block(tmp_path: Path) -> None:
             result = _output(
                 await _exec(
                     kernel,
-                    (
-                        "tools run "
-                        '"tools.local_tool.double(tools.mcp_math.add(1, 2))"'
-                    ),
+                    ('tools run "tools.local_tool.double(tools.mcp_math.add(1, 2))"'),
                 )
             )
             assert result["status"] == "exited"
@@ -181,10 +182,9 @@ def test_mcp_integration_keeps_model_visible_surface_and_public_exports(
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
             on_diagnostic=received.append,
+            context_policy=_context_policy,
         ) as runtime:
-            assert (
-                workspace / ".workspace" / "tools" / "mcp_math.py"
-            ).is_file()
+            assert (workspace / ".workspace" / "tools" / "mcp_math.py").is_file()
             assert received == []
             mcp_tool = runtime._resources.tool_catalog.get("mcp_math")
             assert mcp_tool is not None
@@ -247,15 +247,12 @@ def test_additional_sessions_do_not_reconcile_mcp_again(
             workspace=workspace,
             repertoire=repertoire,
             provider=provider,
+            context_policy=_context_policy,
         ) as runtime:
             assert calls == 1
-            async for _ in runtime.run_turn(
-                "session-a", UserMessage.text("hello")
-            ):
+            async for _ in runtime.run_turn("session-a", UserMessage.text("hello")):
                 pass
-            async for _ in runtime.run_turn(
-                "session-b", UserMessage.text("hello")
-            ):
+            async for _ in runtime.run_turn("session-b", UserMessage.text("hello")):
                 pass
             assert calls == 1
             provider.assert_exhausted()

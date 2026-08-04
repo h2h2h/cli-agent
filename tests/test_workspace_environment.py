@@ -5,10 +5,18 @@ import pytest
 from interaction_fakes import _ScriptedInteraction
 
 import cli_agent.runtime.runtime as runtime_module
-from cli_agent.runtime import AgentRuntime, ScriptedModelProvider
+from cli_agent.runtime import (
+    AgentRuntime,
+    ContextPolicy,
+    ScriptedModelProvider,
+)
 
 _user_interaction = _ScriptedInteraction("allow_once")
-
+_context_policy = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
 
 
 def test_runtime_open_loads_complete_dotenv_environment(
@@ -41,6 +49,7 @@ def test_runtime_open_loads_complete_dotenv_environment(
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
+            context_policy=_context_policy,
         )
 
         assert dict(runtime._resources.base_env) == {
@@ -71,12 +80,14 @@ def test_workspace_environment_is_loaded_once_per_runtime(tmp_path: Path) -> Non
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
+            context_policy=_context_policy,
         )
         environment.write_text("VALUE=second\n", encoding="utf-8")
         second_runtime = await AgentRuntime.open(
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
+            context_policy=_context_policy,
         )
 
         assert first_runtime._resources.base_env == {"VALUE": "first"}
@@ -122,6 +133,7 @@ def test_runtime_open_rejects_malformed_workspace_environment(
                 user_interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
+                context_policy=_context_policy,
             )
         assert "secret" not in str(raised.value).lower()
 
@@ -150,6 +162,7 @@ def test_runtime_open_rejects_workspace_environment_symbolic_link(
                 user_interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
+                context_policy=_context_policy,
             )
         assert "secret" not in str(raised.value)
 
@@ -170,6 +183,7 @@ def test_runtime_open_reports_first_invalid_dotenv_line(tmp_path: Path) -> None:
                 user_interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
+                context_policy=_context_policy,
             )
         assert "SECOND BAD LINE" not in str(raised.value)
 

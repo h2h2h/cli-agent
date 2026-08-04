@@ -11,6 +11,7 @@ from interaction_fakes import _ScriptedInteraction
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    ContextPolicy,
     ModelCompletion,
     ModelEvent,
     ModelUsage,
@@ -22,6 +23,11 @@ from cli_agent.runtime import (
 )
 
 _user_interaction = _ScriptedInteraction("allow_once")
+_context_policy = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
 
 
 def test_runs_an_openai_compatible_tool_round_trip(
@@ -173,6 +179,7 @@ def test_runs_an_openai_compatible_tool_round_trip(
             user_interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
+            context_policy=_context_policy,
         ) as runtime:
             events = await _collect_turn(runtime, "session-a", user_message)
             follow_up_events = await _collect_turn(
