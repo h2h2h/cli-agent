@@ -5,6 +5,7 @@ from pathlib import Path
 
 from cli_agent.runtime import (
     AssistantMessage,
+    ContextPolicy,
     ModelCompletion,
     ModelEvent,
     ModelRequest,
@@ -22,6 +23,11 @@ from cli_agent.runtime._agent_loop import AgentLoop
 from cli_agent.runtime._environment import EnvironmentKernel
 
 SYSTEM_MESSAGE = SystemMessage.text("Test Runtime instruction")
+CONTEXT_POLICY = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
 
 
 def test_completes_a_text_only_turn(tmp_path: Path) -> None:
@@ -43,6 +49,7 @@ def test_completes_a_text_only_turn(tmp_path: Path) -> None:
         provider,
         EnvironmentKernel(tmp_path),
         system_message=SYSTEM_MESSAGE,
+        context_policy=CONTEXT_POLICY,
     )
 
     events = asyncio.run(_collect_events(loop, user_message))
@@ -95,6 +102,7 @@ def test_continues_generation_after_exec_tool_result(tmp_path: Path) -> None:
         provider,
         kernel,
         system_message=SYSTEM_MESSAGE,
+        context_policy=CONTEXT_POLICY,
     )
 
     events = asyncio.run(_collect_events(loop, user_message))
@@ -175,6 +183,7 @@ def test_dispatches_tool_calls_in_order_and_preserves_dependencies(
         provider,
         EnvironmentKernel(tmp_path),
         system_message=SYSTEM_MESSAGE,
+        context_policy=CONTEXT_POLICY,
     )
 
     events = asyncio.run(_collect_events(loop, user_message))
@@ -232,6 +241,7 @@ def test_tool_call_ready_order_does_not_change_dispatch_order(
         provider,
         EnvironmentKernel(tmp_path),
         system_message=SYSTEM_MESSAGE,
+        context_policy=CONTEXT_POLICY,
     )
 
     events = asyncio.run(_collect_events(loop, user_message))

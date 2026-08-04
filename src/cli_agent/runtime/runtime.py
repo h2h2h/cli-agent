@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ class RuntimeClosedError(RuntimeError):
 class _Session:
     kernel: EnvironmentKernel
     loop: AgentLoop
+    lock: asyncio.Lock
 
 
 class AgentRuntime:
@@ -213,18 +215,23 @@ class AgentRuntime:
                     bound_provider,
                     kernel,
                     system_message=system,
+                    context_policy=self._context_policy,
                 )
             except BaseException:
                 await kernel.close()
                 raise
-            session = _Session(
+            candidate = _Session(
                 kernel=kernel,
                 loop=loop,
+                lock=asyncio.Lock(),
             )
-            self._sessions[session_id] = session
+            session = self._sessions.setdefault(session_id, candidate)
+            if session is not candidate:
+                await kernel.close()
 
-        async for event in session.loop.run(message):
-            yield event
+        async with session.lock:
+            async for event in session.loop.run(message):
+                yield event
 
     async def close_session(self, session_id: str) -> None:
         """Close and forget one Agent Session idempotently."""

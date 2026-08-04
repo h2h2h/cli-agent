@@ -105,6 +105,11 @@ def test_keeps_runtime_internals_private() -> None:
         "AgentLoop",
         "EnvironmentKernel",
         "ToolCommand",
+        "ContextPressure",
+        "PreparedContext",
+        "_ContextLedger",
+        "_ContextLedgerError",
+        "_ContextManager",
         "_RuntimeResources",
         "_reconcile_runtime_resources",
     }

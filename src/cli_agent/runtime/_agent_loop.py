@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+from cli_agent.runtime._context import ContextPolicy
+from cli_agent.runtime._context_manager import _ContextManager
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime.model import (
     ModelCompletion,
     ModelEvent,
     ModelMessage,
     ModelProvider,
-    ModelRequest,
     SystemMessage,
     ToolCall,
     ToolResultMessage,
@@ -19,7 +20,7 @@ from cli_agent.runtime.model import (
 
 
 class AgentLoop:
-    """Run model turns and retain the active conversation history."""
+    """Orchestrate model turns against a Session-scoped Context Manager."""
 
     def __init__(
         self,
@@ -27,26 +28,30 @@ class AgentLoop:
         kernel: EnvironmentKernel,
         *,
         system_message: SystemMessage,
+        context_policy: ContextPolicy,
     ) -> None:
         self._provider = provider
         self._kernel = kernel
-        self._history: list[ModelMessage] = [system_message]
+        self._context = _ContextManager(
+            system_message=system_message,
+            context_policy=context_policy,
+        )
 
     @property
     def history(self) -> tuple[ModelMessage, ...]:
         """Return an immutable snapshot of the active conversation."""
 
-        return tuple(self._history)
+        return self._context.history
 
     async def run(self, message: UserMessage) -> AsyncIterator[ModelEvent]:
         """Run one model turn, dispatching Tool Calls in message order."""
 
-        self._history.append(message)
+        self._context.append(message)
         while True:
             completion = None
-            request = ModelRequest(messages=self.history)
+            prepared = await self._context.prepare_request()
 
-            async for event in self._provider.generate(request):
+            async for event in self._provider.generate(prepared.request):
                 if isinstance(event, ModelCompletion):
                     completion = event
                     break
@@ -61,10 +66,11 @@ class AgentLoop:
                 for block in completion.message.content
                 if isinstance(block, ToolCall)
             )
-            self._history.append(completion.message)
+            self._context.observe(prepared.revision, completion.usage)
+            self._context.append(completion.message)
             if not tool_calls:
                 yield completion
                 return
 
             results = await self._kernel.dispatch_batch(tool_calls)
-            self._history.append(ToolResultMessage(content=results))
+            self._context.append(ToolResultMessage(content=results))

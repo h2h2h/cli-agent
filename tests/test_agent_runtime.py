@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -14,6 +14,7 @@ from cli_agent.runtime import (
     ModelCompletion,
     ModelEvent,
     ModelProvider,
+    ModelRequest,
     PolicyAction,
     PolicyEvaluation,
     RuntimeClosedError,
@@ -339,6 +340,67 @@ def test_reuses_session_history_and_bound_provider(tmp_path: Path) -> None:
         assert default_provider.requests == ()
         session_provider.assert_exhausted()
         default_provider.assert_exhausted()
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_serializes_concurrent_turns_on_the_same_session(tmp_path: Path) -> None:
+    class PausingProvider:
+        def __init__(self) -> None:
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.requests: list[ModelRequest] = []
+
+        async def generate(
+            self,
+            request: ModelRequest,
+        ) -> AsyncIterator[ModelEvent]:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                self.entered.set()
+                await self.release.wait()
+            yield ModelCompletion(
+                message=AssistantMessage.text("Done"),
+                finish_reason="stop",
+            )
+
+    provider = PausingProvider()
+
+    async def scenario() -> None:
+        runtime = await AgentRuntime.open(
+            workspace=tmp_path,
+            provider=provider,
+            user_interaction=_user_interaction,
+            context_policy=_context_policy,
+        )
+        first_turn = asyncio.create_task(
+            _collect_turn(runtime, "session-a", UserMessage.text("First"))
+        )
+        await provider.entered.wait()
+        second_turn = asyncio.create_task(
+            _collect_turn(runtime, "session-a", UserMessage.text("Second"))
+        )
+        await asyncio.sleep(0)
+        assert len(provider.requests) == 1
+
+        provider.release.set()
+        first_events, second_events = await asyncio.gather(first_turn, second_turn)
+
+        assert first_events == (_completion(AssistantMessage.text("Done")),)
+        assert second_events == (_completion(AssistantMessage.text("Done")),)
+        assert len(provider.requests) == 2
+        system_message = provider.requests[0].messages[0]
+        assert provider.requests[0].messages == (
+            system_message,
+            UserMessage.text("First"),
+        )
+        assert provider.requests[1].messages == (
+            system_message,
+            UserMessage.text("First"),
+            AssistantMessage.text("Done"),
+            UserMessage.text("Second"),
+        )
         await runtime.close()
 
     asyncio.run(scenario())
