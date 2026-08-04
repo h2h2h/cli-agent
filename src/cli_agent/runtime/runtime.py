@@ -216,6 +216,8 @@ class AgentRuntime:
                     kernel,
                     system_message=system,
                     context_policy=self._context_policy,
+                    session_id=session_id,
+                    on_diagnostic=self._on_diagnostic,
                 )
             except BaseException:
                 await kernel.close()

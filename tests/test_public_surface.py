@@ -23,6 +23,7 @@ def test_exposes_provider_neutral_model_types() -> None:
         "ModelUsage",
         "TextDelta",
         "ModelCompletion",
+        "ModelContextOverflowError",
         "ModelEvent",
         "ModelProvider",
         "JSONValue",
@@ -98,6 +99,8 @@ def test_exposes_host_facing_runtime_lifecycle() -> None:
     assert hasattr(runtime, "RuntimeClosedError")
     assert "RuntimeDiagnostic" in runtime.__all__
     assert hasattr(runtime, "RuntimeDiagnostic")
+    assert "ContextOverflowError" in runtime.__all__
+    assert hasattr(runtime, "ContextOverflowError")
 
 
 def test_keeps_runtime_internals_private() -> None:
@@ -106,7 +109,6 @@ def test_keeps_runtime_internals_private() -> None:
         "EnvironmentKernel",
         "ToolCommand",
         "ContextOperation",
-        "ContextOverflowError",
         "ContextPressure",
         "PreparedContext",
         "_ContextLedger",

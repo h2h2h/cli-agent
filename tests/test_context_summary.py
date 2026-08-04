@@ -19,6 +19,7 @@ from cli_agent.runtime._context_summarizer import (
 )
 
 SYSTEM_MESSAGE = SystemMessage.text("System")
+SESSION_ID = "test-session"
 
 SUMMARY_TEXT = (
     "## Progress\nchecked the workspace\n"
@@ -70,6 +71,7 @@ def test_tier3_summarizes_old_turns_and_projects_assistant_data() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(),
         provider=provider,
+        session_id=SESSION_ID,
     )
     _long_turn(manager, user_text="one", length=80_000)
     _long_turn(manager, user_text="two", length=80_000)
@@ -125,6 +127,7 @@ def test_tier3_merges_old_summary_with_new_delta() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(),
         provider=provider,
+        session_id=SESSION_ID,
     )
     _long_turn(manager, user_text="one", length=80_000)
     _long_turn(manager, user_text="two", length=80_000)
@@ -166,6 +169,7 @@ def test_tier3_never_splits_a_parallel_tool_exchange() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(),
         provider=provider,
+        session_id=SESSION_ID,
     )
     first_call = ToolCall(call_id="call_a", name="exec", arguments={"command": "a"})
     second_call = ToolCall(call_id="call_b", name="exec", arguments={"command": "b"})
@@ -207,6 +211,7 @@ def test_tier3_keeps_the_active_turn_out_of_the_summary() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(),
         provider=provider,
+        session_id=SESSION_ID,
     )
     _long_turn(manager, user_text="one", length=80_000)
     _long_turn(manager, user_text="two", length=80_000)
@@ -241,6 +246,7 @@ def test_tier3_does_not_run_when_deterministic_tiers_suffice() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(),
         provider=provider,
+        session_id=SESSION_ID,
     )
     result = {
         "ok": True,
@@ -284,6 +290,7 @@ def test_tier3_skips_when_no_complete_turns_are_available() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(),
         provider=provider,
+        session_id=SESSION_ID,
     )
     _long_turn(manager, user_text="one", length=152_000)
 
@@ -305,6 +312,7 @@ def test_tier3_failure_is_atomic_and_not_retried_until_new_content() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_failure_policy(),
         provider=provider,
+        session_id=SESSION_ID,
     )
     _long_turn(manager, user_text="one", length=90_000)
     _long_turn(manager, user_text="two", length=90_000)
@@ -337,6 +345,7 @@ def test_tier3_fails_atomically_on_provider_exception() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_failure_policy(),
         provider=provider,  # type: ignore[arg-type]
+        session_id=SESSION_ID,
     )
     _long_turn(manager, user_text="one", length=90_000)
     _long_turn(manager, user_text="two", length=90_000)
@@ -360,6 +369,7 @@ def test_tier3_fails_atomically_when_summary_exceeds_budget() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_failure_policy(),
         provider=provider,
+        session_id=SESSION_ID,
     )
     _long_turn(manager, user_text="one", length=90_000)
     _long_turn(manager, user_text="two", length=90_000)
@@ -380,6 +390,7 @@ def test_tier3_preserves_call_id_pairing_after_commit() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(),
         provider=provider,
+        session_id=SESSION_ID,
     )
     call = ToolCall(call_id="call_x", name="exec", arguments={"command": "x"})
     manager.append(UserMessage.text("one"))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import AbstractSet, Literal
 
@@ -15,6 +16,7 @@ from cli_agent.runtime._context_summarizer import (
     summary_message,
 )
 from cli_agent.runtime._tool_result_reducer import _ToolResultReducer
+from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     AssistantMessage,
     ModelMessage,
@@ -30,7 +32,7 @@ from cli_agent.runtime.model import (
 )
 
 UsageSource = Literal["reported", "estimated"]
-OperationReason = Literal["watermark", "oversized_result"]
+OperationReason = Literal["watermark", "oversized_result", "overflow_recovery"]
 
 
 class _ContextLedgerError(RuntimeError):
@@ -67,6 +69,10 @@ class ContextOperation:
     input_tokens_after: int
     entries_changed: int
     reason: OperationReason
+    usage_source: UsageSource = "estimated"
+    turns_summarized: int = 0
+    summary_input_tokens: int | None = None
+    summary_output_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,11 +285,15 @@ class _ContextManager:
         system_message: SystemMessage,
         context_policy: ContextPolicy,
         provider: ModelProvider,
+        session_id: str,
+        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> None:
         self._ledger = _ContextLedger(system_message)
         self._policy = context_policy
         self._reducer = _ToolResultReducer(context_policy.excluded_tools)
         self._summarizer = _ContextSummarizer(provider)
+        self._session_id = session_id
+        self._on_diagnostic = on_diagnostic
         self._anchor_revision: int | None = None
         self._anchor_message_count = 0
         self._anchor_input_tokens: int | None = None
@@ -374,6 +384,7 @@ class _ContextManager:
             usage_source=source,
         )
         self._last_prepared_revision = self._ledger.revision
+        self._emit_operations(operations)
         return PreparedContext(
             request=request,
             revision=self._ledger.revision,
@@ -381,15 +392,65 @@ class _ContextManager:
             operations=tuple(operations),
         )
 
-    def _run_tier1(self) -> tuple[int, tuple[ContextOperation, ...]]:
+    async def force_prepare(self) -> PreparedContext | None:
+        """Recover a reported Context Overflow with aggressive compaction.
+
+        Invalidates the reported usage anchor, exhausts all deterministic
+        reductions, runs Tier 3 when a complete prefix exists, and re-checks
+        the hard Input Budget. Returns ``None`` when the request cannot be
+        reduced safely.
+        """
+
+        self._invalidate_anchor()
+        while True:
+            changed = False
+            _, tier_operations = self._run_tier1(force=True)
+            if tier_operations:
+                changed = True
+                self._emit_operations(tier_operations)
+            _, tier_operations = self._run_tier2(force=True)
+            if tier_operations:
+                changed = True
+                self._emit_operations(tier_operations)
+            if not changed:
+                break
+        projected, _ = self._projected()
+        _, summary_operations = await self._run_tier3(projected, force=True)
+        self._emit_operations(summary_operations)
+        projected, source = self._projected()
+        if projected > self._policy.input_budget:
+            projected, oversized_operations = self._compact_oversized()
+            self._emit_operations(oversized_operations)
+            if projected > self._policy.input_budget:
+                return None
+        self._last_prepared_revision = self._ledger.revision
+        return PreparedContext(
+            request=ModelRequest(messages=self._ledger.history),
+            revision=self._ledger.revision,
+            pressure=ContextPressure(
+                input_budget=self._policy.input_budget,
+                projected_input_tokens=projected,
+                usage_source=source,
+            ),
+        )
+
+    def _run_tier1(
+        self,
+        *,
+        force: bool = False,
+    ) -> tuple[int, tuple[ContextOperation, ...]]:
         """Snip raw candidates until the Snip target, no candidates, or reclaim."""
 
-        return self._run_reductions(state="raw", prune=False, tier=1)
+        return self._run_reductions(state="raw", prune=False, tier=1, force=force)
 
-    def _run_tier2(self) -> tuple[int, tuple[ContextOperation, ...]]:
+    def _run_tier2(
+        self,
+        *,
+        force: bool = False,
+    ) -> tuple[int, tuple[ContextOperation, ...]]:
         """Prune snipped candidates until the Prune target, no candidates, or reclaim."""
 
-        return self._run_reductions(state="snipped", prune=True, tier=2)
+        return self._run_reductions(state="snipped", prune=True, tier=2, force=force)
 
     def _run_reductions(
         self,
@@ -397,6 +458,7 @@ class _ContextManager:
         state: str,
         prune: bool,
         tier: int,
+        force: bool = False,
     ) -> tuple[int, tuple[ContextOperation, ...]]:
         policy = self._policy
         target = policy.input_budget * (
@@ -404,11 +466,11 @@ class _ContextManager:
         )
         skipped: set[tuple[int, int]] = set()
         revision_before = self._ledger.revision
-        projected_before, _ = self._projected()
+        projected_before, usage_source = self._projected()
         entries_changed = 0
         while True:
             projected, _ = self._projected()
-            if projected < target:
+            if not force and projected < target:
                 break
             candidate = self._next_candidate(state, skipped)
             if candidate is None:
@@ -421,7 +483,7 @@ class _ContextManager:
                 result,
                 prune=prune,
             )
-            if reclaim < policy.minimum_reclaim_tokens:
+            if not force and reclaim < policy.minimum_reclaim_tokens:
                 skipped.add((message_index, result_index))
                 continue
             self._apply_result(
@@ -442,23 +504,30 @@ class _ContextManager:
             input_tokens_before=projected_before,
             input_tokens_after=projected_after,
             entries_changed=entries_changed,
-            reason="watermark",
+            reason="overflow_recovery" if force else "watermark",
+            usage_source=usage_source,
         )
         return projected_after, (operation,)
 
     async def _run_tier3(
         self,
         projected_before: int,
+        *,
+        force: bool = False,
     ) -> tuple[bool, tuple[ContextOperation, ...]]:
         """Summarize the oldest closed Turns when deterministic tiers cannot."""
 
         policy = self._policy
-        if self._ledger.revision == self._last_summarize_revision:
+        if not force and self._ledger.revision == self._last_summarize_revision:
             return False, ()
         protected_start = self._protected_start()
-        demand = max(
-            1,
-            int(projected_before - policy.summarize_target * policy.input_budget),
+        demand = (
+            2**63
+            if force
+            else max(
+                1,
+                int(projected_before - policy.summarize_target * policy.input_budget),
+            )
         )
         delta_range = self._ledger.summarize_delta(protected_start, demand)
         if delta_range is None:
@@ -476,16 +545,20 @@ class _ContextManager:
             delta=history[delta_start:delta_end],
             max_tokens=max_summary_tokens,
         )
-        summary = await self._summarizer.summarize(prompt)
+        summary_result = await self._summarizer.summarize(prompt)
         self._last_summarize_revision = self._ledger.revision
-        if summary is None:
+        if summary_result is None:
+            self._emit_compaction_failed()
             return False, ()
+        summary = summary_result.message
         text = "".join(
             block.text for block in summary.content if isinstance(block, TextBlock)
         )
         if not text.strip() or not has_all_summary_sections(text):
+            self._emit_compaction_failed()
             return False, ()
         if estimate_message_tokens(summary) > max_summary_tokens:
+            self._emit_compaction_failed()
             return False, ()
         turns = sum(
             1
@@ -495,9 +568,7 @@ class _ContextManager:
         revision_before = self._ledger.revision
         self._ledger.commit_summary(text.strip(), protected_start)
         self._last_summarize_revision = self._ledger.revision
-        self._anchor_revision = None
-        self._anchor_message_count = 0
-        self._anchor_input_tokens = None
+        self._invalidate_anchor()
         projected_after, _ = self._projected()
         operation = ContextOperation(
             tier=3,
@@ -506,7 +577,18 @@ class _ContextManager:
             input_tokens_before=projected_before,
             input_tokens_after=projected_after,
             entries_changed=turns,
-            reason="watermark",
+            reason="overflow_recovery" if force else "watermark",
+            turns_summarized=turns,
+            summary_input_tokens=(
+                summary_result.usage.input_tokens
+                if summary_result.usage is not None
+                else None
+            ),
+            summary_output_tokens=(
+                summary_result.usage.output_tokens
+                if summary_result.usage is not None
+                else None
+            ),
         )
         return True, (operation,)
 
@@ -654,6 +736,63 @@ class _ContextManager:
             int(self._policy.input_budget * 0.20),
         )
         return self._ledger.protected_suffix_start(target)
+
+    def _invalidate_anchor(self) -> None:
+        self._anchor_revision = None
+        self._anchor_message_count = 0
+        self._anchor_input_tokens = None
+
+    def _emit_operations(
+        self,
+        operations: Sequence[ContextOperation],
+    ) -> None:
+        if self._on_diagnostic is None:
+            return
+        for operation in operations:
+            kind = {
+                1: "context.snipped",
+                2: "context.pruned",
+                3: "context.summarized",
+            }[operation.tier]
+            if operation.reason == "oversized_result":
+                kind = "context.oversized_result"
+            self._on_diagnostic(
+                RuntimeDiagnostic(
+                    kind=kind,
+                    message=(
+                        f"context compaction released "
+                        f"{operation.input_tokens_before - operation.input_tokens_after}"
+                        " projected input tokens"
+                    ),
+                    detail={
+                        "session_id": self._session_id,
+                        "revision_before": operation.revision_before,
+                        "revision_after": operation.revision_after,
+                        "tier": operation.tier,
+                        "usage_source": operation.usage_source,
+                        "input_tokens_before": operation.input_tokens_before,
+                        "input_tokens_after": operation.input_tokens_after,
+                        "entries_changed": operation.entries_changed,
+                        "turns_summarized": operation.turns_summarized,
+                        "reason": operation.reason,
+                    },
+                )
+            )
+
+    def _emit_compaction_failed(self) -> None:
+        if self._on_diagnostic is None:
+            return
+        self._on_diagnostic(
+            RuntimeDiagnostic(
+                kind="context.compaction_failed",
+                message="tier 3 summarization failed; history is unchanged",
+                detail={
+                    "session_id": self._session_id,
+                    "revision": self._ledger.revision,
+                    "tier": 3,
+                },
+            )
+        )
 
     def _projected(self) -> tuple[int, UsageSource]:
         request = ModelRequest(messages=self._ledger.history)

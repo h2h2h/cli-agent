@@ -141,6 +141,10 @@ class ModelCompletion:
 ModelEvent: TypeAlias = TextDelta | ToolCallReady | ModelCompletion
 
 
+class ModelContextOverflowError(RuntimeError):
+    """Raised when the Provider reports a request exceeds its context window."""
+
+
 class ModelProvider(Protocol):
     """A provider Adapter at the Agent Loop's model seam."""
 

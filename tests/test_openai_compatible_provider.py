@@ -8,6 +8,7 @@ import pytest
 from cli_agent.runtime import (
     AssistantMessage,
     ModelCompletion,
+    ModelContextOverflowError,
     ModelEvent,
     ModelProvider,
     ModelRequest,
@@ -500,6 +501,102 @@ def _sse(*chunks: dict[str, object]) -> str:
         "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
         + "data: [DONE]\n\n"
     )
+
+
+def _error_response(payload: dict[str, object]) -> httpx.Response:
+    return httpx.Response(
+        400,
+        json=payload,
+    )
+
+
+def _collect_error(provider: OpenAICompatibleModelProvider) -> None:
+    async def consume() -> None:
+        async for _event in provider.generate(
+            ModelRequest(messages=(UserMessage.text("Hello"),))
+        ):
+            pass
+
+    asyncio.run(consume())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {
+            "error": {
+                "message": (
+                    "This model's maximum context length is 8192 tokens; "
+                    "you requested 20000 tokens."
+                ),
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded",
+            }
+        },
+        {
+            "error": {
+                "message": "too many tokens",
+                "type": "context_length_exceeded",
+            }
+        },
+        {"error": {"code": "ContextWindowExceeded"}},
+        {
+            "error": {
+                "message": "request exceeds the maximum context window of 128K tokens"
+            }
+        },
+        {"message": "prompt is too long"},
+    ),
+)
+def test_maps_structured_context_overflow_errors(payload: dict[str, object]) -> None:
+    provider = OpenAICompatibleModelProvider(
+        model="test-model",
+        api_key="secret-key",
+        base_url="https://models.example/v1",
+        transport=httpx.MockTransport(lambda request: _error_response(payload)),
+    )
+
+    with pytest.raises(ModelContextOverflowError):
+        _collect_error(provider)
+
+
+@pytest.mark.parametrize(
+    ("status", "payload"),
+    (
+        (401, {"error": {"message": "Incorrect API key", "code": "invalid_api_key"}}),
+        (
+            429,
+            {
+                "error": {
+                    "message": "Rate limit reached",
+                    "type": "rate_limit_error",
+                }
+            },
+        ),
+        (500, {"error": {"message": "server exploded"}}),
+        (400, {"error": {"message": "invalid request body"}}),
+        (400, "not a json object"),
+        (502, {"error": {"message": "bad gateway", "code": "bad_gateway"}}),
+    ),
+)
+def test_keeps_non_overflow_errors_unmapped(
+    status: int,
+    payload: object,
+) -> None:
+    response = (
+        httpx.Response(status, json=payload)
+        if isinstance(payload, dict)
+        else httpx.Response(status, content=b"not a json object")
+    )
+    provider = OpenAICompatibleModelProvider(
+        model="test-model",
+        api_key="secret-key",
+        base_url="https://models.example/v1",
+        transport=httpx.MockTransport(lambda request: response),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _collect_error(provider)
 
 
 async def _collect_events(

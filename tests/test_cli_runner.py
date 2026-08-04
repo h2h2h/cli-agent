@@ -462,6 +462,28 @@ def test_renderer_presents_a_runtime_diagnostic() -> None:
     assert stderr.getvalue() == ("[mcp.discovery_failed] could not contact github\n")
 
 
+def test_renderer_presents_context_diagnostics_without_detail() -> None:
+    stderr = StringIO()
+
+    render_diagnostic(
+        RuntimeDiagnostic(
+            kind="context.snipped",
+            message="context compaction released 47120 projected input tokens",
+            detail={
+                "session_id": "session-1",
+                "revision_before": 3,
+                "revision_after": 4,
+            },
+        ),
+        stderr=stderr,
+    )
+
+    assert stderr.getvalue() == (
+        "[context.snipped] context compaction released 47120 projected input tokens\n"
+    )
+    assert "session-1" not in stderr.getvalue()
+
+
 class _TerminalOutput(StringIO):
     def isatty(self) -> bool:
         return True

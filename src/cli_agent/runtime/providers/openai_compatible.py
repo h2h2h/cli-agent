@@ -12,6 +12,7 @@ from cli_agent.runtime._syscalls import SyscallSchema
 from cli_agent.runtime.model import (
     AssistantMessage,
     ModelCompletion,
+    ModelContextOverflowError,
     ModelEvent,
     ModelMessage,
     ModelRequest,
@@ -71,7 +72,15 @@ class OpenAICompatibleModelProvider:
                 },
                 json=payload,
             ) as response:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    if _is_context_overflow(exc.response):
+                        raise ModelContextOverflowError(
+                            "provider reported that the request exceeds its "
+                            "context window"
+                        ) from exc
+                    raise
 
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
@@ -254,3 +263,38 @@ def _tool_payload(tool: SyscallSchema) -> dict[str, object]:
             "parameters": tool.input_schema,
         },
     }
+
+
+_CONTEXT_OVERFLOW_MARKERS = (
+    "context_length_exceeded",
+    "context length exceeded",
+    "maximum context length",
+    "max context length",
+    "context window",
+    "context is too long",
+    "prompt is too long",
+    "maximum input tokens",
+    "max input tokens",
+)
+
+
+def _is_context_overflow(response: httpx.Response) -> bool:
+    """Return whether one error response is a structured Context Overflow.
+
+    Only explicit context-length markers are mapped; authentication, rate
+    limit, server, and unrecognized payloads keep their original semantics.
+    """
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            for key in ("code", "type"):
+                value = error.get(key)
+                if isinstance(value, str) and "context" in value.casefold():
+                    return True
+    body = json.dumps(payload).casefold()
+    return any(marker in body for marker in _CONTEXT_OVERFLOW_MARKERS)

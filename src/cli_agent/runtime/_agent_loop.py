@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Mapping
 
 from cli_agent.runtime._context import ContextPolicy
-from cli_agent.runtime._context_manager import _ContextManager
+from cli_agent.runtime._context_manager import (
+    ContextOverflowError,
+    _ContextManager,
+)
 from cli_agent.runtime._environment import EnvironmentKernel
+from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     ModelCompletion,
+    ModelContextOverflowError,
     ModelEvent,
     ModelMessage,
     ModelProvider,
@@ -29,13 +34,19 @@ class AgentLoop:
         *,
         system_message: SystemMessage,
         context_policy: ContextPolicy,
+        session_id: str,
+        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> None:
         self._provider = provider
         self._kernel = kernel
+        self._session_id = session_id
+        self._on_diagnostic = on_diagnostic
         self._context = _ContextManager(
             system_message=system_message,
             context_policy=context_policy,
             provider=provider,
+            session_id=session_id,
+            on_diagnostic=on_diagnostic,
         )
 
     @property
@@ -51,13 +62,43 @@ class AgentLoop:
         while True:
             completion = None
             prepared = await self._context.prepare_request()
+            request = prepared.request
+            retried = False
+            while True:
+                try:
+                    async for event in self._provider.generate(request):
+                        if isinstance(event, ModelCompletion):
+                            completion = event
+                            break
 
-            async for event in self._provider.generate(prepared.request):
-                if isinstance(event, ModelCompletion):
-                    completion = event
+                        yield event
                     break
-
-                yield event
+                except ModelContextOverflowError as exc:
+                    if retried:
+                        raise
+                    retried = True
+                    recovered = await self._context.force_prepare()
+                    if recovered is None:
+                        raise ContextOverflowError(
+                            "context overflow cannot be recovered safely"
+                        ) from exc
+                    request = recovered.request
+                    prepared = recovered
+                    self._emit_diagnostic(
+                        "context.overflow_recovery",
+                        (
+                            "context overflow recovered; retrying the model "
+                            f"step at revision {recovered.revision}"
+                        ),
+                        detail={
+                            "session_id": self._session_id,
+                            "revision": recovered.revision,
+                            "projected_input_tokens": (
+                                recovered.pressure.projected_input_tokens
+                            ),
+                            "input_budget": recovered.pressure.input_budget,
+                        },
+                    )
 
             if completion is None:
                 return
@@ -75,3 +116,20 @@ class AgentLoop:
 
             results = await self._kernel.dispatch_batch(tool_calls)
             self._context.append(ToolResultMessage(content=results))
+
+    def _emit_diagnostic(
+        self,
+        kind: str,
+        message: str,
+        *,
+        detail: Mapping[str, object] | None = None,
+    ) -> None:
+        if self._on_diagnostic is None:
+            return
+        self._on_diagnostic(
+            RuntimeDiagnostic(
+                kind=kind,
+                message=message,
+                detail=detail or {},
+            )
+        )

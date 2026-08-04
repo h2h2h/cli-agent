@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from cli_agent.runtime.model import (
     AssistantMessage,
     ModelCompletion,
     ModelMessage,
     ModelProvider,
     ModelRequest,
+    ModelUsage,
     SystemMessage,
     ToolCall,
     ToolCallReady,
@@ -19,6 +22,14 @@ SUMMARY_DELIMITER_OPEN = "<session-summary>"
 SUMMARY_DELIMITER_CLOSE = "</session-summary>"
 
 
+@dataclass(frozen=True, slots=True)
+class SummaryResult:
+    """One validated summary message and its Provider usage."""
+
+    message: AssistantMessage
+    usage: ModelUsage | None
+
+
 class _ContextSummarizer:
     """Run one restricted no-tools generation for Tier 3 summarization."""
 
@@ -28,7 +39,7 @@ class _ContextSummarizer:
     async def summarize(
         self,
         messages: tuple[ModelMessage, ...],
-    ) -> AssistantMessage | None:
+    ) -> SummaryResult | None:
         """Generate a four-section summary; return None on any failure.
 
         Failures include Tool Calls, missing Completions, non-normal finish
@@ -51,7 +62,7 @@ class _ContextSummarizer:
         message = completion.message
         if any(isinstance(block, ToolCall) for block in message.content):
             return None
-        return message
+        return SummaryResult(message=message, usage=completion.usage)
 
 
 def build_summary_messages(

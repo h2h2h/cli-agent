@@ -13,6 +13,7 @@ from cli_agent.runtime import (
 )
 from cli_agent.runtime._context_summarizer import (
     SUMMARY_SECTION_HEADERS,
+    SummaryResult,
     _ContextSummarizer,
     build_summary_messages,
     has_all_summary_sections,
@@ -40,7 +41,7 @@ def _completion(text: str = FOUR_SECTION_SUMMARY) -> ModelCompletion:
     )
 
 
-def _summarize(provider: ScriptedModelProvider) -> AssistantMessage | None:
+def _summarize(provider: ScriptedModelProvider) -> SummaryResult | None:
     return asyncio.run(_ContextSummarizer(provider).summarize(PROMPT))
 
 
@@ -52,7 +53,7 @@ def test_summarize_returns_a_four_section_message_without_tools() -> None:
     summary = _summarize(provider)
 
     assert summary is not None
-    assert summary.content[0].text == FOUR_SECTION_SUMMARY
+    assert summary.message.content[0].text == FOUR_SECTION_SUMMARY
     assert provider.requests == (ModelRequest(messages=PROMPT, tools=()),)
     provider.assert_exhausted()
 
@@ -166,5 +167,5 @@ def test_summarize_never_leaks_internal_text_deltas() -> None:
     summary = _summarize(provider)
 
     assert summary is not None
-    assert summary.content[0].text == FOUR_SECTION_SUMMARY
-    assert not summary.content[0].text.startswith("leaked?")
+    assert summary.message.content[0].text == FOUR_SECTION_SUMMARY
+    assert not summary.message.content[0].text.startswith("leaked?")

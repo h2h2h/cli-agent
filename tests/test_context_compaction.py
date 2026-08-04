@@ -19,6 +19,7 @@ from cli_agent.runtime._context_manager import (
 
 SYSTEM_MESSAGE = SystemMessage.text("System")
 PROVIDER = ScriptedModelProvider(script=())
+SESSION_ID = "test-session"
 
 
 def _snapshot(
@@ -120,6 +121,7 @@ def test_tier1_snips_oldest_candidates_until_snip_target() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(),
         provider=PROVIDER,
+        session_id=SESSION_ID,
     )
     _append_complete_turn(
         manager,
@@ -163,6 +165,7 @@ def test_tier2_prunes_snipped_candidates_when_tier1_cannot_reach_target() -> Non
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(),
         provider=PROVIDER,
+        session_id=SESSION_ID,
     )
     _append_complete_turn(
         manager,
@@ -194,6 +197,7 @@ def test_repeated_prepare_is_idempotent_and_monotonic() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(),
         provider=PROVIDER,
+        session_id=SESSION_ID,
     )
     _append_complete_turn(
         manager,
@@ -226,6 +230,7 @@ def test_protected_suffix_keeps_active_and_recent_turns_untouched() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(budget=100_000),
         provider=PROVIDER,
+        session_id=SESSION_ID,
     )
     _append_complete_turn(
         manager,
@@ -260,6 +265,7 @@ def test_excluded_tools_are_never_reduced() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(excluded_tools=frozenset({"exec"})),
         provider=PROVIDER,
+        session_id=SESSION_ID,
     )
     exec_call = _call("call_exec", name="exec")
     output_call = _call("call_output", name="output")
@@ -295,6 +301,7 @@ def test_error_and_unknown_payloads_are_skipped() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(),
         provider=PROVIDER,
+        session_id=SESSION_ID,
     )
     error_call = _call("call_error")
     unknown_call = _call("call_unknown")
@@ -335,6 +342,7 @@ def test_minimum_reclaim_blocks_small_results() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(minimum_reclaim_tokens=100_000),
         provider=PROVIDER,
+        session_id=SESSION_ID,
     )
     _append_complete_turn(
         manager,
@@ -363,6 +371,7 @@ def test_oversized_guard_snips_the_active_turn_result() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(budget=40_000),
         provider=PROVIDER,
+        session_id=SESSION_ID,
     )
     _append_active_turn(
         manager,
@@ -388,6 +397,7 @@ def test_oversized_user_input_fails_closed() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(budget=40_000),
         provider=PROVIDER,
+        session_id=SESSION_ID,
     )
     manager.append(UserMessage.text("x" * 200_000))
 
@@ -400,6 +410,7 @@ def test_compaction_preserves_call_id_pairing_and_message_order() -> None:
         system_message=SYSTEM_MESSAGE,
         context_policy=_policy(),
         provider=PROVIDER,
+        session_id=SESSION_ID,
     )
     first_call = _call("call_one")
     second_call = _call("call_two")

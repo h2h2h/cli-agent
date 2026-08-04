@@ -3,10 +3,13 @@ import shlex
 import sys
 from pathlib import Path
 
+import pytest
+
 from cli_agent.runtime import (
     AssistantMessage,
     ContextPolicy,
     ModelCompletion,
+    ModelContextOverflowError,
     ModelEvent,
     ModelRequest,
     ScriptedModelProvider,
@@ -50,6 +53,7 @@ def test_completes_a_text_only_turn(tmp_path: Path) -> None:
         EnvironmentKernel(tmp_path),
         system_message=SYSTEM_MESSAGE,
         context_policy=CONTEXT_POLICY,
+        session_id="test-session",
     )
 
     events = asyncio.run(_collect_events(loop, user_message))
@@ -103,6 +107,7 @@ def test_continues_generation_after_exec_tool_result(tmp_path: Path) -> None:
         kernel,
         system_message=SYSTEM_MESSAGE,
         context_policy=CONTEXT_POLICY,
+        session_id="test-session",
     )
 
     events = asyncio.run(_collect_events(loop, user_message))
@@ -184,6 +189,7 @@ def test_dispatches_tool_calls_in_order_and_preserves_dependencies(
         EnvironmentKernel(tmp_path),
         system_message=SYSTEM_MESSAGE,
         context_policy=CONTEXT_POLICY,
+        session_id="test-session",
     )
 
     events = asyncio.run(_collect_events(loop, user_message))
@@ -242,6 +248,7 @@ def test_tool_call_ready_order_does_not_change_dispatch_order(
         EnvironmentKernel(tmp_path),
         system_message=SYSTEM_MESSAGE,
         context_policy=CONTEXT_POLICY,
+        session_id="test-session",
     )
 
     events = asyncio.run(_collect_events(loop, user_message))
@@ -300,6 +307,91 @@ def _stdout(result: ToolResult) -> str:
         for chunk in chunks
         if isinstance(chunk, dict) and chunk.get("stream") == "stdout"
     )
+
+
+def test_recovers_from_provider_context_overflow_and_retries_once(
+    tmp_path: Path,
+) -> None:
+    assistant_message = AssistantMessage.text("Recovered")
+    provider = _OverflowThenSuccessProvider(
+        success_events=(TextDelta(text="Recovered"), _completion(assistant_message)),
+    )
+    received: list[object] = []
+    loop = AgentLoop(
+        provider,
+        EnvironmentKernel(tmp_path),
+        system_message=SYSTEM_MESSAGE,
+        context_policy=CONTEXT_POLICY,
+        session_id="overflow-session",
+        on_diagnostic=received.append,
+    )
+
+    events = asyncio.run(_collect_events(loop, UserMessage.text("Hello")))
+
+    assert events == (
+        TextDelta(text="Recovered"),
+        ModelCompletion(message=assistant_message, finish_reason="stop"),
+    )
+    assert len(provider.requests) == 2
+    assert provider.requests[0] == provider.requests[1]
+    assert loop.history == (
+        SYSTEM_MESSAGE,
+        UserMessage.text("Hello"),
+        assistant_message,
+    )
+    assert len(received) == 1
+    diagnostic = received[0]
+    assert diagnostic.kind == "context.overflow_recovery"
+    assert diagnostic.detail["session_id"] == "overflow-session"
+    assert diagnostic.detail["revision"] == 1
+
+
+def test_raises_stable_error_after_second_provider_overflow(tmp_path: Path) -> None:
+    provider = _OverflowThenSuccessProvider(
+        success_events=(),
+        fail_twice=True,
+    )
+    loop = AgentLoop(
+        provider,
+        EnvironmentKernel(tmp_path),
+        system_message=SYSTEM_MESSAGE,
+        context_policy=CONTEXT_POLICY,
+        session_id="overflow-session",
+    )
+
+    with pytest.raises(ModelContextOverflowError):
+        asyncio.run(_collect_events(loop, UserMessage.text("Hello")))
+
+    assert len(provider.requests) == 2
+
+
+def _completion(message: AssistantMessage) -> ModelCompletion:
+    return ModelCompletion(message=message, finish_reason="stop")
+
+
+class _OverflowThenSuccessProvider:
+    def __init__(
+        self,
+        *,
+        success_events: tuple[ModelEvent, ...],
+        fail_twice: bool = False,
+    ) -> None:
+        self._success_events = success_events
+        self._fail_twice = fail_twice
+        self._failures_left = 2 if fail_twice else 1
+        self._requests: list[ModelRequest] = []
+
+    @property
+    def requests(self) -> tuple[ModelRequest, ...]:
+        return tuple(self._requests)
+
+    async def generate(self, request: ModelRequest):
+        self._requests.append(request)
+        if self._failures_left > 0:
+            self._failures_left -= 1
+            raise ModelContextOverflowError("provider context overflow")
+        for event in self._success_events:
+            yield event
 
 
 async def _collect_events(
