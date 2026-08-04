@@ -178,18 +178,6 @@ def test_files_write_copies_up_in_view_lower_link(tmp_path: Path) -> None:
     assert view.inspect("tools/calc.py").provenance == "workspace"
 
 
-def test_files_edit_is_not_implemented_yet(tmp_path: Path) -> None:
-    outcome, output = _write(
-        tmp_path,
-        "files edit main.py <<'EDI'\n"
-        '{"edits": [{"oldText": "a", "newText": "b"}]}\n'
-        "EDI",
-    )
-
-    assert outcome.status == "failed"
-    assert "not implemented" in output.text("stderr")
-
-
 def _write(
     cwd: Path,
     command: str,
