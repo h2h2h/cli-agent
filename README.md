@@ -201,6 +201,38 @@ whose direct Shell invocations may run in a parallel batch; `tools list` /
 `parallel_safe` fact. This authority comes only from Runtime configuration
 and command metadata; Tool files and generated indexes cannot grant it.
 
+## File mutation commands
+
+`files write` and `files edit` are the Runtime-reserved channels for file
+mutations. Both carry their payload through an exact heredoc, so
+model-generated content is never re-quoted or expanded by a Shell:
+
+```text
+files write <path> <<'EOF'
+<content>
+EOF
+
+files edit <path> <<'EDI'
+{"edits": [{"oldText": "...", "newText": "..."}, ...]}
+EDI
+```
+
+`files write` creates or overwrites a file, creating parent directories, with
+an atomic replace that preserves the existing mode. `files edit` applies one
+or more exact, unique, non-overlapping text replacements to a single file in
+one call; UTF-8 BOM and CRLF line endings are preserved. Both commands prepare
+Capability View paths before writing, so `.workspace/tools` and friends are
+copied up rather than pierced through to the Repertoire. Relative paths
+resolve against the current working directory and are not restricted to the
+Workspace, matching `cd` semantics.
+
+Every exact top-level `files` command is Runtime-reserved. Unknown
+subcommands, missing heredocs, dynamic paths, invalid JSON, and unmatched or
+duplicated `oldText` fail with a specific diagnostic on the `files` route and
+never fall back to a Host executable. `files` commands always run serially
+(`parallel_safe=False`). Use an explicit path to invoke a Host program also
+named `files`.
+
 ## Workspace and Session environment
 
 `.workspace/env` is a dotenv file containing persistent Workspace custom

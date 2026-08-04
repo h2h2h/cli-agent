@@ -22,6 +22,7 @@ from cli_agent.runtime._environment.commands import (
     _ShellCommand,
 )
 from cli_agent.runtime._environment.execution_state import _ExecutionState
+from cli_agent.runtime._environment.handlers.files import _FileHandler
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.handlers.tools import _ToolHandler
 from cli_agent.runtime._environment.interaction import (
@@ -90,12 +91,21 @@ class EnvironmentKernel:
             parallel_safe=tool_handler.parallel_safe,
             isolated=True,
         )
+        file_handler = _FileHandler(capability_view)
+        file_command = _CustomCommand(
+            name="files",
+            prepare=file_handler.prepare,
+            parallel_safe=False,
+            isolated=True,
+        )
         if registry is None:
             commands = list(_builtin_custom_commands())
             commands.append(tool_command)
+            commands.append(file_command)
             registry = _CustomCommandRegistry(commands)
         else:
             registry.register(tool_command)
+            registry.register(file_command)
         shell_handler = _ShellHandler(capability_view)
         self._router = _CommandRouter(
             shell_command=_ShellCommand(
@@ -460,8 +470,7 @@ def _is_valid_evaluation(evaluation: object) -> bool:
     """Return whether one Policy result is structurally valid."""
 
     return (
-        isinstance(evaluation, PolicyEvaluation)
-        and evaluation.action in PolicyAction
+        isinstance(evaluation, PolicyEvaluation) and evaluation.action in PolicyAction
     )
 
 

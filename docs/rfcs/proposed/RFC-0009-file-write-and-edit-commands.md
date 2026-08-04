@@ -406,7 +406,7 @@ v1 不做 fuzzy 归一化匹配，避免行为不确定。
 
 ### system message
 
-在 `_system_message.py` 的 "Workspace exploration and file reads" 段补充：
+在 `_system_message.py` 的 "Workspace file operations" 段的 Write 部分补充：
 
 - 新建/覆盖文件使用 `files write <path> <<'EOF' ... EOF`；精确修改使用
   `files edit <path> <<'EDI' {...} EDI`，一次调用可含多个 edit。

@@ -49,6 +49,29 @@ def test_guidance_references_only_actual_runtime_capabilities(
     assert "side-effect" not in guidance.lower()
 
 
+def test_guidance_promotes_files_commands_for_mutations(tmp_path: Path) -> None:
+    guidance = _guidance_text(tmp_path)
+
+    assert "`files write <path> <<'EOF' ... EOF`" in guidance
+    assert "`files edit <path> <<'EDI' {...} EDI`" in guidance
+    assert "one `files edit` call may contain multiple edits" in guidance
+    for banned in ("`tee`", "`sed -i`", "`cat >`", "`echo >`", "Python scripts"):
+        assert banned in guidance
+    assert "Capability View preparation" in guidance
+
+
+def test_guidance_splits_into_read_and_write_parts(tmp_path: Path) -> None:
+    guidance = _guidance_text(tmp_path)
+    read_part, write_part = guidance.split("\n\nWrite\n", maxsplit=1)
+
+    assert read_part.lstrip().startswith("Read\n")
+    assert "`rg --files`" in read_part
+    assert "`cat file`" in read_part
+    assert "files write" not in read_part
+    assert "`files write <path> <<'EOF' ... EOF`" in write_part
+    assert "Keep observation and mutation separate" in write_part
+
+
 def _system_message_text(workspace: Path) -> str:
     message = assemble_system_message(workspace, None)
     return "\n".join(block.text for block in message.content)
@@ -56,6 +79,6 @@ def _system_message_text(workspace: Path) -> str:
 
 def _guidance_text(workspace: Path) -> str:
     body = _system_message_text(workspace)
-    _, rest = body.split("Workspace exploration and file reads\n", maxsplit=1)
+    _, rest = body.split("Workspace file operations\n", maxsplit=1)
     guidance, _ = rest.split("\n\nWorking method", maxsplit=1)
     return guidance

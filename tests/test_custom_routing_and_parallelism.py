@@ -3,8 +3,11 @@ import shlex
 import sys
 from pathlib import Path
 
+import pytest
+
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
+from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
@@ -162,6 +165,71 @@ def test_parallel_shell_batch_respects_serial_custom_barrier(
             await kernel.close()
 
     asyncio.run(scenario())
+
+
+def test_files_command_resolves_to_custom_route_and_is_serial(
+    tmp_path: Path,
+) -> None:
+    repertoire = tmp_path / "repertoire"
+    (repertoire / "tools").mkdir(parents=True)
+    lower = repertoire / "tools" / "calc.py"
+    lower.write_text("LOWER = 1\n", encoding="utf-8")
+    view = _CapabilityView.open(tmp_path, repertoire)
+
+    async def scenario() -> None:
+        kernel = EnvironmentKernel(tmp_path, capability_view=view)
+        try:
+            registered = kernel._router._custom_registry.resolve(
+                parse_shell_ast("files write f <<'EOF'\nx\nEOF")
+            )
+            assert registered is not None
+            assert registered.name == "files"
+            assert registered.isolated is True
+
+            written = _output(
+                await _exec(
+                    kernel,
+                    "files write .workspace/tools/calc.py <<'EOF'\nNEW = 2\nEOF",
+                )
+            )
+            assert written["status"] == "exited"
+            assert "wrote" in _stream_text(written, "stdout")
+            state = kernel._executions[str(written["exec_id"])]
+            assert state.route.command.name == "files"
+            assert state.route.parallel_safe is False
+
+            invalid = _output(await _exec(kernel, "files nonsense hello"))
+            assert invalid["status"] == "failed"
+            assert "unknown files subcommand" in _stream_text(invalid, "stderr")
+            state = kernel._executions[str(invalid["exec_id"])]
+            assert state.route.command.name == "files"
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+    visible = tmp_path / ".workspace" / "tools" / "calc.py"
+    assert not visible.is_symlink()
+    assert visible.read_text(encoding="utf-8") == "NEW = 2\n"
+    assert lower.read_text(encoding="utf-8") == "LOWER = 1\n"
+
+
+def test_files_command_cannot_be_silently_overridden(tmp_path: Path) -> None:
+    def prepare_duplicate(command, context):
+        del command, context
+
+        async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+            del output
+            return _ExecutionOutcome.exited()
+
+        return _InlineExecution(execute)
+
+    registry = _CustomCommandRegistry(
+        (_CustomCommand(name="files", prepare=prepare_duplicate),)
+    )
+
+    with pytest.raises(ValueError, match="already registered"):
+        EnvironmentKernel(tmp_path, registry=registry)
 
 
 async def _exec(

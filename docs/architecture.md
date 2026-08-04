@@ -118,6 +118,7 @@ flowchart TB
                     HAND_BASE["base.py<br/>CommandContext + PreparedExecution"]
                     SHELL_HANDLER["shell.py<br/>Shell handler"]
                     TOOL_HANDLER["tools.py<br/>Tool handler"]
+                    FILE_HANDLER["files.py<br/>write / edit handler<br/>grammar + facts + handler"]
                     PROC["executions.py<br/>process group<br/>SIGTERM → KILL"]
                 end
 
@@ -135,8 +136,10 @@ flowchart TB
                 SCHED --> SUPV --> HAND_BASE
                 HAND_BASE --> SHELL_HANDLER
                 HAND_BASE --> TOOL_HANDLER
+                HAND_BASE --> FILE_HANDLER
                 SHELL_HANDLER --> PROC
                 TOOL_HANDLER --> PROC
+                FILE_HANDLER -->|prepare_path 写前 copy-up| VIEW
                 SUPV --> EXEC
                 TOOL_HANDLER -->|启动 JSON worker| T_WORKER
             end
@@ -214,7 +217,10 @@ Runtime serves one Session at a time.
 
 `cd` and `export` are registered Custom commands with mutable Session context.
 The `tools` command is another Custom command; its Tool grammar and Catalog
-remain inside the capability handler. Unmatched commands use the Shell
+remain inside the capability handler. The `files` command is a Custom command
+whose grammar, facts, and write/edit handler live together in
+`handlers/files.py`, with the injected Capability View prepared before each
+mutation. Unmatched commands use the Shell
 handler. Command metadata controls isolation: `isolated=True` copies the
 Session environment and removes `set_cwd`, while `parallel_safe=True` always
 gets the same snapshot even when the command is otherwise serial.
