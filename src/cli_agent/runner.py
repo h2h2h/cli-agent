@@ -61,7 +61,7 @@ async def run_agent(
                 return _turn_exit_code(completed, stderr=stderr)
 
             while True:
-                task = _read_interactive_task(stdin=stdin, stderr=stderr)
+                task = await _read_interactive_task(stdin=stdin, stderr=stderr)
                 if task is None:
                     return 0
 
@@ -118,13 +118,15 @@ async def _run_turn(
     return completed, not last_text_has_newline
 
 
-def _read_interactive_task(*, stdin: TextIO, stderr: TextIO) -> str | None:
+async def _read_interactive_task(*, stdin: TextIO, stderr: TextIO) -> str | None:
+    """Read one task without blocking Runtime background work."""
+
     while True:
         prompted = stdin.isatty()
         if prompted:
             render_prompt(stderr=stderr)
 
-        line = stdin.readline()
+        line = await asyncio.to_thread(stdin.readline)
         if line == "":
             if prompted:
                 print(file=stderr, flush=True)

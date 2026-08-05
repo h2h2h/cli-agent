@@ -59,7 +59,13 @@ def _directory_fingerprint(
 
     parts = ["directory"]
     for name, kind, summary in children:
-        parts.extend((name, kind, summary or _SUMMARY_UNAVAILABLE))
+        parts.extend(
+            (
+                name,
+                kind,
+                _SUMMARY_UNAVAILABLE if summary is None else summary,
+            )
+        )
     return _fingerprint(tuple(parts))
 
 

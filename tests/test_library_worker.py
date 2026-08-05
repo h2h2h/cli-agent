@@ -22,6 +22,7 @@ from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.library.facts import (
     _content_digest,
+    _directory_fingerprint,
     _file_fingerprint,
 )
 from cli_agent.runtime._capability.view import _CapabilityView
@@ -71,6 +72,24 @@ class _RaisingProvider:
         yield
 
 
+class _FailOnceProvider:
+    """Raise on the first request, then succeed with one completion."""
+
+    def __init__(
+        self, error: BaseException, completion_text: str = "Recovered."
+    ) -> None:
+        self._error = error
+        self._completion_text = completion_text
+        self._calls = 0
+
+    async def generate(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
+        del request
+        self._calls += 1
+        if self._calls == 1:
+            raise self._error
+        yield _completion(self._completion_text)
+
+
 class _BlockingProvider:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -96,6 +115,7 @@ def test_worker_generates_file_summaries_and_refreshes_indexes(
         script=(
             (_completion("Summary of first."),),
             (_completion("Summary of second."),),
+            (_completion("Library summary."),),
         )
     )
 
@@ -121,10 +141,12 @@ def test_worker_generates_file_summaries_and_refreshes_indexes(
             "| second.txt | ready | repertoire | no | Summary of second. | [second.txt](./second.txt) |"
             in index
         )
+        assert "status: ready" in index.splitlines()
+        assert "description: Library summary." in index.splitlines()
 
         requests = provider.requests
-        assert len(requests) == 2
-        for request in requests:
+        assert len(requests) == 3
+        for request in requests[:2]:
             assert request.tools == ()
             system, user = request.messages
             assert isinstance(system, SystemMessage)
@@ -135,6 +157,11 @@ def test_worker_generates_file_summaries_and_refreshes_indexes(
             }
             assert "first.md" not in user.content[0].text
             assert "second.txt" not in user.content[0].text
+        _, directory_user = requests[2].messages
+        assert directory_user.content[0].text == (
+            "- name: first.md | type: file | summary: Summary of first.\n"
+            "- name: second.txt | type: file | summary: Summary of second."
+        )
 
         await catalog.close()
 
@@ -155,7 +182,10 @@ def test_one_summary_updates_every_file_with_the_same_fingerprint(
         encoding="utf-8",
     )
     provider = ScriptedModelProvider(
-        script=((_completion("Shared summary."),),),
+        script=(
+            (_completion("Shared summary."),),
+            (_completion("Library summary."),),
+        )
     )
 
     async def scenario() -> None:
@@ -174,7 +204,15 @@ def test_one_summary_updates_every_file_with_the_same_fingerprint(
         assert second.status == "ready"
         assert first.summary == "Shared summary."
         assert second.summary == "Shared summary."
-        assert len(provider.requests) == 1
+        assert len(provider.requests) == 2
+        file_request, directory_request = provider.requests
+        assert "The file content is:\n\nshared content\n" in (
+            file_request.messages[1].content[0].text
+        )
+        assert directory_request.messages[1].content[0].text == (
+            "- name: first.md | type: file | summary: Shared summary.\n"
+            "- name: second.txt | type: file | summary: Shared summary."
+        )
         index = _index(tmp_path)
         assert "| first.md | ready |" in index
         assert "| second.txt | ready |" in index
@@ -190,6 +228,11 @@ def test_cache_hit_never_calls_the_model(tmp_path: Path) -> None:
 
     cache = _cache(tmp_path)
     cache.upsert(_fingerprint_of("content\n"), "file", "Cached summary.")
+    cache.upsert(
+        _directory_fingerprint((("cached.md", "file", "Cached summary."),)),
+        "directory",
+        "Root summary.",
+    )
     cache.close()
 
     provider = ScriptedModelProvider(script=())
@@ -213,7 +256,7 @@ def test_provider_failure_marks_entry_failed_with_diagnostic(tmp_path: Path) -> 
     repertoire = _repertoire(tmp_path)
     (repertoire / "library" / "broken.md").write_text("content\n", encoding="utf-8")
     diagnostics: list[RuntimeDiagnostic] = []
-    provider = _RaisingProvider(RuntimeError("provider exploded"))
+    provider = _FailOnceProvider(RuntimeError("provider exploded"))
 
     async def scenario() -> None:
         _prepare_workspace(tmp_path)
@@ -247,7 +290,7 @@ def test_context_overflow_marks_entry_failed_with_specific_diagnostic(
     repertoire = _repertoire(tmp_path)
     (repertoire / "library" / "big.md").write_text("content\n", encoding="utf-8")
     diagnostics: list[RuntimeDiagnostic] = []
-    provider = _RaisingProvider(ModelContextOverflowError("context window exceeded"))
+    provider = _FailOnceProvider(ModelContextOverflowError("context window exceeded"))
 
     async def scenario() -> None:
         _prepare_workspace(tmp_path)
@@ -277,7 +320,7 @@ def test_failure_diagnostics_never_contain_source_content(tmp_path: Path) -> Non
     repertoire = _repertoire(tmp_path)
     (repertoire / "library" / "secret.md").write_text(source, encoding="utf-8")
     diagnostics: list[RuntimeDiagnostic] = []
-    provider = _RaisingProvider(RuntimeError("credentials rejected"))
+    provider = _FailOnceProvider(RuntimeError("credentials rejected"))
 
     async def scenario() -> None:
         _prepare_workspace(tmp_path)
@@ -352,6 +395,7 @@ def test_internal_summaries_stay_out_of_session_history(tmp_path: Path) -> None:
     provider = ScriptedModelProvider(
         script=(
             (_completion("File summary."),),
+            (_completion("Library summary."),),
             (_completion("Turn response."),),
         )
     )

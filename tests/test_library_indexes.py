@@ -326,8 +326,8 @@ def test_empty_library_still_renders_root_index(tmp_path: Path) -> None:
         "name: library",
         "path: library",
         "type: dir",
-        "status: pending",
-        "description: Directory summary generation pending.",
+        "status: ready",
+        "description: Empty directory.",
     ]
     assert "## Directories" in index
     assert "## Files" in index

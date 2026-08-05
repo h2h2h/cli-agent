@@ -1,6 +1,8 @@
 import asyncio
 import shlex
 import sys
+import threading
+from collections.abc import AsyncIterator
 from io import StringIO
 from pathlib import Path
 
@@ -14,6 +16,8 @@ from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
     ModelCompletion,
+    ModelEvent,
+    ModelRequest,
     ModelUsage,
     RuntimeDiagnostic,
     ScriptedModelProvider,
@@ -117,6 +121,108 @@ def test_runs_and_presents_one_agent_turn(
     assert isinstance(result.output, dict)
     assert result.output["status"] == "exited"
     provider.assert_exhausted()
+
+
+def test_reference_cli_cancels_unfinished_library_summary(tmp_path: Path) -> None:
+    class BlockingLibraryProvider:
+        def __init__(self) -> None:
+            self.summary_started = asyncio.Event()
+            self.summary_cancelled = asyncio.Event()
+
+        async def generate(
+            self,
+            request: ModelRequest,
+        ) -> AsyncIterator[ModelEvent]:
+            if request.tools == ():
+                self.summary_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.summary_cancelled.set()
+                    raise
+                return
+            await self.summary_started.wait()
+            yield ModelCompletion(
+                message=AssistantMessage.text("Turn complete."),
+                finish_reason="stop",
+            )
+
+    repertoire = tmp_path.parent / f"{tmp_path.name}-repertoire"
+    (repertoire / "library").mkdir(parents=True)
+    (repertoire / "library" / "slow.md").write_text(
+        "content\n",
+        encoding="utf-8",
+    )
+    provider = BlockingLibraryProvider()
+
+    async def scenario() -> int:
+        return await asyncio.wait_for(
+            run_agent(
+                _config(tmp_path, repertoire=repertoire),
+                provider,
+                stdin=StringIO(),
+                stdout=StringIO(),
+                stderr=StringIO(),
+            ),
+            timeout=1,
+        )
+
+    assert asyncio.run(scenario()) == 0
+    assert provider.summary_started.is_set()
+    assert provider.summary_cancelled.is_set()
+
+
+def test_interactive_input_does_not_block_library_summaries(tmp_path: Path) -> None:
+    summaries_completed = threading.Event()
+
+    class DirectorySummaryProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate(
+            self,
+            request: ModelRequest,
+        ) -> AsyncIterator[ModelEvent]:
+            assert request.tools == ()
+            self.calls += 1
+            if self.calls == 3:
+                summaries_completed.set()
+            yield ModelCompletion(
+                message=AssistantMessage.text(f"Summary {self.calls}."),
+                finish_reason="stop",
+            )
+
+    class WaitingInput(StringIO):
+        def readline(self, *args: object, **kwargs: object) -> str:
+            if not summaries_completed.wait(timeout=1):
+                raise AssertionError(
+                    "Library summaries did not run while the CLI awaited input"
+                )
+            return ":q\n"
+
+    repertoire = tmp_path.parent / f"{tmp_path.name}-repertoire"
+    source = repertoire / "library" / "notes" / "guide.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Guide content.\n", encoding="utf-8")
+    provider = DirectorySummaryProvider()
+
+    exit_code = asyncio.run(
+        run_agent(
+            _config(tmp_path, task=None, repertoire=repertoire),
+            provider,
+            stdin=WaitingInput(),
+            stdout=StringIO(),
+            stderr=StringIO(),
+        )
+    )
+
+    assert exit_code == 0
+    assert provider.calls == 3
+    library = tmp_path / ".workspace" / "library"
+    assert "status: ready" in (library / "notes" / "index.md").read_text(
+        encoding="utf-8"
+    )
+    assert "status: ready" in (library / "index.md").read_text(encoding="utf-8")
 
 
 def test_returns_failure_when_model_stream_has_no_completion(
@@ -493,6 +599,7 @@ def _config(
     tmp_path: Path,
     *,
     task: str | None = "Run the task",
+    repertoire: Path | None = None,
 ) -> CliConfig:
     return CliConfig(
         task=task,
@@ -500,6 +607,7 @@ def _config(
         base_url="https://models.example/v1",
         model="test-model",
         api_key="secret",
+        repertoire=repertoire,
         context_window_tokens=128_000,
         output_reserve_tokens=4_000,
         safety_margin_tokens=4_096,

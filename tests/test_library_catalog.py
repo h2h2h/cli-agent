@@ -286,6 +286,12 @@ def test_directory_fingerprint_depends_on_sorted_children_and_summaries() -> Non
     )
 
 
+def test_directory_fingerprint_distinguishes_empty_summary_from_unavailable() -> None:
+    assert _directory_fingerprint((("a", "file", ""),)) != (
+        _directory_fingerprint((("a", "file", None),))
+    )
+
+
 def test_empty_library_has_no_entries(tmp_path: Path) -> None:
     repertoire = _repertoire(tmp_path)
 
