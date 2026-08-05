@@ -148,7 +148,7 @@ class AgentRuntime:
             repertoire=repertoire,
             on_diagnostic=on_diagnostic,
         )
-        return cls(
+        runtime = cls(
             provider=provider,
             resources=resources,
             policy=policy,
@@ -158,6 +158,8 @@ class AgentRuntime:
             on_diagnostic=on_diagnostic,
             context_policy=context_policy,
         )
+        resources.library_catalog.start(provider, on_diagnostic)
+        return runtime
 
     @property
     def closed(self) -> bool:
@@ -175,7 +177,7 @@ class AgentRuntime:
         self._sessions.clear()
         for session in sessions:
             await session.kernel.close()
-        self._resources.library_catalog.close()
+        await self._resources.library_catalog.close()
 
     async def run_turn(
         self,
