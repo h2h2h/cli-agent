@@ -767,6 +767,7 @@ class _TrackingEnvironmentKernel:
         base_env: Mapping[str, str],
         policy: object,
         capability_view: object,
+        library_catalog: object,
         tool_catalog: object,
         tool_environment: object,
         user_interaction: object,
@@ -778,6 +779,7 @@ class _TrackingEnvironmentKernel:
         self.base_env = dict(base_env or {})
         self.policy = policy
         self.capability_view = capability_view
+        self.library_catalog = library_catalog
         self.tool_catalog = tool_catalog
         self.tool_environment = tool_environment
         self.user_interaction = user_interaction
@@ -787,6 +789,9 @@ class _TrackingEnvironmentKernel:
         self.close_count = 0
         self.events: list[str] = []
         self.instances.append(self)
+
+    async def reconcile_library(self) -> None:
+        return
 
     async def dispatch(self, call: ToolCall) -> ToolResult:
         raise AssertionError(f"unexpected Tool Call: {call}")

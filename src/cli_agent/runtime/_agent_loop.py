@@ -60,6 +60,7 @@ class AgentLoop:
 
         self._context.append(message)
         while True:
+            await self._kernel.reconcile_library()
             completion = None
             prepared = await self._context.prepare_request()
             request = prepared.request

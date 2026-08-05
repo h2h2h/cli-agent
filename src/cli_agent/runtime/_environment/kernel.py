@@ -12,6 +12,7 @@ from cli_agent.runtime._capability.command_parser import (
     ShellParseResult,
     parse_shell_ast,
 )
+from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.view import _CapabilityView
@@ -75,6 +76,7 @@ class EnvironmentKernel:
         user_interaction: UserInteraction | None = None,
         session_id: str | None = None,
         capability_view: _CapabilityView | None = None,
+        library_catalog: _LibraryCatalog | None = None,
         tool_catalog: _ToolCatalog | None = None,
         tool_environment: _ToolEnvironment | None = None,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
@@ -84,6 +86,7 @@ class EnvironmentKernel:
         self._user_interaction = user_interaction
         self._session_id = session_id
         self._on_diagnostic = on_diagnostic
+        self._library_catalog = library_catalog
         tool_handler = _ToolHandler(tool_catalog, tool_environment)
         tool_command = _CustomCommand(
             name="tools",
@@ -91,7 +94,7 @@ class EnvironmentKernel:
             parallel_safe=tool_handler.parallel_safe,
             isolated=True,
         )
-        file_handler = _FileHandler(capability_view)
+        file_handler = _FileHandler(capability_view, library_catalog)
         file_command = _CustomCommand(
             name="files",
             prepare=file_handler.prepare,
@@ -164,12 +167,30 @@ class EnvironmentKernel:
             return await self._output(call)
         return await self._kill(call)
 
+    async def reconcile_library(self) -> None:
+        """Re-check Library source facts before one ordinary model request.
+
+        Internal Library summary requests never pass through this hook; they
+        call the provider directly from the Runtime-owned worker.
+        """
+
+        catalog = self._library_catalog
+        if catalog is None:
+            return
+        try:
+            await catalog.reconcile_changes()
+        except Exception as exc:
+            self._emit_diagnostic(
+                "library.reconcile_failed",
+                "library source reconcile failed",
+                detail={"exception": repr(exc)},
+            )
+
     async def dispatch_batch(
         self,
         calls: tuple[ToolCall, ...],
     ) -> tuple[ToolResult, ...]:
         """Admit model-returned calls in order, then await them concurrently."""
-
         admitted: list[tuple[ToolCall, ToolResult]] = []
         for call in calls:
             if call.name == "exec":

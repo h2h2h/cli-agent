@@ -394,6 +394,52 @@ class _OverflowThenSuccessProvider:
             yield event
 
 
+class _RecordingKernel:
+    """Kernel stub recording hook and dispatch calls in arrival order."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def reconcile_library(self) -> None:
+        self.calls.append("reconcile")
+
+    async def dispatch_batch(
+        self,
+        calls: tuple[ToolCall, ...],
+    ) -> tuple[ToolResult, ...]:
+        self.calls.append("dispatch")
+        return tuple(ToolResult(call_id=call.call_id, output={}) for call in calls)
+
+
+def test_reconcile_runs_before_every_model_request() -> None:
+    user_message = UserMessage.text("Inspect")
+    call = ToolCall(call_id="call_1", name="exec", arguments={"command": "true"})
+    tool_message = AssistantMessage(content=(call,))
+    final_message = AssistantMessage.text("Done.")
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                ToolCallReady(call=call),
+                ModelCompletion(message=tool_message, finish_reason="tool_calls"),
+            ),
+            (ModelCompletion(message=final_message, finish_reason="stop"),),
+        )
+    )
+    kernel = _RecordingKernel()
+    loop = AgentLoop(
+        provider,
+        kernel,  # type: ignore[arg-type]
+        system_message=SYSTEM_MESSAGE,
+        context_policy=CONTEXT_POLICY,
+        session_id="test-session",
+    )
+
+    asyncio.run(_collect_events(loop, user_message))
+
+    assert kernel.calls == ["reconcile", "dispatch", "reconcile"]
+    assert len(provider.requests) == 2
+
+
 async def _collect_events(
     loop: AgentLoop,
     user_message: UserMessage,

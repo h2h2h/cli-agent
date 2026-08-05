@@ -81,12 +81,16 @@ class _LibraryCatalog:
         entries: tuple[LibraryEntry, ...],
         root: Path,
         summary_cache: _SummaryCache,
+        view: _CapabilityView | None = None,
     ) -> None:
         """Hold the facts, the effective Library root, and the summary cache."""
 
         self._root = root
         self._summary_cache = summary_cache
+        self._view = view
         self._entries = {entry.path: entry for entry in entries}
+        self._snapshot: dict[str, tuple[int, int]] = {}
+        self._dirty_paths: set[str] = set()
         self._mutation_lock = asyncio.Lock()
         self._queue: asyncio.Queue[str] | None = None
         self._worker_task: asyncio.Task[None] | None = None
@@ -121,14 +125,18 @@ class _LibraryCatalog:
 
         root = capability_view.root / _LIBRARY_DIRECTORY
         if not root.is_dir():
-            return cls((), root, summary_cache)
+            return cls((), root, summary_cache, capability_view)
         discovered: list[LibraryEntry] = []
         for child in sorted(root.iterdir(), key=lambda path: path.name):
             if child.name != _INDEX_FILENAME:
                 discovered.extend(await _subtree(capability_view, root, child))
         catalog = cls(
-            _apply_cache_hits(tuple(discovered), summary_cache), root, summary_cache
+            _apply_cache_hits(tuple(discovered), summary_cache),
+            root,
+            summary_cache,
+            capability_view,
         )
+        catalog._capture_snapshot()
         catalog._entries[""] = _root_entry()
         for directory in sorted(
             (entry.path for entry in catalog.entries if entry.kind == "directory"),
@@ -143,6 +151,282 @@ class _LibraryCatalog:
         """Return the entry for one logical Library path, or None."""
 
         return self._entries.get(path)
+
+    def mark_path_dirty(self, target: Path) -> None:
+        """Record one successfully written Library path for re-checking.
+
+        Only targets inside the effective Library root are recorded; failed
+        writes and out-of-view paths never mark anything dirty. The next
+        ordinary model request force re-checks every dirty path regardless
+        of metadata.
+        """
+
+        try:
+            relative = target.resolve().relative_to(self._root.resolve())
+        except ValueError:
+            return
+        self._dirty_paths.add(relative.as_posix())
+
+    async def reconcile_changes(self) -> None:
+        """Re-check Library source facts before one ordinary model request.
+
+        Dirty paths are forced through a full re-read; every other known
+        path is compared by membership, ``mtime_ns``, and size. Changed
+        paths are re-derived from the effective view: new content without a
+        known summary becomes ``pending``, content whose previous summary
+        is still held becomes ``stale``, and cache hits restore ``ready``
+        directly. Deleted entries leave immediately. Affected directories
+        and ancestors are then invalidated and queued bottom up. No model
+        is called and no internal summary request is triggered here.
+        """
+
+        if self._view is None:
+            return
+        if not self._root.is_dir():
+            async with self._mutation_lock:
+                if self._entries:
+                    self._entries.clear()
+                    self._snapshot.clear()
+                    self._queued.clear()
+            return
+        if "" not in self._entries:
+            self._entries[""] = _root_entry()
+        dirty = self._dirty_paths
+        self._dirty_paths = set()
+
+        known_files: set[str] = set()
+        known_directories = {""}
+        for entry in self._entries.values():
+            if not entry.path:
+                continue
+            if entry.kind == "directory":
+                known_directories.add(entry.path)
+            else:
+                known_files.add(entry.path)
+
+        changed: set[str] = set()
+        removed: set[str] = set()
+        for directory in known_directories:
+            children = {
+                entry.path
+                for entry in self._entries.values()
+                if entry.path and _parent(entry.path) == directory
+            }
+            try:
+                actual = {child.name for child in (self._root / directory).iterdir()}
+            except OSError:
+                continue
+            for name in actual - {_leaf(child) for child in children}:
+                changed.add(f"{directory}/{name}" if directory else name)
+            for child in children - {
+                f"{directory}/{name}" if directory else name for name in actual
+            }:
+                removed.add(child)
+
+        for path in known_files:
+            if path in dirty:
+                changed.add(path)
+                continue
+            try:
+                st = (self._root / path).stat()
+            except OSError:
+                removed.add(path)
+                continue
+            if self._snapshot.get(path) != (st.st_mtime_ns, st.st_size):
+                changed.add(path)
+        for path in dirty:
+            if path not in known_files and path not in known_directories:
+                changed.add(path)
+
+        for path in sorted(removed):
+            await self._remove_path(path)
+        for path in sorted(changed):
+            await self._recheck(path)
+
+    def _capture_snapshot(self) -> None:
+        """Record the metadata facts for every known file path."""
+
+        for entry in self._entries.values():
+            if entry.kind != "file":
+                continue
+            try:
+                st = (self._root / entry.path).stat()
+            except OSError:
+                continue
+            self._snapshot[entry.path] = (st.st_mtime_ns, st.st_size)
+
+    async def _recheck(self, path: str) -> None:
+        """Re-derive one changed path from the effective Library view."""
+
+        view = self._view
+        if view is None:
+            return
+        if _leaf(path) == _INDEX_FILENAME:
+            return
+        view_path = self._root / path
+        try:
+            inspection = view.inspect(Path(_LIBRARY_DIRECTORY) / Path(path))
+        except ValueError as exc:
+            await self._replace_failed(
+                path,
+                "directory" if view_path.is_dir() else "file",
+                str(exc),
+            )
+            return
+        if inspection.provenance not in {"repertoire", "workspace"}:
+            await self._remove_path(path)
+            return
+        if view_path.is_dir():
+            entries = await _directory_subtree(view, self._root, view_path, Path(path))
+            await self._replace_subtree(path, entries)
+            for directory in sorted(
+                (path, *(entry.path for entry in entries if entry.kind == "directory")),
+                key=lambda candidate: (-_depth(candidate), candidate),
+            ):
+                await self._resolve_directory(directory)
+            return
+        entry = await _file_entry(
+            view_path,
+            Path(path),
+            inspection.provenance,
+            inspection.shadows_repertoire,
+        )
+        await self._replace_file(path, entry)
+        await self._cascade(path)
+
+    async def _remove_path(self, path: str) -> None:
+        """Remove one deleted path immediately and invalidate its ancestors."""
+
+        async with self._mutation_lock:
+            if path not in self._entries and path not in self._snapshot:
+                return
+            self._drop_subtree_locked(path)
+            self._render_ancestors(path)
+        await self._cascade(path)
+
+    async def _replace_subtree(
+        self,
+        path: str,
+        entries: tuple[LibraryEntry, ...],
+    ) -> None:
+        """Replace one directory path's subtree facts and refresh its indexes."""
+
+        async with self._mutation_lock:
+            self._drop_subtree_locked(path)
+            for entry in entries:
+                self._entries[entry.path] = entry
+            for entry in entries:
+                if entry.kind != "file":
+                    continue
+                try:
+                    st = (self._root / entry.path).stat()
+                except OSError:
+                    continue
+                self._snapshot[entry.path] = (st.st_mtime_ns, st.st_size)
+            directories = {
+                directory
+                for entry in entries
+                if entry.kind == "directory" and (directory := entry.path)
+            }
+            for directory in sorted(
+                (path, *directories, *_ancestors(path)),
+                key=lambda candidate: (-_depth(candidate), candidate),
+            ):
+                self._write_index(directory)
+
+    async def _replace_file(self, path: str, entry: LibraryEntry) -> None:
+        """Replace one changed file path and refresh its affected indexes."""
+
+        async with self._mutation_lock:
+            old = self._entries.get(path)
+            if old is not None and old.kind != "file":
+                self._drop_subtree_locked(path)
+            updated = self._transition_file(old, entry)
+            self._entries[path] = updated
+            try:
+                st = (self._root / path).stat()
+            except OSError:
+                pass
+            else:
+                self._snapshot[path] = (st.st_mtime_ns, st.st_size)
+            self._render_ancestors(path)
+            if updated.status in {"pending", "stale"}:
+                self._enqueue_file(path)
+
+    async def _replace_failed(
+        self,
+        path: str,
+        kind: Literal["file", "directory"],
+        error: str,
+    ) -> None:
+        """Replace one path with a failed fact and refresh affected indexes."""
+
+        async with self._mutation_lock:
+            old = self._entries.get(path)
+            if old is not None and old.kind == "directory":
+                self._drop_subtree_locked(path)
+            self._queued.discard(path)
+            self._entries[path] = _entry(
+                Path(path),
+                kind,
+                provenance=None,
+                shadows_repertoire=False,
+                fingerprint=None,
+                status="failed",
+                error=error,
+            )
+            if kind == "directory":
+                self._render_directory_chain(path)
+            else:
+                self._render_ancestors(path)
+        await self._cascade(path)
+
+    def _drop_subtree_locked(self, path: str) -> None:
+        """Remove one path and every known descendant from the fact state."""
+
+        prefix = f"{path}/"
+        for known in tuple(self._entries):
+            if known == path or known.startswith(prefix):
+                self._entries.pop(known, None)
+                self._snapshot.pop(known, None)
+                self._queued.discard(known)
+
+    def _transition_file(
+        self,
+        old: LibraryEntry | None,
+        entry: LibraryEntry,
+    ) -> LibraryEntry:
+        """Transition one re-derived file fact against its previous fact.
+
+        Identical fingerprints keep the previous fact verbatim (metadata-only
+        changes); cached summaries restore ``ready`` directly; otherwise
+        content with a previously held summary becomes ``stale`` and content
+        without one stays ``pending``.
+        """
+
+        if entry.status != "pending":
+            return entry
+        fingerprint = entry.fingerprint
+        if fingerprint is None:
+            return entry
+        if old is not None and old.fingerprint == fingerprint:
+            return old
+        hits = self._summary_cache.get((fingerprint,))
+        if fingerprint in hits:
+            return replace(entry, status="ready", summary=hits[fingerprint])
+        if old is not None and old.summary is not None:
+            return replace(entry, status="stale", summary=old.summary)
+        return entry
+
+    def _enqueue_file(self, path: str) -> None:
+        """Queue one file for regeneration when the worker is running."""
+
+        if self._queue is None:
+            return
+        if path in self._queued:
+            return
+        self._queued.add(path)
+        self._queue.put_nowait(path)
 
     def start(
         self,
@@ -249,7 +533,7 @@ class _LibraryCatalog:
         """Generate, cache, and apply one file summary in the background."""
 
         entry = self._entries.get(path)
-        if entry is None or entry.status != "pending":
+        if entry is None or entry.status not in {"pending", "stale"}:
             return
         fingerprint = entry.fingerprint
         if fingerprint is None:
@@ -378,7 +662,7 @@ class _LibraryCatalog:
                 path
                 for path, entry in self._entries.items()
                 if entry.kind == "file"
-                and entry.status == "pending"
+                and entry.status in {"pending", "stale"}
                 and entry.fingerprint == fingerprint
             )
             if not paths:

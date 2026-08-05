@@ -36,6 +36,7 @@ from cli_agent.runtime._environment.handlers.executions import (
 )
 
 if TYPE_CHECKING:
+    from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
     from cli_agent.runtime._capability.view import _CapabilityView
 
 _USAGE = (
@@ -199,8 +200,13 @@ def _invalid(reason: str) -> FileCommand:
 class _FileHandler:
     """Prepare files write and edit operations from trusted Files facts."""
 
-    def __init__(self, capability_view: _CapabilityView | None = None) -> None:
+    def __init__(
+        self,
+        capability_view: _CapabilityView | None = None,
+        library_catalog: _LibraryCatalog | None = None,
+    ) -> None:
         self._capability_view = capability_view
+        self._library_catalog = library_catalog
 
     def prepare(
         self,
@@ -221,6 +227,7 @@ class _FileHandler:
                 facts.content or "",
                 context,
                 self._capability_view,
+                self._library_catalog,
             )
         if facts.operation == "edit" and facts.path is not None:
             return _edit_execution(
@@ -228,6 +235,7 @@ class _FileHandler:
                 facts.edits,
                 context,
                 self._capability_view,
+                self._library_catalog,
             )
         return _text_execution("Invalid files command\n", success=False)
 
@@ -237,6 +245,7 @@ def _write_execution(
     content: str,
     context: _CommandContext,
     capability_view: _CapabilityView | None,
+    library_catalog: _LibraryCatalog | None,
 ) -> _InlineExecution:
     target = Path(os.path.normpath(str(_target_path(path, context.cwd))))
 
@@ -257,6 +266,8 @@ def _write_execution(
                 f"failed to write {target}: {exc}\n".encode(),
             )
             return _ExecutionOutcome.failed(1)
+        if library_catalog is not None:
+            library_catalog.mark_path_dirty(target)
         await output.write(
             "stdout",
             f"wrote {len(data)} bytes to {target}\n".encode(),
@@ -271,6 +282,7 @@ def _edit_execution(
     edits: tuple[FileEdit, ...],
     context: _CommandContext,
     capability_view: _CapabilityView | None,
+    library_catalog: _LibraryCatalog | None,
 ) -> _InlineExecution:
     target = Path(os.path.normpath(str(_target_path(path, context.cwd))))
 
@@ -313,6 +325,8 @@ def _edit_execution(
                 f"failed to edit {target}: {exc}\n".encode(),
             )
             return _ExecutionOutcome.failed(1)
+        if library_catalog is not None:
+            library_catalog.mark_path_dirty(target)
         await output.write(
             "stdout",
             f"replaced {len(edits)} block(s) in {target}\n".encode(),
