@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import cli_agent.runtime._resources as resources_module
+from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
@@ -47,6 +48,7 @@ def test_reconcile_returns_complete_resource_aggregate(tmp_path: Path) -> None:
         assert isinstance(resources.tool_catalog, _ToolCatalog)
         assert isinstance(resources.tool_environment, _ToolEnvironment)
         assert isinstance(resources.skill_catalog, _SkillCatalog)
+        assert isinstance(resources.library_catalog, _LibraryCatalog)
 
     asyncio.run(scenario())
 
@@ -125,6 +127,13 @@ def test_reconcile_runs_steps_in_documented_order(
             order.append("skill_catalog")
             return object()
 
+    class _FakeLibraryCatalog:
+        @staticmethod
+        async def reconcile(capability_view: object) -> object:
+            del capability_view
+            order.append("library_catalog")
+            return object()
+
     def prepare_workspace(workspace: object) -> _FakePaths:
         del workspace
         order.append("prepare_workspace")
@@ -142,6 +151,7 @@ def test_reconcile_runs_steps_in_documented_order(
     monkeypatch.setattr(resources_module, "_ToolCatalog", _FakeToolCatalog)
     monkeypatch.setattr(resources_module, "_ToolEnvironment", _FakeToolEnvironment)
     monkeypatch.setattr(resources_module, "_SkillCatalog", _FakeSkillCatalog)
+    monkeypatch.setattr(resources_module, "_LibraryCatalog", _FakeLibraryCatalog)
 
     async def scenario() -> None:
         resources = await _reconcile_runtime_resources(
@@ -158,6 +168,7 @@ def test_reconcile_runs_steps_in_documented_order(
             "tool_catalog",
             "tool_environment",
             "skill_catalog",
+            "library_catalog",
         ]
         assert resources.workspace == _FakePaths.root
         assert dict(resources.base_env) == {"TOKEN": "secret"}
@@ -177,13 +188,16 @@ def test_mcp_projection_result_is_not_retained_in_aggregate(
             on_diagnostic=None,
         )
 
-        assert {field.name for field in _RuntimeResources.__dataclass_fields__.values()} == {
+        assert {
+            field.name for field in _RuntimeResources.__dataclass_fields__.values()
+        } == {
             "workspace",
             "base_env",
             "capability_view",
             "tool_catalog",
             "tool_environment",
             "skill_catalog",
+            "library_catalog",
         }
 
     asyncio.run(scenario())

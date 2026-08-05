@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
@@ -33,6 +34,7 @@ class _RuntimeResources:
     tool_catalog: _ToolCatalog
     tool_environment: _ToolEnvironment
     skill_catalog: _SkillCatalog
+    library_catalog: _LibraryCatalog
 
 
 async def _reconcile_runtime_resources(
@@ -71,6 +73,7 @@ async def _reconcile_runtime_resources(
     )
     tool_environment = await _ToolEnvironment.reconcile(capability_view)
     skill_catalog = _SkillCatalog.reconcile(capability_view)
+    library_catalog = await _LibraryCatalog.reconcile(capability_view)
     return _RuntimeResources(
         workspace=paths.root,
         base_env=base_env,
@@ -78,4 +81,5 @@ async def _reconcile_runtime_resources(
         tool_catalog=tool_catalog,
         tool_environment=tool_environment,
         skill_catalog=skill_catalog,
+        library_catalog=library_catalog,
     )
