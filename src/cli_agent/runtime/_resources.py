@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
@@ -16,6 +17,7 @@ from cli_agent.runtime._capability.workspace import (
     _load_workspace_env,
     _prepare_workspace,
 )
+from cli_agent.runtime._state_db import _StateDatabase
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 
@@ -63,6 +65,8 @@ async def _reconcile_runtime_resources(
     paths = _prepare_workspace(workspace)
     base_env = _load_workspace_env(paths.environment)
     capability_view = _CapabilityView.open(paths.root, repertoire)
+    state_database = _StateDatabase.open()
+    summary_cache = _SummaryCache(state_database)
     await _MCPCatalog.reconcile(
         capability_view,
         on_diagnostic=on_diagnostic,
@@ -73,7 +77,10 @@ async def _reconcile_runtime_resources(
     )
     tool_environment = await _ToolEnvironment.reconcile(capability_view)
     skill_catalog = _SkillCatalog.reconcile(capability_view)
-    library_catalog = await _LibraryCatalog.reconcile(capability_view)
+    library_catalog = await _LibraryCatalog.reconcile(
+        capability_view,
+        summary_cache,
+    )
     return _RuntimeResources(
         workspace=paths.root,
         base_env=base_env,

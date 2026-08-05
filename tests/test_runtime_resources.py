@@ -127,10 +127,24 @@ def test_reconcile_runs_steps_in_documented_order(
             order.append("skill_catalog")
             return object()
 
+    class _FakeStateDatabase:
+        @staticmethod
+        def open() -> object:
+            order.append("state_database")
+            return object()
+
+    class _FakeSummaryCache:
+        def __init__(self, database: object) -> None:
+            del database
+            order.append("summary_cache")
+
     class _FakeLibraryCatalog:
         @staticmethod
-        async def reconcile(capability_view: object) -> object:
-            del capability_view
+        async def reconcile(
+            capability_view: object,
+            summary_cache: object,
+        ) -> object:
+            del capability_view, summary_cache
             order.append("library_catalog")
             return object()
 
@@ -147,6 +161,8 @@ def test_reconcile_runs_steps_in_documented_order(
     monkeypatch.setattr(resources_module, "_prepare_workspace", prepare_workspace)
     monkeypatch.setattr(resources_module, "_load_workspace_env", load_workspace_env)
     monkeypatch.setattr(resources_module, "_CapabilityView", _FakeCapabilityView)
+    monkeypatch.setattr(resources_module, "_StateDatabase", _FakeStateDatabase)
+    monkeypatch.setattr(resources_module, "_SummaryCache", _FakeSummaryCache)
     monkeypatch.setattr(resources_module, "_MCPCatalog", _FakeMCPCatalog)
     monkeypatch.setattr(resources_module, "_ToolCatalog", _FakeToolCatalog)
     monkeypatch.setattr(resources_module, "_ToolEnvironment", _FakeToolEnvironment)
@@ -164,6 +180,8 @@ def test_reconcile_runs_steps_in_documented_order(
             "prepare_workspace",
             "load_environment",
             "capability_view",
+            "state_database",
+            "summary_cache",
             "mcp",
             "tool_catalog",
             "tool_environment",

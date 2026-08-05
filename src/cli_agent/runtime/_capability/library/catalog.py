@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
+from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.facts import (
     LibraryEntry,
     _content_digest,
@@ -15,51 +17,238 @@ from cli_agent.runtime._capability.library.parser import (
     _select_parser,
 )
 from cli_agent.runtime._capability.view import _CapabilityView
+from cli_agent.runtime._capability.workspace import _atomic_write
 
 _INDEX_FILENAME = "index.md"
 _LIBRARY_DIRECTORY = "library"
 
+_PENDING_DESCRIPTIONS = {
+    "file": "Summary generation pending.",
+    "directory": "Directory summary generation pending.",
+}
+_UNSUPPORTED_DESCRIPTION = "Unsupported format; read the source file directly."
+_FAILED_FALLBACK_DESCRIPTION = "Summary generation failed."
+_STALE_FALLBACK_DESCRIPTION = "Summary is stale; regeneration pending."
+
 
 class _LibraryCatalog:
-    """Reference-stable mutable facts for the effective Library.
+    """Reference-stable mutable facts and generated indexes for the Library.
 
-    This milestone reconciles facts only: it never calls a model, queries a
-    cache, or renders ``index.md`` projections. Later milestones add worker
-    state and renderers to the same object.
+    Reconcile never calls a model: cache hits become ``ready`` and every
+    visible directory gets an atomically written ``index.md`` projection
+    during Runtime open. Later milestones add worker state to this object.
     """
 
-    def __init__(self, entries: tuple[LibraryEntry, ...]) -> None:
-        """Hold the immutable fact tuple and index entries by logical path."""
+    def __init__(
+        self,
+        entries: tuple[LibraryEntry, ...],
+        root: Path,
+        summary_cache: _SummaryCache,
+    ) -> None:
+        """Hold the facts, the effective Library root, and the summary cache."""
 
         self.entries = entries
+        self._root = root
+        self._summary_cache = summary_cache
         self._by_path = {entry.path: entry for entry in entries}
 
     @classmethod
-    async def reconcile(cls, capability_view: _CapabilityView) -> _LibraryCatalog:
-        """Discover effective Library facts without any model work.
+    async def reconcile(
+        cls,
+        capability_view: _CapabilityView,
+        summary_cache: _SummaryCache,
+    ) -> _LibraryCatalog:
+        """Discover facts, resolve cache hits, and render every index.
 
         Args:
             capability_view (`_CapabilityView`):
                 The opened Capability View; ``library`` is read as an ordinary
                 capability directory with no source-layer restrictions.
+            summary_cache (`_SummaryCache`):
+                The application state summary cache; file fingerprints with
+                cached summaries become ``ready`` before the first render.
 
         Returns:
-            A catalog of trusted facts for every visible Library path.
+            A catalog of trusted facts whose ``index.md`` projections have
+            been written from the deepest directory up to the root.
         """
 
         root = capability_view.root / _LIBRARY_DIRECTORY
         if not root.is_dir():
-            return cls(())
-        entries: list[LibraryEntry] = []
+            return cls((), root, summary_cache)
+        discovered: list[LibraryEntry] = []
         for child in sorted(root.iterdir(), key=lambda path: path.name):
             if child.name != _INDEX_FILENAME:
-                entries.extend(await _subtree(capability_view, root, child))
-        return cls(tuple(entries))
+                discovered.extend(await _subtree(capability_view, root, child))
+        catalog = cls(
+            _apply_cache_hits(tuple(discovered), summary_cache), root, summary_cache
+        )
+        catalog.render_indexes()
+        return catalog
 
     def get(self, path: str) -> LibraryEntry | None:
         """Return the entry for one logical Library path, or None."""
 
         return self._by_path.get(path)
+
+    def close(self) -> None:
+        """Close the underlying summary cache and state database."""
+
+        self._summary_cache.close()
+
+    def render_indexes(self) -> None:
+        """Atomically write every visible directory index, deepest first.
+
+        The root index is written last. Each replacement is atomic on its own;
+        the whole set is only eventually consistent.
+        """
+
+        directories = [
+            entry.path for entry in self.entries if entry.kind == "directory"
+        ]
+        directories.append("")
+        for directory in sorted(directories, key=lambda path: (-_depth(path), path)):
+            _atomic_write(
+                self._root / directory / _INDEX_FILENAME,
+                self.render_index(directory).encode("utf-8"),
+            )
+
+    def render_index(self, directory: str) -> str:
+        """Render one directory projection without creating authority.
+
+        Args:
+            directory (`str`):
+                The logical directory path; ``""`` renders the Library root.
+
+        Returns:
+            Deterministic Markdown listing only direct children as tables,
+            with stable frontmatter and no chunks, body previews, or hidden
+            metadata.
+        """
+
+        entry = self._by_path.get(directory)
+        lines = [
+            "---",
+            f"name: {_markdown_cell(_leaf(directory)) if directory else 'library'}",
+            f"path: {_markdown_cell('library' + ('/' + directory if directory else ''))}",
+            "type: dir",
+            f"status: {'pending' if entry is None else entry.status}",
+            f"description: {_markdown_cell(_description(entry))}",
+            "---",
+            "",
+            "## Directories",
+            "",
+        ]
+        children = sorted(
+            (
+                candidate
+                for candidate in self.entries
+                if _parent(candidate.path) == directory
+            ),
+            key=lambda candidate: _leaf(candidate.path),
+        )
+        subdirectories = [child for child in children if child.kind == "directory"]
+        if subdirectories:
+            lines.extend(
+                ["| Name | Status | Description | Index |", "|---|---|---|---|"]
+            )
+            for child in subdirectories:
+                name = _markdown_cell(_leaf(child.path))
+                lines.append(
+                    "| {name} | {status} | {description} | "
+                    "[{name}](./{name}/index.md) |".format(
+                        name=name,
+                        status=child.status,
+                        description=_markdown_cell(_description(child)),
+                    )
+                )
+        else:
+            lines.append("_no directories_")
+        lines.extend(["", "## Files", ""])
+        files = [child for child in children if child.kind == "file"]
+        if files:
+            lines.extend(
+                [
+                    "| Name | Status | Provenance | Shadows Repertoire | "
+                    "Description | File |",
+                    "|---|---|---|---|---|---|",
+                ]
+            )
+            for child in files:
+                name = _markdown_cell(_leaf(child.path))
+                lines.append(
+                    "| {name} | {status} | {provenance} | {shadows} | "
+                    "{description} | [{name}](./{name}) |".format(
+                        name=name,
+                        status=child.status,
+                        provenance=child.provenance or "unknown",
+                        shadows="yes" if child.shadows_repertoire else "no",
+                        description=_markdown_cell(_description(child)),
+                    )
+                )
+        else:
+            lines.append("_no files_")
+        return "\n".join(lines) + "\n"
+
+
+def _apply_cache_hits(
+    entries: tuple[LibraryEntry, ...],
+    summary_cache: _SummaryCache,
+) -> tuple[LibraryEntry, ...]:
+    """Turn pending files with cached summaries into ready entries."""
+
+    fingerprints = tuple(
+        fingerprint
+        for entry in entries
+        if entry.kind == "file"
+        and entry.status == "pending"
+        and (fingerprint := entry.fingerprint) is not None
+    )
+    hits = summary_cache.get(fingerprints)
+    if not hits:
+        return entries
+    return tuple(
+        replace(entry, status="ready", summary=hits[entry.fingerprint])
+        if entry.fingerprint in hits
+        else entry
+        for entry in entries
+    )
+
+
+def _description(entry: LibraryEntry | None) -> str:
+    """Return the bounded description text for one index entry."""
+
+    if entry is None:
+        return _PENDING_DESCRIPTIONS["directory"]
+    if entry.status == "unsupported":
+        return _UNSUPPORTED_DESCRIPTION
+    if entry.status == "failed" and entry.error is not None:
+        return entry.error
+    if entry.summary is not None:
+        return entry.summary
+    if entry.status == "failed":
+        return _FAILED_FALLBACK_DESCRIPTION
+    if entry.status == "stale":
+        return _STALE_FALLBACK_DESCRIPTION
+    return _PENDING_DESCRIPTIONS[entry.kind]
+
+
+def _markdown_cell(value: str) -> str:
+    """Escape one value so it is safe inside one Markdown table cell."""
+
+    return value.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def _depth(path: str) -> int:
+    return path.count("/") + 1 if path else 0
+
+
+def _leaf(path: str) -> str:
+    return path.rsplit("/", 1)[-1]
+
+
+def _parent(path: str) -> str:
+    return path.rsplit("/", 1)[0] if "/" in path else ""
 
 
 async def _subtree(

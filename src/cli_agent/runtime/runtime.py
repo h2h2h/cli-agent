@@ -175,6 +175,7 @@ class AgentRuntime:
         self._sessions.clear()
         for session in sessions:
             await session.kernel.close()
+        self._resources.library_catalog.close()
 
     async def run_turn(
         self,
