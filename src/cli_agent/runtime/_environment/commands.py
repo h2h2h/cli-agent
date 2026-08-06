@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 
+from cli_agent.runtime._backend import _WorkspaceFilesystem
 from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
@@ -165,10 +166,16 @@ class _CustomCommandRegistry:
         return self._commands.get(head)
 
 
-def _builtin_custom_commands() -> tuple[_CustomCommand, ...]:
+def _builtin_custom_commands(
+    filesystem: _WorkspaceFilesystem | None = None,
+) -> tuple[_CustomCommand, ...]:
     """Return the built-in Session commands installed in every Kernel."""
 
     return (
-        _CustomCommand(name="cd", prepare=_prepare_cd, isolated=False),
+        _CustomCommand(
+            name="cd",
+            prepare=_prepare_cd(filesystem),
+            isolated=False,
+        ),
         _CustomCommand(name="export", prepare=_prepare_export, isolated=False),
     )

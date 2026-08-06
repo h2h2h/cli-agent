@@ -22,6 +22,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import AsyncContextManager, Literal, Protocol
 
+from cli_agent.runtime._backend.edit import apply_edits
 from cli_agent.runtime._backend.facts import (
     _CapabilityInspection,
     _CapabilitySource,
@@ -35,6 +36,7 @@ from cli_agent.runtime._backend.facts import (
     _FileWriteRequest,
     _FileWriteResult,
     _MCPServerFacts,
+    _ResolvedPath,
     _ShellExecutionRequest,
     _ToolExecutionRequest,
     _ToolRuntimeStatus,
@@ -114,12 +116,13 @@ class _LocalBackendWorkspace:
         return {**os.environ, **self.workspace_environment}
 
     def bind_capability_view(self, view: _ShellMutation | None) -> None:
-        """Temporarily attach the legacy Capability View for Shell copy-up.
+        """Temporarily attach the legacy Capability View for Shell and Files.
 
         Removed when the Capability Source/State layering arrives.
         """
 
         self._capability_view = view
+        self.filesystem.bind_capability_view(view)
 
     def prepare_shell(
         self,
@@ -165,16 +168,36 @@ class _LocalWorkspaceFilesystem:
 
     Paths are resolved against the Workspace root unless absolute; the Local
     Backend stays permissive like the current CLI, so absolute paths may
-    leave the Workspace root.
+    leave the Workspace root. ``stat`` reports effective facts like POSIX
+    ``stat(2)``, following symlinks; ``list`` reports raw entry kinds.
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        capability_view: _PathMutation | None = None,
+    ) -> None:
         self._root = root
+        self._capability_view = capability_view
+
+    def bind_capability_view(self, view: _PathMutation | None) -> None:
+        """Temporarily attach the legacy Capability View for managed writes."""
+
+        self._capability_view = view
+
+    def resolve(self, path: str, cwd: str) -> _ResolvedPath:
+        """Resolve one Local Backend path against a Session cwd without I/O."""
+
+        target = _resolve_path(Path(cwd), path)
+        return _ResolvedPath(
+            path=str(target),
+            within_workspace=_is_within(target, self._root),
+        )
 
     async def stat(self, path: str) -> _FileMetadata:
         target = self._resolve(path)
         try:
-            return _metadata(os.lstat(target))
+            return _metadata(os.stat(target))
         except OSError as exc:
             raise _filesystem_error(path, exc) from exc
 
@@ -201,7 +224,7 @@ class _LocalWorkspaceFilesystem:
             raise _filesystem_error(path, exc) from exc
 
     async def write(self, request: _FileWriteRequest) -> _FileWriteResult:
-        target = self._resolve(request.path)
+        target = self._prepare_target(request.path)
         try:
             if target.is_dir() and not target.is_symlink():
                 raise _FilesystemError(
@@ -211,26 +234,36 @@ class _LocalWorkspaceFilesystem:
             _atomic_write(target, request.content)
         except OSError as exc:
             raise _filesystem_error(request.path, exc) from exc
+        except ValueError as exc:
+            raise _FilesystemError("invalid_path", str(exc)) from exc
         return _FileWriteResult(path=request.path, bytes_written=len(request.content))
 
     async def edit(self, request: _FileEditRequest) -> _FileEditResult:
-        content = await self.read(request.path)
+        target = self._prepare_target(request.path)
+        try:
+            content = target.read_bytes()
+        except OSError as exc:
+            raise _filesystem_error(request.path, exc) from exc
         try:
             text = content.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise _FilesystemError(
-                "internal", f"file is not valid UTF-8: {request.path}"
+                "invalid_content", "file is not valid UTF-8"
             ) from exc
-        for edit in request.edits:
-            if edit.old_text not in text:
-                raise _FilesystemError(
-                    "not_found", f"edit target not found: {request.path}"
-                )
-            text = text.replace(edit.old_text, edit.new_text, 1)
+        bom, text = _split_bom(text)
+        line_ending = _detect_line_ending(text)
+        try:
+            updated = apply_edits(
+                text.replace("\r\n", "\n"), request.edits, request.path
+            )
+        except ValueError as exc:
+            raise _FilesystemError("edit_failed", str(exc)) from exc
+        if line_ending == "\r\n":
+            updated = updated.replace("\n", "\r\n")
         await self.write(
             _FileWriteRequest(
                 path=request.path,
-                content=text.encode("utf-8"),
+                content=(bom + updated).encode("utf-8"),
             )
         )
         return _FileEditResult(path=request.path, blocks_replaced=len(request.edits))
@@ -249,6 +282,16 @@ class _LocalWorkspaceFilesystem:
 
     def _resolve(self, path: str) -> Path:
         return _resolve_path(self._root, path)
+
+    def _prepare_target(self, path: str) -> Path:
+        target = self._resolve(path)
+        view = self._capability_view
+        if view is not None:
+            try:
+                view.prepare_path(target)
+            except ValueError as exc:
+                raise _FilesystemError("invalid_path", str(exc)) from exc
+        return target
 
 
 class _LocalShellExecution:
@@ -398,6 +441,14 @@ class _ShellMutation(Protocol):
         ...
 
 
+class _PathMutation(Protocol):
+    """Temporary legacy Capability View seam for managed filesystem writes."""
+
+    def prepare_path(self, path: Path) -> None:
+        """Prepare one managed view path for a direct file mutation."""
+        ...
+
+
 class _UnimplementedCapabilityView:
     """Bound Capability View placeholder bound by a later migration."""
 
@@ -430,6 +481,15 @@ def _resolve_path(root: Path, path: str) -> Path:
     if not candidate.is_absolute():
         candidate = root / candidate
     return Path(os.path.abspath(os.path.normpath(str(candidate))))
+
+
+def _is_within(path: Path, directory: Path) -> bool:
+    path_norm = os.path.normcase(os.path.normpath(str(path)))
+    directory_norm = os.path.normcase(os.path.normpath(str(directory)))
+    try:
+        return os.path.commonpath([path_norm, directory_norm]) == directory_norm
+    except ValueError:
+        return False
 
 
 def _shell_spawner(
@@ -491,7 +551,7 @@ def _metadata(info: os.stat_result) -> _FileMetadata:
 def _filesystem_error(path: str, exc: OSError) -> _FilesystemError:
     error = exc.errno
     if error == errno.ENOENT:
-        return _FilesystemError("not_found", f"no such path: {path}")
+        return _FilesystemError("not_found", f"No such file or directory: {path}")
     if error == errno.ENOTDIR:
         return _FilesystemError(
             "not_a_directory", f"path component is not a directory: {path}"
@@ -503,6 +563,23 @@ def _filesystem_error(path: str, exc: OSError) -> _FilesystemError:
     if error == errno.EEXIST:
         return _FilesystemError("already_exists", f"path already exists: {path}")
     return _FilesystemError("internal", f"filesystem error for {path}: {exc}")
+
+
+def _split_bom(content: str) -> tuple[str, str]:
+    """Return the leading BOM (if any) and the content without it."""
+
+    if content.startswith("\ufeff"):
+        return "\ufeff", content[1:]
+    return "", content
+
+
+def _detect_line_ending(content: str) -> str:
+    """Return ``\\r\\n`` when the first newline is CRLF, else ``\\n``."""
+
+    first_newline = content.find("\n")
+    if first_newline > 0 and content[first_newline - 1] == "\r":
+        return "\r\n"
+    return "\n"
 
 
 def _atomic_write(path: Path, content: bytes) -> None:

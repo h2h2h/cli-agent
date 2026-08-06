@@ -7,6 +7,10 @@ from cli_agent.runtime import (
     ModelCompletion,
     ScriptedModelProvider,
 )
+from cli_agent.runtime._backend.local import (
+    _LocalBackendWorkspace,
+    _LocalWorkspaceFilesystem,
+)
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
@@ -73,6 +77,12 @@ def _scenario(workspace: Path, repertoire: Path) -> _CapabilityView:
     return _CapabilityView.open(workspace, repertoire)
 
 
+def _filesystem(workspace: Path, view: _CapabilityView) -> _LocalWorkspaceFilesystem:
+    backend = _LocalBackendWorkspace(workspace, {})
+    backend.bind_capability_view(view)
+    return backend.filesystem
+
+
 async def _reconcile_catalog(
     view: _CapabilityView,
     workspace: Path,
@@ -89,12 +99,19 @@ async def _write_library_file(
 ) -> None:
     """Write one Library file through the real Files command handler."""
 
-    handler = _FileHandler(view, catalog)
+    handler = _FileHandler(
+        _filesystem(workspace, view),
+        mark_dirty=catalog.mark_path_dirty,
+    )
     execution = handler.prepare(
         parse_shell_ast(
             f"files write .workspace/library/{logical} <<'EOF'\n{content}\nEOF"
         ),
-        _CommandContext(workspace=workspace, cwd=workspace, environment={}),
+        _CommandContext(
+            workspace=str(workspace),
+            cwd=str(workspace),
+            environment={},
+        ),
     )
     await execution.run(_DiscardOutput())
 
@@ -292,14 +309,21 @@ def test_files_edit_marks_dirty_and_transitions_to_stale(tmp_path: Path) -> None
         await _drain(catalog)
         assert catalog.get("notes.md").status == "ready"  # type: ignore[union-attr]
 
-        handler = _FileHandler(view, catalog)
+        handler = _FileHandler(
+            _filesystem(tmp_path, view),
+            mark_dirty=catalog.mark_path_dirty,
+        )
         execution = handler.prepare(
             parse_shell_ast(
                 "files edit .workspace/library/notes.md <<'EDI'\n"
                 '{"edits": [{"oldText": "one\\n", "newText": "one two\\n"}]}\n'
                 "EDI"
             ),
-            _CommandContext(workspace=tmp_path, cwd=tmp_path, environment={}),
+            _CommandContext(
+                workspace=str(tmp_path),
+                cwd=str(tmp_path),
+                environment={},
+            ),
         )
         await execution.run(_DiscardOutput())
 
@@ -328,10 +352,17 @@ def test_failed_files_write_never_marks_dirty(tmp_path: Path) -> None:
         catalog = await _reconcile_catalog(view, tmp_path)
         (tmp_path / "blocker.txt").write_text("occupied\n", encoding="utf-8")
 
-        handler = _FileHandler(view, catalog)
+        handler = _FileHandler(
+            _filesystem(tmp_path, view),
+            mark_dirty=catalog.mark_path_dirty,
+        )
         execution = handler.prepare(
             parse_shell_ast("files write blocker.txt/nested.md <<'EOF'\ncontent\nEOF"),
-            _CommandContext(workspace=tmp_path, cwd=tmp_path, environment={}),
+            _CommandContext(
+                workspace=str(tmp_path),
+                cwd=str(tmp_path),
+                environment={},
+            ),
         )
         outcome = await execution.run(_DiscardOutput())
 

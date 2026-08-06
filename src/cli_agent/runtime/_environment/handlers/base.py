@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, Literal, Protocol
 
 _TerminalStatus = Literal["exited", "failed", "killed"]
@@ -13,10 +12,10 @@ _TerminalStatus = Literal["exited", "failed", "killed"]
 class _CommandContext:
     """Session state available to a command when an Execution starts."""
 
-    workspace: Path
-    cwd: Path
+    workspace: str
+    cwd: str
     environment: dict[str, str]
-    set_cwd: Callable[[Path], None] | None = None
+    set_cwd: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)

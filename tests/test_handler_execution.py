@@ -46,8 +46,8 @@ def test_custom_command_prepares_export_and_shell_handler_prepares_process(
     async def scenario() -> None:
         environment: dict[str, str] = {}
         context = _CommandContext(
-            workspace=tmp_path,
-            cwd=tmp_path,
+            workspace=str(tmp_path),
+            cwd=str(tmp_path),
             environment=environment,
         )
         registry = _CustomCommandRegistry(_builtin_custom_commands())
@@ -84,8 +84,8 @@ def test_inline_export_cancelled_before_run_does_not_mutate_session(
         execution = spec.prepare(
             command,
             _CommandContext(
-                workspace=tmp_path,
-                cwd=tmp_path,
+                workspace=str(tmp_path),
+                cwd=str(tmp_path),
                 environment=environment,
             ),
         )
@@ -131,8 +131,8 @@ def test_invalid_inline_export_reports_failure_without_mutation(
         execution = spec.prepare(
             command,
             _CommandContext(
-                workspace=tmp_path,
-                cwd=tmp_path,
+                workspace=str(tmp_path),
+                cwd=str(tmp_path),
                 environment=environment,
             ),
         )
@@ -222,7 +222,9 @@ def test_kernel_runs_and_cancels_prepared_execution_without_branch(
 
         await kernel._supervisor.terminate(state)
 
-        assert handler.prepared == [("fake command", tmp_path, {"SESSION": "value"})]
+        assert handler.prepared == [
+            ("fake command", str(tmp_path), {"SESSION": "value"})
+        ]
         assert state.status == "killed"
         assert state.exit_code is None
         assert state.prepared_execution is execution

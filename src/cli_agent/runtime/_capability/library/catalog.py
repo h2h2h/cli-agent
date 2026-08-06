@@ -152,7 +152,7 @@ class _LibraryCatalog:
 
         return self._entries.get(path)
 
-    def mark_path_dirty(self, target: Path) -> None:
+    def mark_path_dirty(self, target: str) -> None:
         """Record one successfully written Library path for re-checking.
 
         Only targets inside the effective Library root are recorded; failed
@@ -162,7 +162,7 @@ class _LibraryCatalog:
         """
 
         try:
-            relative = target.resolve().relative_to(self._root.resolve())
+            relative = Path(target).resolve().relative_to(self._root.resolve())
         except ValueError:
             return
         self._dirty_paths.add(relative.as_posix())

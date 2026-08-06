@@ -1,5 +1,6 @@
 """Private Backend Workspace execution and filesystem domain."""
 
+from cli_agent.runtime._backend.execution import _FilesystemExecution
 from cli_agent.runtime._backend.facts import (
     _CapabilityInspection,
     _CapabilitySource,
@@ -14,6 +15,7 @@ from cli_agent.runtime._backend.facts import (
     _FileWriteResult,
     _MCPServerFacts,
     _MCPToolFacts,
+    _ResolvedPath,
     _ShellExecutionRequest,
     _ToolBinding,
     _ToolExecutionRequest,
@@ -43,8 +45,10 @@ __all__ = [
     "_FileWriteRequest",
     "_FileWriteResult",
     "_FilesystemError",
+    "_FilesystemExecution",
     "_MCPServerFacts",
     "_MCPToolFacts",
+    "_ResolvedPath",
     "_ShellExecutionRequest",
     "_ToolBinding",
     "_ToolExecutionRequest",

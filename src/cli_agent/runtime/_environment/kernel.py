@@ -84,10 +84,11 @@ class EnvironmentKernel:
         tool_environment: _ToolEnvironment | None = None,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> None:
-        self._workspace = Path(workspace).resolve()
+        host_workspace = Path(workspace).resolve()
         if backend is None:
-            backend = _LocalBackendWorkspace(self._workspace, {})
+            backend = _LocalBackendWorkspace(host_workspace, {})
         self._backend = backend
+        self._workspace = backend.root
         if capability_view is not None and isinstance(backend, _LocalBackendWorkspace):
             backend.bind_capability_view(capability_view)
         self._policy = policy
@@ -102,7 +103,12 @@ class EnvironmentKernel:
             parallel_safe=tool_handler.parallel_safe,
             isolated=True,
         )
-        file_handler = _FileHandler(capability_view, library_catalog)
+        file_handler = _FileHandler(
+            backend.filesystem,
+            mark_dirty=(
+                library_catalog.mark_path_dirty if library_catalog is not None else None
+            ),
+        )
         file_command = _CustomCommand(
             name="files",
             prepare=file_handler.prepare,
@@ -110,7 +116,7 @@ class EnvironmentKernel:
             isolated=True,
         )
         if registry is None:
-            commands = list(_builtin_custom_commands())
+            commands = list(_builtin_custom_commands(backend.filesystem))
             commands.append(tool_command)
             commands.append(file_command)
             registry = _CustomCommandRegistry(commands)
@@ -126,7 +132,7 @@ class EnvironmentKernel:
             custom_registry=registry,
         )
         self._env = dict(base_env or {})
-        self._cwd = self._workspace
+        self._cwd = backend.root
         self._executions: dict[str, _ExecutionState] = {}
         self._interaction_tasks: set[asyncio.Task[object]] = set()
         self._closed = False
@@ -472,7 +478,7 @@ class EnvironmentKernel:
             ),
         )
 
-    def _set_cwd(self, cwd: Path) -> None:
+    def _set_cwd(self, cwd: str) -> None:
         self._cwd = cwd
 
     def _emit_diagnostic(

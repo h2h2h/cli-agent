@@ -1,21 +1,26 @@
 """Reserved Files command grammar, mutation facts, and handler.
 
 The ``files`` command family is a single-module Runtime command: grammar
-facts, pure parsing, and the ``_FileHandler`` live together, mirroring
-``cd.py``/``export.py``/``tools.py``.
+facts and pure parsing live here, while the handler only builds Workspace
+Filesystem requests and formats results.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import stat
-import tempfile
-from contextlib import suppress
+from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
+from cli_agent.runtime._backend import (
+    _FileEdit,
+    _FileEditRequest,
+    _FilesystemError,
+    _FilesystemExecution,
+    _FileWriteRequest,
+    _WorkspaceFilesystem,
+)
+from cli_agent.runtime._backend.execution import _FilesystemOperation
 from cli_agent.runtime._capability.command_parser import (
     HereDocRedirect,
     ShellParseResult,
@@ -29,28 +34,14 @@ from cli_agent.runtime._environment.handlers.base import (
     _ExecutionOutput,
     _PreparedExecution,
 )
-from cli_agent.runtime._environment.handlers.cd import _target_path
-from cli_agent.runtime._environment.handlers.executions import (
-    _InlineExecution,
-    _text_execution,
-)
+from cli_agent.runtime._environment.handlers.executions import _text_execution
 
-if TYPE_CHECKING:
-    from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
-    from cli_agent.runtime._capability.view import _CapabilityView
+_MarkDirty = Callable[[str], None]
 
 _USAGE = (
     "Usage: files write <path> <<'EOF' ... EOF; "
     "files edit <path> <<'EDI' {...} EDI or '<json>'"
 )
-
-
-@dataclass(frozen=True, slots=True)
-class FileEdit:
-    """One exact text replacement on a single target file."""
-
-    old_text: str
-    new_text: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +53,7 @@ class FileCommand:
     validation_error: str | None = None
     path: str | None = None
     content: str | None = None
-    edits: tuple[FileEdit, ...] = ()
+    edits: tuple[_FileEdit, ...] = ()
 
 
 def parse_files_command(command: ShellParseResult) -> FileCommand | None:
@@ -164,7 +155,7 @@ def _edit_payload_facts(path: str, payload: str) -> FileCommand:
         return _invalid("files edit payload must be a JSON object with an edits array")
     if not document["edits"]:
         return _invalid("files edit edits array must not be empty")
-    parsed: list[FileEdit] = []
+    parsed: list[_FileEdit] = []
     for index, item in enumerate(document["edits"], start=1):
         if not isinstance(item, dict):
             return _invalid(f"files edit edits[{index}] must be a JSON object")
@@ -174,7 +165,7 @@ def _edit_payload_facts(path: str, payload: str) -> FileCommand:
             return _invalid(f"files edit edits[{index}] requires a non-empty oldText")
         if not isinstance(new_text, str) or not new_text:
             return _invalid(f"files edit edits[{index}] requires a non-empty newText")
-        parsed.append(FileEdit(old_text=old_text, new_text=new_text))
+        parsed.append(_FileEdit(old_text=old_text, new_text=new_text))
     return FileCommand(operation="edit", valid=True, path=path, edits=tuple(parsed))
 
 
@@ -202,11 +193,11 @@ class _FileHandler:
 
     def __init__(
         self,
-        capability_view: _CapabilityView | None = None,
-        library_catalog: _LibraryCatalog | None = None,
+        filesystem: _WorkspaceFilesystem | None = None,
+        mark_dirty: _MarkDirty | None = None,
     ) -> None:
-        self._capability_view = capability_view
-        self._library_catalog = library_catalog
+        self._filesystem = filesystem
+        self._mark_dirty = mark_dirty
 
     def prepare(
         self,
@@ -221,270 +212,95 @@ class _FileHandler:
                 (facts.validation_error or "Invalid files command") + "\n",
                 success=False,
             )
+        filesystem = self._filesystem
+        if filesystem is None:
+            return _text_execution(
+                "Workspace filesystem is unavailable\n",
+                success=False,
+            )
         if facts.operation == "write" and facts.path is not None:
-            return _write_execution(
-                facts.path,
-                facts.content or "",
-                context,
-                self._capability_view,
-                self._library_catalog,
+            return _FilesystemExecution(
+                _write_operation(
+                    filesystem,
+                    facts.path,
+                    facts.content or "",
+                    context.cwd,
+                    self._mark_dirty,
+                )
             )
         if facts.operation == "edit" and facts.path is not None:
-            return _edit_execution(
-                facts.path,
-                facts.edits,
-                context,
-                self._capability_view,
-                self._library_catalog,
+            return _FilesystemExecution(
+                _edit_operation(
+                    filesystem,
+                    facts.path,
+                    facts.edits,
+                    context.cwd,
+                    self._mark_dirty,
+                )
             )
         return _text_execution("Invalid files command\n", success=False)
 
 
-def _write_execution(
+def _write_operation(
+    filesystem: _WorkspaceFilesystem,
     path: str,
     content: str,
-    context: _CommandContext,
-    capability_view: _CapabilityView | None,
-    library_catalog: _LibraryCatalog | None,
-) -> _InlineExecution:
-    target = Path(os.path.normpath(str(_target_path(path, context.cwd))))
+    cwd: str,
+    mark_dirty: _MarkDirty | None,
+) -> _FilesystemOperation:
+    data = content.encode("utf-8")
 
     async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
-        if capability_view is not None:
-            try:
-                capability_view.prepare_path(target)
-            except ValueError as exc:
-                await output.write("stderr", f"{exc}\n".encode())
-                return _ExecutionOutcome.failed(1)
+        target = path
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            data = content.encode("utf-8")
-            _atomic_write(target, data)
-        except (OSError, ValueError) as exc:
+            target = filesystem.resolve(path, cwd).path
+            result = await filesystem.write(
+                _FileWriteRequest(path=target, content=data)
+            )
+        except _FilesystemError as exc:
             await output.write(
                 "stderr",
                 f"failed to write {target}: {exc}\n".encode(),
             )
             return _ExecutionOutcome.failed(1)
-        if library_catalog is not None:
-            library_catalog.mark_path_dirty(target)
+        if mark_dirty is not None:
+            mark_dirty(target)
         await output.write(
             "stdout",
-            f"wrote {len(data)} bytes to {target}\n".encode(),
+            f"wrote {result.bytes_written} bytes to {target}\n".encode(),
         )
         return _ExecutionOutcome.exited()
 
-    return _InlineExecution(execute)
+    return execute
 
 
-def _edit_execution(
+def _edit_operation(
+    filesystem: _WorkspaceFilesystem,
     path: str,
-    edits: tuple[FileEdit, ...],
-    context: _CommandContext,
-    capability_view: _CapabilityView | None,
-    library_catalog: _LibraryCatalog | None,
-) -> _InlineExecution:
-    target = Path(os.path.normpath(str(_target_path(path, context.cwd))))
-
+    edits: tuple[_FileEdit, ...],
+    cwd: str,
+    mark_dirty: _MarkDirty | None,
+) -> _FilesystemOperation:
     async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
-        if capability_view is not None:
-            try:
-                capability_view.prepare_path(target)
-            except ValueError as exc:
+        target = path
+        try:
+            target = filesystem.resolve(path, cwd).path
+            result = await filesystem.edit(_FileEditRequest(path=target, edits=edits))
+        except _FilesystemError as exc:
+            if exc.kind == "edit_failed":
                 await output.write("stderr", f"{exc}\n".encode())
-                return _ExecutionOutcome.failed(1)
-        try:
-            raw = target.read_bytes()
-        except OSError as exc:
-            await output.write(
-                "stderr",
-                f"failed to edit {target}: {exc}\n".encode(),
-            )
+            else:
+                await output.write(
+                    "stderr",
+                    f"failed to edit {target}: {exc}\n".encode(),
+                )
             return _ExecutionOutcome.failed(1)
-        try:
-            content = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            await output.write(
-                "stderr",
-                f"failed to edit {target}: file is not valid UTF-8\n".encode(),
-            )
-            return _ExecutionOutcome.failed(1)
-        bom, content = _split_bom(content)
-        line_ending = _detect_line_ending(content)
-        try:
-            updated = apply_edits(content.replace("\r\n", "\n"), edits, str(target))
-            if line_ending == "\r\n":
-                updated = updated.replace("\n", "\r\n")
-            _atomic_write(target, (bom + updated).encode("utf-8"))
-        except ValueError as exc:
-            await output.write("stderr", f"{exc}\n".encode())
-            return _ExecutionOutcome.failed(1)
-        except OSError as exc:
-            await output.write(
-                "stderr",
-                f"failed to edit {target}: {exc}\n".encode(),
-            )
-            return _ExecutionOutcome.failed(1)
-        if library_catalog is not None:
-            library_catalog.mark_path_dirty(target)
+        if mark_dirty is not None:
+            mark_dirty(target)
         await output.write(
             "stdout",
-            f"replaced {len(edits)} block(s) in {target}\n".encode(),
+            f"replaced {result.blocks_replaced} block(s) in {target}\n".encode(),
         )
         return _ExecutionOutcome.exited()
 
-    return _InlineExecution(execute)
-
-
-def _split_bom(content: str) -> tuple[str, str]:
-    """Return the leading BOM (if any) and the content without it."""
-
-    if content.startswith("\ufeff"):
-        return "\ufeff", content[1:]
-    return "", content
-
-
-def _detect_line_ending(content: str) -> str:
-    """Return ``\\r\\n`` when the first newline is CRLF, else ``\\n``."""
-
-    first_newline = content.find("\n")
-    if first_newline > 0 and content[first_newline - 1] == "\r":
-        return "\r\n"
-    return "\n"
-
-
-def _atomic_write(path: Path, data: bytes) -> None:
-    """Atomically replace one file, preserving its mode when present."""
-
-    try:
-        mode = stat.S_IMODE(path.stat().st_mode) if os.path.lexists(path) else None
-    except OSError:
-        mode = None
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=".cli-agent-write-",
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(data)
-            os.fchmod(stream.fileno(), 0o644 if mode is None else mode)
-        os.replace(temporary, path)
-    finally:
-        if os.path.lexists(temporary):
-            with suppress(OSError):
-                temporary.unlink()
-
-
-def apply_edits(content: str, edits: tuple[FileEdit, ...], path: str) -> str:
-    """Apply exact-text replacements on LF-normalized content.
-
-    Every oldText is matched against the original content and must occur
-    exactly once; replacements are then applied in reverse position order
-    so offsets stay stable.
-
-    Args:
-        content (`str`):
-            The original content normalized to LF line endings.
-        edits (`tuple[FileEdit, ...]`):
-            Exact replacements to apply, matched against ``content``.
-        path (`str`):
-            The display path used in rejection messages.
-
-    Returns:
-        The fully applied content.
-
-    Raises:
-        ValueError: With an actionable message when an edit is empty, not
-            found, duplicated, overlapping, or produces no change.
-    """
-
-    normalized = tuple(
-        FileEdit(
-            old_text=edit.old_text.replace("\r\n", "\n"),
-            new_text=edit.new_text.replace("\r\n", "\n"),
-        )
-        for edit in edits
-    )
-    total = len(normalized)
-    for index, edit in enumerate(normalized):
-        if not edit.old_text:
-            raise ValueError(_empty_old_text_error(path, index, total))
-
-    matches: list[tuple[int, int, int]] = []
-    for index, edit in enumerate(normalized):
-        start = content.find(edit.old_text)
-        if start < 0:
-            raise ValueError(_not_found_error(path, index, total))
-        occurrences = content.count(edit.old_text)
-        if occurrences > 1:
-            raise ValueError(_duplicate_error(path, index, total, occurrences))
-        matches.append((index, start, start + len(edit.old_text)))
-
-    matches.sort(key=lambda match: match[1])
-    for (previous, _, previous_end), (index, start, _) in zip(
-        matches,
-        matches[1:],
-        strict=False,
-    ):
-        if previous_end > start:
-            raise ValueError(_overlap_error(path, previous, index))
-
-    updated = content
-    for index, start, end in reversed(matches):
-        updated = updated[:start] + normalized[index].new_text + updated[end:]
-    if updated == content:
-        raise ValueError(_no_change_error(path, total))
-    return updated
-
-
-def _empty_old_text_error(path: str, index: int, total: int) -> str:
-    if total == 1:
-        return f"oldText must not be empty in {path}."
-    return f"edits[{index}].oldText must not be empty in {path}."
-
-
-def _not_found_error(path: str, index: int, total: int) -> str:
-    if total == 1:
-        return (
-            f"Could not find the exact text in {path}. The old text must match "
-            "exactly including all whitespace and newlines."
-        )
-    return (
-        f"Could not find edits[{index}] in {path}. The oldText must match exactly "
-        "including all whitespace and newlines."
-    )
-
-
-def _duplicate_error(
-    path: str,
-    index: int,
-    total: int,
-    occurrences: int,
-) -> str:
-    if total == 1:
-        return (
-            f"Found {occurrences} occurrences of the text in {path}. The text "
-            "must be unique. Please provide more context to make it unique."
-        )
-    return (
-        f"Found {occurrences} occurrences of edits[{index}] in {path}. Each "
-        "oldText must be unique. Please provide more context to make it unique."
-    )
-
-
-def _overlap_error(path: str, previous: int, current: int) -> str:
-    return (
-        f"edits[{previous}] and edits[{current}] overlap in {path}. Merge them "
-        "into one edit or target disjoint regions."
-    )
-
-
-def _no_change_error(path: str, total: int) -> str:
-    if total == 1:
-        return (
-            f"No changes made to {path}. The replacement produced identical "
-            "content. This might indicate an issue with special characters or "
-            "the text not existing as expected."
-        )
-    return f"No changes made to {path}. The replacements produced identical content."
+    return execute

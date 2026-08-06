@@ -2,10 +2,10 @@
 
 import pytest
 
+from cli_agent.runtime._backend import _FileEdit
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment.handlers.files import (
     FileCommand,
-    FileEdit,
     parse_files_command,
 )
 
@@ -88,8 +88,8 @@ def test_edit_heredoc_returns_parsed_edits() -> None:
     assert facts.valid is True
     assert facts.path == "main.py"
     assert facts.edits == (
-        FileEdit(old_text="one", new_text="two"),
-        FileEdit(old_text="three", new_text="four"),
+        _FileEdit(old_text="one", new_text="two"),
+        _FileEdit(old_text="three", new_text="four"),
     )
 
 
@@ -104,7 +104,7 @@ def test_edit_accepts_single_line_quoted_payload() -> None:
     assert facts.valid is True
     assert facts.operation == "edit"
     assert facts.path == "main.py"
-    assert facts.edits == (FileEdit(old_text="a", new_text="b"),)
+    assert facts.edits == (_FileEdit(old_text="a", new_text="b"),)
 
 
 def test_edit_ignores_extra_json_keys() -> None:
@@ -118,7 +118,7 @@ def test_edit_ignores_extra_json_keys() -> None:
 
     assert facts is not None
     assert facts.valid is True
-    assert facts.edits == (FileEdit(old_text="a", new_text="b"),)
+    assert facts.edits == (_FileEdit(old_text="a", new_text="b"),)
 
 
 @pytest.mark.parametrize(

@@ -7,61 +7,60 @@ from pathlib import Path
 
 import pytest
 
+from cli_agent.runtime._backend import _FileEdit
+from cli_agent.runtime._backend.edit import apply_edits
+from cli_agent.runtime._backend.local import _LocalBackendWorkspace
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
 )
-from cli_agent.runtime._environment.handlers.files import (
-    FileEdit,
-    _FileHandler,
-    apply_edits,
-)
+from cli_agent.runtime._environment.handlers.files import _FileHandler
 
 
 def test_apply_edits_replaces_one_exact_block() -> None:
-    assert apply_edits("hello world\n", (FileEdit("world", "there"),), "f") == (
+    assert apply_edits("hello world\n", (_FileEdit("world", "there"),), "f") == (
         "hello there\n"
     )
 
 
 def test_apply_edits_replaces_multiple_disjoint_blocks() -> None:
     content = "one two three four"
-    edits = (FileEdit("two", "2"), FileEdit("four", "4"))
+    edits = (_FileEdit("two", "2"), _FileEdit("four", "4"))
 
     assert apply_edits(content, edits, "f") == "one 2 three 4"
 
 
 def test_apply_edits_applies_reverse_so_offsets_stay_stable() -> None:
-    edits = (FileEdit("x", "abc"), FileEdit("y", "z"))
+    edits = (_FileEdit("x", "abc"), _FileEdit("y", "z"))
 
     assert apply_edits("xy", edits, "f") == "abcz"
 
 
 def test_apply_edits_matches_against_original_content_only() -> None:
-    edits = (FileEdit("aaa", "ccc"), FileEdit("bbb", "aaa"))
+    edits = (_FileEdit("aaa", "ccc"), _FileEdit("bbb", "aaa"))
 
     assert apply_edits("aaabbb", edits, "f") == "cccaaa"
 
 
 def test_apply_edits_accepts_crlf_old_text_against_lf_content() -> None:
-    assert apply_edits("a\nb", (FileEdit("a\r\nb", "c"),), "f") == "c"
+    assert apply_edits("a\nb", (_FileEdit("a\r\nb", "c"),), "f") == "c"
 
 
 @pytest.mark.parametrize(
     ("content", "edits", "message"),
     (
-        ("x", (FileEdit("", "y"),), "oldText must not be empty in f."),
-        ("hello", (FileEdit("missing", "x"),), "Could not find the exact text in f."),
-        ("aa", (FileEdit("a", "b"),), "Found 2 occurrences of the text in f."),
-        ("abc", (FileEdit("ab", "x"), FileEdit("bc", "y")), "overlap in f."),
-        ("x", (FileEdit("x", "x"),), "No changes made to f."),
+        ("x", (_FileEdit("", "y"),), "oldText must not be empty in f."),
+        ("hello", (_FileEdit("missing", "x"),), "Could not find the exact text in f."),
+        ("aa", (_FileEdit("a", "b"),), "Found 2 occurrences of the text in f."),
+        ("abc", (_FileEdit("ab", "x"), _FileEdit("bc", "y")), "overlap in f."),
+        ("x", (_FileEdit("x", "x"),), "No changes made to f."),
     ),
 )
 def test_apply_edits_reports_each_rejection(
     content: str,
-    edits: tuple[FileEdit, ...],
+    edits: tuple[_FileEdit, ...],
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
@@ -70,7 +69,7 @@ def test_apply_edits_reports_each_rejection(
 
 def test_apply_edits_reports_multi_edit_rejections_with_index() -> None:
     with pytest.raises(ValueError, match="Could not find edits\\[1\\]"):
-        apply_edits("abc", (FileEdit("a", "x"), FileEdit("z", "y")), "f")
+        apply_edits("abc", (_FileEdit("a", "x"), _FileEdit("z", "y")), "f")
 
 
 def test_files_edit_replaces_a_single_block(tmp_path: Path) -> None:
@@ -273,9 +272,11 @@ def _run(
     view: _CapabilityView | None = None,
 ) -> tuple[_ExecutionOutcome, _RecordedOutput]:
     output = _RecordedOutput()
-    execution = _FileHandler(view).prepare(
+    backend = _LocalBackendWorkspace(cwd, {})
+    backend.bind_capability_view(view)
+    execution = _FileHandler(backend.filesystem).prepare(
         parse_shell_ast(command),
-        _CommandContext(workspace=cwd, cwd=cwd, environment={}),
+        _CommandContext(workspace=str(cwd), cwd=str(cwd), environment={}),
     )
     outcome = asyncio.run(execution.run(output))
     return outcome, output

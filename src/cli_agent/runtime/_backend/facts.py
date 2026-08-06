@@ -23,7 +23,9 @@ _FilesystemErrorKind = Literal[
     "is_directory",
     "permission_denied",
     "invalid_path",
+    "invalid_content",
     "already_exists",
+    "edit_failed",
     "unsupported",
     "internal",
 ]
@@ -86,6 +88,14 @@ class _FileMetadata:
     size: int
     mtime_ns: int
     mode: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedPath:
+    """One Backend-native path resolved against a Session cwd."""
+
+    path: str
+    within_workspace: bool
 
 
 @dataclass(frozen=True, slots=True)

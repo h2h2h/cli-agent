@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from cli_agent.runtime._backend.local import _LocalBackendWorkspace
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment.handlers.base import (
@@ -185,9 +186,11 @@ def _write(
     view: _CapabilityView | None = None,
 ) -> tuple[_ExecutionOutcome, _RecordedOutput]:
     output = _RecordedOutput()
-    execution = _FileHandler(view).prepare(
+    backend = _LocalBackendWorkspace(cwd, {})
+    backend.bind_capability_view(view)
+    execution = _FileHandler(backend.filesystem).prepare(
         parse_shell_ast(command),
-        _CommandContext(workspace=cwd, cwd=cwd, environment={}),
+        _CommandContext(workspace=str(cwd), cwd=str(cwd), environment={}),
     )
     outcome = asyncio.run(execution.run(output))
     return outcome, output

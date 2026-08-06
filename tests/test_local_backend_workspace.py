@@ -181,6 +181,19 @@ def test_filesystem_reports_neutral_error_kinds(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_stat_follows_symlinks_like_posix_stat(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        filesystem = (await _open_workspace(tmp_path)).filesystem
+        (tmp_path / "real").mkdir()
+        (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory=True)
+
+        metadata = await filesystem.stat("link")
+
+        assert metadata.kind == "directory"
+
+    asyncio.run(scenario())
+
+
 def test_flush_is_noop_and_close_is_idempotent(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = await _open_workspace(tmp_path)
