@@ -1,15 +1,20 @@
-"""Runtime-open Tool Catalog derived from the Capability View."""
+"""Runtime-open Tool Catalog derived from the Bound Capability View."""
 
 from __future__ import annotations
 
 import ast
 import keyword
+import posixpath
 from collections.abc import Callable
-from pathlib import Path
 
-from cli_agent.runtime._backend import _BoundCapabilityView
+from cli_agent.runtime._backend import (
+    _BoundCapabilityView,
+    _DirectoryEntry,
+    _FilesystemError,
+    _FileWriteRequest,
+    _WorkspaceFilesystem,
+)
 from cli_agent.runtime._capability.tools.facts import ToolEntry
-from cli_agent.runtime._capability.workspace import _atomic_write
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 _PARALLEL_SAFE_NAME = "PARALLEL_SAFE"
@@ -27,13 +32,20 @@ class _ToolCatalog:
     async def reconcile(
         cls,
         capability_view: _BoundCapabilityView,
+        filesystem: _WorkspaceFilesystem,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> _ToolCatalog:
         """Build trusted entries and atomically refresh the derived index.
 
+        Discovery, validation, provenance and the ``index.md`` projection use
+        only the Bound Capability View and the Workspace Filesystem; no Host
+        Path is read or written.
+
         Args:
             capability_view (`_BoundCapabilityView`):
                 Effective Runtime-open capability files to inspect.
+            filesystem (`_WorkspaceFilesystem`):
+                Workspace Filesystem receiving the atomic projection write.
             on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
                 Optional callback for non-blocking metadata parse notices.
 
@@ -41,18 +53,27 @@ class _ToolCatalog:
             The immutable Tool Catalog for the effective capability files.
         """
 
-        tools_directory = Path(capability_view.root) / "tools"
+        listing = await capability_view.list("tools")
+        candidates = sorted(
+            (entry for entry in listing if entry.name.endswith(".py")),
+            key=lambda entry: entry.name,
+        )
         inspected: list[ToolEntry] = []
-        for path in sorted(
-            (path for path in tools_directory.iterdir() if path.name.endswith(".py")),
-            key=lambda path: path.name,
-        ):
-            inspected.append(await _inspect_tool(path, capability_view, on_diagnostic))
-        entries = tuple(inspected)
-        catalog = cls(entries)
-        _atomic_write(
-            tools_directory / "index.md",
-            catalog.render_index().encode("utf-8"),
+        for entry in candidates:
+            inspected.append(
+                await _inspect_tool(
+                    capability_view,
+                    entry,
+                    listing,
+                    on_diagnostic,
+                )
+            )
+        catalog = cls(tuple(inspected))
+        await filesystem.write(
+            _FileWriteRequest(
+                path=posixpath.join(capability_view.root, "tools/index.md"),
+                content=catalog.render_index().encode("utf-8"),
+            )
         )
         return catalog
 
@@ -129,21 +150,22 @@ class _ToolCatalog:
 
 
 async def _inspect_tool(
-    path: Path,
     capability_view: _BoundCapabilityView,
+    entry: _DirectoryEntry,
+    listing: tuple[_DirectoryEntry, ...],
     on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
 ) -> ToolEntry:
-    name = path.stem
+    name = entry.name.removesuffix(".py")
     default_parallel_safe = _default_parallel_safe(name)
-    relative = Path("tools") / path.name
+    relative = f"tools/{entry.name}"
     try:
-        inspection = await capability_view.inspect(relative.as_posix())
+        inspection = await capability_view.inspect(relative)
     except ValueError as exc:
-        return _invalid_entry(name, path, str(exc), default_parallel_safe)
+        return _invalid_entry(name, relative, str(exc), default_parallel_safe)
 
     common = {
         "name": name,
-        "path": path,
+        "path": relative,
         "provenance": (
             inspection.provenance
             if inspection.provenance in {"repertoire", "workspace"}
@@ -169,7 +191,7 @@ async def _inspect_tool(
             documentation=None,
             parallel_safe=default_parallel_safe,
         )
-    if not path.is_file():
+    if entry.metadata.kind != "file":
         return ToolEntry(
             **common,
             valid=False,
@@ -179,8 +201,8 @@ async def _inspect_tool(
         )
 
     try:
-        source = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
+        source = (await capability_view.read(relative)).decode("utf-8")
+    except (UnicodeDecodeError, _FilesystemError) as exc:
         return ToolEntry(
             **common,
             valid=False,
@@ -189,7 +211,7 @@ async def _inspect_tool(
             parallel_safe=default_parallel_safe,
         )
     try:
-        tree = ast.parse(source, filename=str(path))
+        tree = ast.parse(source, filename=relative)
     except SyntaxError as exc:
         location = f"line {exc.lineno}" if exc.lineno is not None else "unknown line"
         _emit_parallel_safe_diagnostic(
@@ -208,7 +230,11 @@ async def _inspect_tool(
             parallel_safe=default_parallel_safe,
         )
 
-    documentation = _read_companion_documentation(path)
+    documentation = await _read_companion_documentation(
+        capability_view,
+        name,
+        listing,
+    )
     if documentation is None:
         documentation = ast.get_docstring(tree, clean=False)
     parallel_safe = _parse_parallel_safe(
@@ -229,7 +255,7 @@ async def _inspect_tool(
 
 def _invalid_entry(
     name: str,
-    path: Path,
+    path: str,
     error: str,
     parallel_safe: bool,
 ) -> ToolEntry:
@@ -254,7 +280,7 @@ def _parse_parallel_safe(
     *,
     default: bool,
     name: str,
-    relative: Path,
+    relative: str,
     on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
 ) -> bool:
     declarations: list[ast.expr | None] = []
@@ -322,7 +348,7 @@ def _emit_parallel_safe_diagnostic(
     on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
     *,
     name: str,
-    relative: Path,
+    relative: str,
     default: bool,
     error: str,
     stage: str,
@@ -338,7 +364,7 @@ def _emit_parallel_safe_diagnostic(
             ),
             detail={
                 "tool": name,
-                "path": relative.as_posix(),
+                "path": relative,
                 "stage": stage,
                 "error": error,
                 "default_parallel_safe": default,
@@ -347,13 +373,19 @@ def _emit_parallel_safe_diagnostic(
     )
 
 
-def _read_companion_documentation(path: Path) -> str | None:
-    documentation = path.with_suffix(".md")
-    if not documentation.is_file():
+async def _read_companion_documentation(
+    capability_view: _BoundCapabilityView,
+    name: str,
+    listing: tuple[_DirectoryEntry, ...],
+) -> str | None:
+    companion = name.removesuffix(".py") + ".md"
+    if companion not in {entry.name for entry in listing}:
         return None
     try:
-        return documentation.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeError):
+        return (
+            (await capability_view.read(f"tools/{companion}")).decode("utf-8").strip()
+        )
+    except (UnicodeDecodeError, _FilesystemError):
         return None
 
 

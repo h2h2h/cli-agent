@@ -94,6 +94,7 @@ def test_reconcile_runs_steps_in_documented_order(
     class _FakeBackendWorkspace:
         workspace_environment = {"TOKEN": "secret"}
         capabilities = object()
+        filesystem = object()
 
     class _FakeLocalBackend:
         @staticmethod
@@ -121,9 +122,10 @@ def test_reconcile_runs_steps_in_documented_order(
         @staticmethod
         async def reconcile(
             capability_view: object,
+            filesystem: object,
             on_diagnostic: object = None,
         ) -> object:
-            del capability_view, on_diagnostic
+            del capability_view, filesystem, on_diagnostic
             order.append("tool_catalog")
             return object()
 
@@ -136,8 +138,11 @@ def test_reconcile_runs_steps_in_documented_order(
 
     class _FakeSkillCatalog:
         @staticmethod
-        async def reconcile(capability_view: object) -> object:
-            del capability_view
+        async def reconcile(
+            capability_view: object,
+            filesystem: object,
+        ) -> object:
+            del capability_view, filesystem
             order.append("skill_catalog")
             return object()
 

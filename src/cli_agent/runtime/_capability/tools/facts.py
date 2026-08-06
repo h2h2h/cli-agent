@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
 class ToolEntry:
-    """One Tool candidate and its trusted Runtime-open facts."""
+    """One Tool candidate and its trusted Runtime-open facts.
+
+    ``path`` is a managed relative path inside the Capability View (for
+    example ``tools/calc.py``), never a Host or Backend filesystem path.
+    """
 
     name: str
-    path: Path
+    path: str
     provenance: Literal["repertoire", "workspace"] | None
     shadows_repertoire: bool
     valid: bool

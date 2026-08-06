@@ -1,10 +1,13 @@
-"""Strict SKILL.md frontmatter parsing and structural validation."""
+"""Strict SKILL.md frontmatter parsing and structural validation.
+
+Parsers consume text plus the logical directory name; they never open Host
+or Backend filesystem paths themselves. File discovery, reading, and
+projection writes belong to the Capability Catalog.
+"""
 
 from __future__ import annotations
 
-import os
 import unicodedata
-from pathlib import Path
 from typing import Mapping
 
 import strictyaml
@@ -30,21 +33,25 @@ class SkillParseError(ValueError):
     """Raised when the SKILL.md frontmatter is missing or malformed."""
 
 
-def find_skill_md(skill_directory: Path) -> Path | None:
-    """Return the exact ``SKILL.md`` path inside one Skill directory.
+def validate_skill(content: str, *, directory_name: str) -> list[str]:
+    """Return aggregated structural errors for one SKILL.md text.
 
-    The name match is case-sensitive even on case-insensitive filesystems, so
-    a lowercase ``skill.md`` is not treated as the required definition file.
+    Args:
+        content (`str`):
+            The decoded SKILL.md text read from the effective view.
+        directory_name (`str`):
+            The logical Skill directory name used by name validation.
+
+    Returns:
+        Aggregated structural errors; an empty list means the Skill is valid.
     """
 
     try:
-        names = os.listdir(skill_directory)
-    except OSError:
-        return None
-    if _SKILL_MD_FILENAME not in names:
-        return None
-    candidate = skill_directory / _SKILL_MD_FILENAME
-    return candidate if candidate.is_file() else None
+        metadata = parse_frontmatter(content)
+    except SkillParseError as exc:
+        return [str(exc)]
+
+    return validate_metadata(metadata, directory_name=directory_name)
 
 
 def parse_frontmatter(content: str) -> dict[str, object]:
@@ -97,8 +104,7 @@ def validate_metadata(
     extra_fields = set(metadata) - _ALLOWED_FIELDS
     if extra_fields:
         errors.append(
-            "unexpected frontmatter fields: "
-            + ", ".join(sorted(extra_fields))
+            "unexpected frontmatter fields: " + ", ".join(sorted(extra_fields))
         )
 
     if "name" not in metadata:
@@ -130,29 +136,6 @@ def validate_metadata(
     return errors
 
 
-def validate(skill_directory: Path) -> list[str]:
-    """Return aggregated structural errors for one Skill directory."""
-
-    if not skill_directory.is_dir():
-        return [f"not a directory: {skill_directory}"]
-
-    skill_md = find_skill_md(skill_directory)
-    if skill_md is None:
-        return ["missing required file: SKILL.md"]
-
-    try:
-        content = skill_md.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        return [f"SKILL.md is not readable UTF-8: {exc}"]
-
-    try:
-        metadata = parse_frontmatter(content)
-    except SkillParseError as exc:
-        return [str(exc)]
-
-    return validate_metadata(metadata, directory_name=skill_directory.name)
-
-
 def _validate_name(name: object, directory_name: str) -> list[str]:
     if not isinstance(name, str) or not name.strip():
         return ["field 'name' must be a non-empty string"]
@@ -160,34 +143,27 @@ def _validate_name(name: object, directory_name: str) -> list[str]:
     normalized = unicodedata.normalize("NFKC", name.strip())
     errors: list[str] = []
     if len(normalized) > _MAX_SKILL_NAME_LENGTH:
-        errors.append(
-            f"skill name exceeds {_MAX_SKILL_NAME_LENGTH} character limit"
-        )
+        errors.append(f"skill name exceeds {_MAX_SKILL_NAME_LENGTH} character limit")
     if normalized != normalized.lower():
         errors.append("skill name must be lowercase")
     if normalized.startswith("-") or normalized.endswith("-"):
         errors.append("skill name cannot start or end with a hyphen")
     if "--" in normalized:
         errors.append("skill name cannot contain consecutive hyphens")
-    if not all(
-        character.isalnum() or character == "-" for character in normalized
-    ):
+    if not all(character.isalnum() or character == "-" for character in normalized):
         errors.append("skill name may contain only letters, digits, and hyphens")
 
     directory = unicodedata.normalize("NFKC", directory_name)
     if normalized != directory:
         errors.append(
-            f"skill name {normalized!r} must match the directory name "
-            f"{directory!r}"
+            f"skill name {normalized!r} must match the directory name {directory!r}"
         )
-    return errors 
+    return errors
 
 
 def _validate_description(description: object) -> list[str]:
     if not isinstance(description, str) or not description.strip():
         return ["field 'description' must be a non-empty string"]
     if len(description) > _MAX_DESCRIPTION_LENGTH:
-        return [
-            f"description exceeds {_MAX_DESCRIPTION_LENGTH} character limit"
-        ]
+        return [f"description exceeds {_MAX_DESCRIPTION_LENGTH} character limit"]
     return []

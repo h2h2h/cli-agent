@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
 class SkillEntry:
-    """One Skill candidate and its trusted Runtime-open facts."""
+    """One Skill candidate and its trusted Runtime-open facts.
+
+    ``path`` and ``skill_md`` are managed relative paths inside the
+    Capability View (for example ``skills/review`` and
+    ``skills/review/SKILL.md``), never Host or Backend filesystem paths.
+    """
 
     name: str
-    path: Path
-    skill_md: Path
+    path: str
+    skill_md: str
     provenance: Literal["repertoire", "workspace"] | None
     shadows_repertoire: bool
     valid: bool

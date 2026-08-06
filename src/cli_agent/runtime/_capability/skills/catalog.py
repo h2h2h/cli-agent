@@ -1,18 +1,23 @@
-"""Runtime-open Skill Catalog derived from the Capability View."""
+"""Runtime-open Skill Catalog derived from the Bound Capability View."""
 
 from __future__ import annotations
 
-from pathlib import Path
+import posixpath
 
-from cli_agent.runtime._backend import _BoundCapabilityView
+from cli_agent.runtime._backend import (
+    _BoundCapabilityView,
+    _FilesystemError,
+    _FileWriteRequest,
+    _WorkspaceFilesystem,
+)
 from cli_agent.runtime._capability.skills.facts import SkillEntry
 from cli_agent.runtime._capability.skills.parser import (
     SkillParseError,
-    find_skill_md,
     parse_frontmatter,
-    validate,
+    validate_skill,
 )
-from cli_agent.runtime._capability.workspace import _atomic_write
+
+_SKILL_MD_FILENAME = "SKILL.md"
 
 
 class _SkillCatalog:
@@ -28,24 +33,30 @@ class _SkillCatalog:
     async def reconcile(
         cls,
         capability_view: _BoundCapabilityView,
+        filesystem: _WorkspaceFilesystem,
     ) -> _SkillCatalog:
-        """Build trusted entries and atomically refresh the derived index."""
+        """Build trusted entries and atomically refresh the derived index.
 
-        skills_directory = Path(capability_view.root) / "skills"
+        Discovery, validation, provenance and the ``index.md`` projection use
+        only the Bound Capability View and the Workspace Filesystem; no Host
+        Path is read or written.
+        """
+
+        listing = await capability_view.list("skills")
         candidates = sorted(
-            (path for path in skills_directory.iterdir() if path.is_dir()),
-            key=lambda path: path.name,
+            (entry.name for entry in listing if entry.metadata.kind == "directory"),
         )
         entries: list[SkillEntry] = []
-        for path in candidates:
-            entry = await _inspect_skill(path, capability_view)
+        for name in candidates:
+            entry = await _inspect_skill(capability_view, name)
             if entry is not None:
                 entries.append(entry)
-        entries = tuple(entries)
-        catalog = cls(entries)
-        _atomic_write(
-            skills_directory / "index.md",
-            catalog.render_index().encode("utf-8"),
+        catalog = cls(tuple(entries))
+        await filesystem.write(
+            _FileWriteRequest(
+                path=posixpath.join(capability_view.root, "skills/index.md"),
+                content=catalog.render_index().encode("utf-8"),
+            )
         )
         return catalog
 
@@ -120,19 +131,18 @@ class _SkillCatalog:
 
 
 async def _inspect_skill(
-    path: Path,
     capability_view: _BoundCapabilityView,
+    name: str,
 ) -> SkillEntry | None:
     """Build one SkillEntry from a candidate directory, or None if whiteouted."""
 
-    name = path.name
-    relative = Path("skills") / name / "SKILL.md"
+    skill_md = f"skills/{name}/SKILL.md"
     provenance = None
     shadows = False
     validation_error: str | None = None
 
     try:
-        inspection = await capability_view.inspect(relative.as_posix())
+        inspection = await capability_view.inspect(skill_md)
     except ValueError as exc:
         validation_error = str(exc)
     else:
@@ -143,32 +153,61 @@ async def _inspect_skill(
         shadows = inspection.shadows_repertoire
 
     if validation_error is None:
-        errors = validate(path)
-        if errors:
-            validation_error = "; ".join(errors)
+        validation_error = await _validate_skill_view(capability_view, name)
 
+    description = (
+        None
+        if validation_error is not None
+        else await _read_description(capability_view, name)
+    )
     return SkillEntry(
         name=name,
-        path=path,
-        skill_md=path / "SKILL.md",
+        path=f"skills/{name}",
+        skill_md=skill_md,
         provenance=provenance,
         shadows_repertoire=shadows,
         valid=validation_error is None,
         validation_error=validation_error,
-        description=(None if validation_error is not None else _read_description(path)),
+        description=description,
     )
 
 
-def _read_description(path: Path) -> str | None:
+async def _validate_skill_view(
+    capability_view: _BoundCapabilityView,
+    name: str,
+) -> str | None:
+    """Return the aggregated Skill validation error, or None when valid."""
+
+    try:
+        listing = await capability_view.list(f"skills/{name}")
+    except _FilesystemError:
+        return f"not a directory: {name}"
+    if _SKILL_MD_FILENAME not in {entry.name for entry in listing}:
+        return "missing required file: SKILL.md"
+    try:
+        content = (await capability_view.read(f"skills/{name}/SKILL.md")).decode(
+            "utf-8"
+        )
+    except (UnicodeDecodeError, _FilesystemError) as exc:
+        return f"SKILL.md is not readable UTF-8: {exc}"
+    errors = validate_skill(content, directory_name=name)
+    if not errors:
+        return None
+    return "; ".join(errors)
+
+
+async def _read_description(
+    capability_view: _BoundCapabilityView,
+    name: str,
+) -> str | None:
     """Read the frontmatter description, or None when unavailable."""
 
-    skill_md = find_skill_md(path)
-    if skill_md is None:
-        return None
     try:
-        content = skill_md.read_text(encoding="utf-8")
+        content = (await capability_view.read(f"skills/{name}/SKILL.md")).decode(
+            "utf-8"
+        )
         metadata = parse_frontmatter(content)
-    except (OSError, UnicodeError, SkillParseError):
+    except (UnicodeDecodeError, _FilesystemError, SkillParseError):
         return None
     description = metadata.get("description")
     return description if isinstance(description, str) else None

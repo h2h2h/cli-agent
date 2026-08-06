@@ -82,10 +82,14 @@ async def _reconcile_runtime_resources(
     )
     tool_catalog = await _ToolCatalog.reconcile(
         backend.capabilities,
+        backend.filesystem,
         on_diagnostic=on_diagnostic,
     )
     tool_environment = await _ToolEnvironment.reconcile(backend.capabilities)
-    skill_catalog = await _SkillCatalog.reconcile(backend.capabilities)
+    skill_catalog = await _SkillCatalog.reconcile(
+        backend.capabilities,
+        backend.filesystem,
+    )
     library_catalog = await _LibraryCatalog.reconcile(
         backend.capabilities,
         summary_cache,

@@ -4,28 +4,10 @@ import pytest
 
 from cli_agent.runtime._capability.skills.parser import (
     SkillParseError,
-    find_skill_md,
     parse_frontmatter,
-    validate,
     validate_metadata,
+    validate_skill,
 )
-
-
-def test_find_skill_md_prefers_uppercase_and_ignores_missing() -> None:
-    directory = Path("/tmp/skill")
-    assert find_skill_md(directory) is None
-
-
-def test_find_skill_md_requires_exact_skill_md_name(tmp_path: Path) -> None:
-    lowercase = tmp_path / "lower"
-    lowercase.mkdir()
-    (lowercase / "skill.md").write_text("---\nname: skill\ndescription: d\n---\n")
-    assert find_skill_md(lowercase) is None
-
-    uppercase = tmp_path / "upper"
-    uppercase.mkdir()
-    (uppercase / "SKILL.md").write_text("---\nname: skill\ndescription: d\n---\n")
-    assert find_skill_md(uppercase).name == "SKILL.md"  # type: ignore[union-attr]
 
 
 def test_parse_frontmatter_returns_metadata_mapping(tmp_path: Path) -> None:
@@ -175,28 +157,26 @@ def test_validate_metadata_rejects_non_string_metadata_values() -> None:
     assert any("'metadata' must be a mapping" in error for error in errors)
 
 
-def test_validate_directory_requires_an_existing_directory(tmp_path: Path) -> None:
-    assert validate(tmp_path / "missing") == ["not a directory: " + str(tmp_path / "missing")]
-
-
-def test_validate_directory_requires_skill_md(tmp_path: Path) -> None:
-    directory = tmp_path / "skill"
-    directory.mkdir()
-    assert validate(directory) == ["missing required file: SKILL.md"]
-
-
-def test_validate_directory_rejects_bad_frontmatter(tmp_path: Path) -> None:
-    directory = tmp_path / "skill"
-    directory.mkdir()
-    (directory / "SKILL.md").write_text("name: skill\n")
-    errors = validate(directory)
+def test_validate_skill_requires_valid_frontmatter() -> None:
+    errors = validate_skill("name: skill\n", directory_name="skill")
     assert any("must start with" in error for error in errors)
 
 
-def test_validate_directory_accepts_a_valid_skill(tmp_path: Path) -> None:
-    directory = tmp_path / "report-skill"
-    directory.mkdir()
-    (directory / "SKILL.md").write_text(
-        "---\nname: report-skill\ndescription: Build a report.\n---\n"
+def test_validate_skill_reports_name_and_description_errors() -> None:
+    errors = validate_skill(
+        "---\nname: Other-Name\n---\n",
+        directory_name="skill",
     )
-    assert validate(directory) == []
+    assert any("must be lowercase" in error for error in errors)
+    assert any("must match the directory name" in error for error in errors)
+    assert any(
+        "missing required frontmatter field: description" in error for error in errors
+    )
+
+
+def test_validate_skill_accepts_a_valid_skill() -> None:
+    errors = validate_skill(
+        "---\nname: report-skill\ndescription: Build a report.\n---\n",
+        directory_name="report-skill",
+    )
+    assert errors == []

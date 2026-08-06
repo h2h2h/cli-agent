@@ -72,7 +72,9 @@ async def _kernel(workspace: Path, repertoire: Path) -> EnvironmentKernel:
     _prepare_workspace(workspace)
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     await _MCPCatalog.reconcile(view)
-    catalog = await _ToolCatalog.reconcile(view)
+    catalog = await _ToolCatalog.reconcile(
+        view, _LocalBackendWorkspace(workspace, {}, view).filesystem
+    )
     environment = await _ToolEnvironment.reconcile(view)
     assert environment.available, environment.error
     return EnvironmentKernel(

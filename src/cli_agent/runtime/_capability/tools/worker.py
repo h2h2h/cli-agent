@@ -32,6 +32,10 @@ def main() -> int:
     for name, raw_path in sorted(tool_paths.items()):
         try:
             path = Path(raw_path)
+            if not path.is_absolute():
+                # Catalog paths are logical view paths; the Local worker
+                # resolves them against the materialized tools directory.
+                path = Path(tools_directory).parent / path
             spec = importlib.util.spec_from_file_location(
                 f"cli_agent_tool_{name}",
                 path,

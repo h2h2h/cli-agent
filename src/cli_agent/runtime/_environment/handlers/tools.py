@@ -99,11 +99,15 @@ class _ToolHandler:
         payload = json.dumps(
             {
                 "code": facts.code,
-                "workspace": str(context.workspace),
-                "cwd": str(context.cwd),
-                "tools_directory": str(context.workspace / ".workspace" / "tools"),
+                "workspace": context.workspace,
+                "cwd": context.cwd,
+                "tools_directory": os.path.join(
+                    context.workspace,
+                    ".workspace",
+                    "tools",
+                ),
                 "tool_paths": {
-                    entry.name: str(entry.path) for entry in catalog.valid_entries
+                    entry.name: entry.path for entry in catalog.valid_entries
                 },
             },
             ensure_ascii=False,

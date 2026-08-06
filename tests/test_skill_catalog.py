@@ -1,7 +1,11 @@
 import asyncio
 from pathlib import Path
 
-from cli_agent.runtime._backend.local import _LocalCapabilityView
+from cli_agent.runtime._backend.local import (
+    _LocalBackendWorkspace,
+    _LocalCapabilityView,
+    _LocalWorkspaceFilesystem,
+)
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._system_message import assemble_system_message
@@ -22,6 +26,10 @@ def _repertoire(workspace: Path) -> Path:
     return repertoire
 
 
+def _filesystem(root: Path, view: _LocalCapabilityView) -> _LocalWorkspaceFilesystem:
+    return _LocalBackendWorkspace(root, {}, view).filesystem
+
+
 def test_catalog_generates_index_and_reports_actual_provenance(
     tmp_path: Path,
 ) -> None:
@@ -34,7 +42,7 @@ def test_catalog_generates_index_and_reports_actual_provenance(
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
     _skill(Path(view.root) / "skills" / "local-skill", "local-skill", "Local skill.")
 
-    catalog = asyncio.run(_SkillCatalog.reconcile(view))
+    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
 
     assert catalog.get("lower-skill").provenance == "repertoire"  # type: ignore[union-attr]
     assert catalog.get("local-skill").provenance == "workspace"  # type: ignore[union-attr]
@@ -69,7 +77,7 @@ def test_catalog_reports_structural_validation_errors(tmp_path: Path) -> None:
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
 
-    catalog = asyncio.run(_SkillCatalog.reconcile(view))
+    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
 
     wrong = catalog.get("wrong-name")
     assert wrong is not None
@@ -117,7 +125,7 @@ def test_catalog_skips_whiteouted_skills_and_ignores_non_directories(
     (Path(view.root) / "skills" / "gone-skill" / "SKILL.md").unlink()
     (Path(view.root) / "skills" / "not-a-skill.py").write_text("VALUE = 1\n")
 
-    catalog = asyncio.run(_SkillCatalog.reconcile(view))
+    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
 
     assert catalog.get("gone-skill") is None
     assert catalog.get("not-a-skill.py") is None
@@ -138,7 +146,7 @@ def test_catalog_reports_mixed_directory_provenance_from_skill_md(
         "workspace note\n"
     )
 
-    catalog = asyncio.run(_SkillCatalog.reconcile(view))
+    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
 
     entry = catalog.get("mixed-skill")
     assert entry is not None
@@ -163,7 +171,7 @@ def test_catalog_reports_workspace_override_shadowing_repertoire(
         encoding="utf-8",
     )
 
-    catalog = asyncio.run(_SkillCatalog.reconcile(view))
+    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
 
     entry = catalog.get("override-skill")
     assert entry is not None
@@ -182,13 +190,17 @@ def test_catalog_index_is_reproducible_and_never_authority(tmp_path: Path) -> No
 
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    first = asyncio.run(_SkillCatalog.reconcile(view)).render_index()
-    second = asyncio.run(_SkillCatalog.reconcile(view)).render_index()
+    first = asyncio.run(
+        _SkillCatalog.reconcile(view, _filesystem(tmp_path, view))
+    ).render_index()
+    second = asyncio.run(
+        _SkillCatalog.reconcile(view, _filesystem(tmp_path, view))
+    ).render_index()
 
     assert first == second
     authored = Path(view.root) / "skills" / "index.md"
     authored.write_text("model-authored index\n")
-    catalog = asyncio.run(_SkillCatalog.reconcile(view))
+    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
     assert catalog.get("first-skill") is not None
     assert authored.read_text() != "model-authored index\n"
 
@@ -200,7 +212,7 @@ def test_catalog_get_and_valid_entries(tmp_path: Path) -> None:
 
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    catalog = asyncio.run(_SkillCatalog.reconcile(view))
+    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
 
     assert catalog.get("ok-skill").valid is True  # type: ignore[union-attr]
     assert catalog.get("bad-name").valid is False  # type: ignore[union-attr]
@@ -213,7 +225,7 @@ def test_catalog_render_info_reports_missing_skill(tmp_path: Path) -> None:
     repertoire = _repertoire(tmp_path)
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    catalog = asyncio.run(_SkillCatalog.reconcile(view))
+    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
 
     text, found = catalog.render_info("missing")
     assert found is False
@@ -229,7 +241,7 @@ def test_system_message_embeds_only_compact_skills_catalog(
 
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    catalog = asyncio.run(_SkillCatalog.reconcile(view))
+    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
 
     message = assemble_system_message(tmp_path, None, skill_catalog=catalog)
     body = "\n".join(block.text for block in message.content)
