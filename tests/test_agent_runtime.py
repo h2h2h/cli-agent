@@ -474,7 +474,7 @@ def test_assembles_workspace_and_optional_host_instruction(
         assert isinstance(system_message, SystemMessage)
         text = "".join(block.text for block in system_message.content)
         assert "You are cli-agent" in text
-        assert f"The bound Workspace is {tmp_path.resolve()}." in text
+        assert f"The bound Workspace is {tmp_path.resolve()};" in text
         assert ".workspace/tools" in text
         assert ".workspace/skills" in text
         assert ".workspace/library" in text

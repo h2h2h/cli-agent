@@ -240,4 +240,5 @@ def test_system_message_skill_section_omitted_without_catalog(
     message = assemble_system_message(tmp_path, None)
     body = "\n".join(block.text for block in message.content)
 
-    assert "Skills" not in body
+    assert "\n\n**Skills**\n" not in body
+    assert "No Skills are currently discovered." not in body
