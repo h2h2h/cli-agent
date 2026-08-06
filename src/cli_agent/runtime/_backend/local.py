@@ -499,7 +499,10 @@ class _LocalCapabilityView:
                 )
             provenance: _Provenance | None = "repertoire"
         elif _lexists(view_path):
-            provenance = "workspace"
+            if view_path.is_dir():
+                provenance = "repertoire" if lower_path.is_dir() else "workspace"
+            else:
+                provenance = "workspace"
         elif whiteout.is_file():
             provenance = "whiteout"
         else:

@@ -18,8 +18,10 @@ from cli_agent.runtime import (
     TextBlock,
     UserMessage,
 )
-from cli_agent.runtime._backend import _CapabilitySource
-from cli_agent.runtime._backend.local import _LocalCapabilityView
+from cli_agent.runtime._backend.local import (
+    _LocalBackendWorkspace,
+    _LocalCapabilityView,
+)
 from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.library.facts import (
@@ -124,7 +126,9 @@ def test_worker_generates_file_summaries_and_refreshes_indexes(
         _prepare_workspace(tmp_path)
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
         assert catalog.get("first.md").status == "pending"  # type: ignore[union-attr]
 
@@ -195,7 +199,9 @@ def test_one_summary_updates_every_file_with_the_same_fingerprint(
         _prepare_workspace(tmp_path)
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
 
         catalog.start(provider)
@@ -246,7 +252,9 @@ def test_cache_hit_never_calls_the_model(tmp_path: Path) -> None:
         _prepare_workspace(tmp_path)
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
         assert catalog.get("cached.md").status == "ready"  # type: ignore[union-attr]
 
@@ -269,7 +277,9 @@ def test_provider_failure_marks_entry_failed_with_diagnostic(tmp_path: Path) -> 
         _prepare_workspace(tmp_path)
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
         catalog.start(provider, on_diagnostic=diagnostics.append)
         await catalog._queue.join()  # type: ignore[union-attr]
@@ -305,7 +315,9 @@ def test_context_overflow_marks_entry_failed_with_specific_diagnostic(
         _prepare_workspace(tmp_path)
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
         catalog.start(provider, on_diagnostic=diagnostics.append)
         await catalog._queue.join()  # type: ignore[union-attr]
@@ -337,7 +349,9 @@ def test_failure_diagnostics_never_contain_source_content(tmp_path: Path) -> Non
         _prepare_workspace(tmp_path)
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
         catalog.start(provider, on_diagnostic=diagnostics.append)
         await catalog._queue.join()  # type: ignore[union-attr]
@@ -360,7 +374,9 @@ def test_close_cancels_in_progress_worker(tmp_path: Path) -> None:
         _prepare_workspace(tmp_path)
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
         catalog.start(provider)
         await provider.started.wait()
@@ -450,7 +466,9 @@ def test_close_without_start_still_closes_database(tmp_path: Path) -> None:
         repertoire = _repertoire(tmp_path)
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
         await catalog.close()
 

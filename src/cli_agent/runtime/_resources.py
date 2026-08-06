@@ -92,8 +92,8 @@ async def _reconcile_runtime_resources(
     )
     library_catalog = await _LibraryCatalog.reconcile(
         backend.capabilities,
+        backend.filesystem,
         summary_cache,
-        capability_source,
     )
     return _RuntimeResources(
         workspace=paths.root,

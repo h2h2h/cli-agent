@@ -1,11 +1,10 @@
 import asyncio
 from pathlib import Path
 
-import pytest
-
-import cli_agent.runtime._capability.library.catalog as catalog_module
-from cli_agent.runtime._backend import _CapabilitySource
-from cli_agent.runtime._backend.local import _LocalCapabilityView
+from cli_agent.runtime._backend.local import (
+    _LocalBackendWorkspace,
+    _LocalCapabilityView,
+)
 from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.library.facts import (
@@ -36,7 +35,9 @@ def _reconcile(workspace: Path, repertoire: Path) -> _LibraryCatalog:
         _prepare_workspace(workspace)
         view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
         return await _LibraryCatalog.reconcile(
-            view, _cache(workspace), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(workspace, {}, view).filesystem,
+            _cache(workspace),
         )
 
     return asyncio.run(scenario())
@@ -221,7 +222,9 @@ def test_workspace_override_renders_workspace_provenance_and_shadow(
 
     asyncio.run(
         _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
     )
 
@@ -279,10 +282,7 @@ def test_rendered_indexes_are_reproducible(tmp_path: Path) -> None:
     assert first == second
 
 
-def test_indexes_write_deepest_first(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_indexes_write_deepest_first(tmp_path: Path) -> None:
     repertoire = _repertoire(tmp_path)
     (repertoire / "library" / "resources" / "architecture").mkdir(parents=True)
     (repertoire / "library" / "resources" / "architecture" / "design.md").write_text(
@@ -292,13 +292,21 @@ def test_indexes_write_deepest_first(
 
     written: list[str] = []
 
-    def record(path: Path, content: bytes) -> None:
-        del content
-        written.append(str(path.relative_to(tmp_path / ".workspace" / "library")))
+    class _RecordingFilesystem:
+        async def write(self, request: object) -> object:
+            path = str(getattr(request, "path"))
+            written.append(path.split("/.workspace/library/", 1)[-1])
+            return request
 
-    monkeypatch.setattr(catalog_module, "_atomic_write", record)
-
-    _reconcile(tmp_path, repertoire)
+    _prepare_workspace(tmp_path)
+    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    asyncio.run(
+        _LibraryCatalog.reconcile(
+            view,
+            _RecordingFilesystem(),
+            _cache(tmp_path),
+        )
+    )
 
     assert written == [
         "resources/architecture/index.md",

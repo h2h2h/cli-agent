@@ -3,8 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from cli_agent.runtime._backend import _CapabilitySource
-from cli_agent.runtime._backend.local import _LocalCapabilityView
+from cli_agent.runtime._backend.local import (
+    _LocalBackendWorkspace,
+    _LocalCapabilityView,
+)
 from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.library.facts import (
@@ -36,7 +38,9 @@ def _reconcile(workspace: Path, repertoire: Path) -> _LibraryCatalog:
         _prepare_workspace(workspace)
         view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
         return await _LibraryCatalog.reconcile(
-            view, _cache(workspace), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(workspace, {}, view).filesystem,
+            _cache(workspace),
         )
 
     return asyncio.run(scenario())
@@ -59,7 +63,9 @@ def test_catalog_discovers_effective_library_facts(tmp_path: Path) -> None:
 
     catalog = asyncio.run(
         _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
     )
 
@@ -109,7 +115,9 @@ def test_workspace_override_shadows_repertoire_file(tmp_path: Path) -> None:
 
     catalog = asyncio.run(
         _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
     )
 
@@ -132,7 +140,9 @@ def test_workspace_only_directory_is_workspace_provenance(tmp_path: Path) -> Non
 
     catalog = asyncio.run(
         _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
     )
 
@@ -160,7 +170,9 @@ def test_whiteouted_library_file_is_skipped(tmp_path: Path) -> None:
 
     catalog = asyncio.run(
         _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
     )
 
@@ -233,34 +245,32 @@ def test_read_failure_marks_entry_failed(
     assert entry.fingerprint is None
 
 
-def test_text_parser_supports_only_md_and_txt(tmp_path: Path) -> None:
+def test_text_parser_supports_only_md_and_txt() -> None:
     parser = TextLibraryFileParser()
 
-    assert parser.supports(tmp_path / "a.md")
-    assert parser.supports(tmp_path / "b.txt")
-    assert parser.supports(tmp_path / "c.MD") is False
-    assert parser.supports(tmp_path / "d.markdown") is False
-    assert parser.supports(tmp_path / "e.pdf") is False
-    assert parser.supports(tmp_path / "noext") is False
+    assert parser.supports("a.md")
+    assert parser.supports("b.txt")
+    assert parser.supports("c.MD") is False
+    assert parser.supports("d.markdown") is False
+    assert parser.supports("e.pdf") is False
+    assert parser.supports("noext") is False
+    assert parser.supports("notes/f.md") is True
 
 
-def test_text_parser_returns_complete_normalized_text(tmp_path: Path) -> None:
+def test_text_parser_returns_complete_normalized_text() -> None:
     parser = TextLibraryFileParser()
-    path = tmp_path / "doc.md"
-    path.write_bytes(b"# Title\r\n\r\nline two\r\nline three")
+    content = b"# Title\r\n\r\nline two\r\nline three"
 
-    text = asyncio.run(parser.parse(path))
+    text = asyncio.run(parser.parse(content, "doc.md"))
 
     assert text == "# Title\n\nline two\nline three"
 
 
-def test_text_parser_rejects_invalid_utf8(tmp_path: Path) -> None:
+def test_text_parser_rejects_invalid_utf8() -> None:
     parser = TextLibraryFileParser()
-    path = tmp_path / "bad.txt"
-    path.write_bytes(b"\xff\xfe")
 
     with pytest.raises(LibraryParseError, match="not valid UTF-8"):
-        asyncio.run(parser.parse(path))
+        asyncio.run(parser.parse(b"\xff\xfe", "bad.txt"))
 
 
 def test_file_fingerprint_ignores_name_provenance_and_extension(
@@ -276,7 +286,9 @@ def test_file_fingerprint_ignores_name_provenance_and_extension(
 
     catalog = asyncio.run(
         _LibraryCatalog.reconcile(
-            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+            view,
+            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _cache(tmp_path),
         )
     )
 

@@ -1,14 +1,26 @@
-"""Mutable Runtime-owned Library Catalog facts from the effective view."""
+"""Mutable Runtime-owned Library Catalog facts from the effective view.
+
+Discovery, fingerprinting, invalidation, source reading, and the
+``index.md`` projections all run through the Bound Capability View and the
+Workspace Filesystem; no Host ``Path`` is read or written. The SQLite
+summary cache remains Host application state and never stores Library
+source text or Backend transport data.
+"""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+import posixpath
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
-from pathlib import Path
 from typing import Literal
 
-from cli_agent.runtime._backend import _BoundCapabilityView, _CapabilitySource
+from cli_agent.runtime._backend import (
+    _BoundCapabilityView,
+    _FilesystemError,
+    _FileWriteRequest,
+    _WorkspaceFilesystem,
+)
 from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.facts import (
     _SUMMARY_UNAVAILABLE,
@@ -21,7 +33,6 @@ from cli_agent.runtime._capability.library.parser import (
     LibraryParseError,
     _select_parser,
 )
-from cli_agent.runtime._capability.workspace import _atomic_write
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     ModelCompletion,
@@ -79,17 +90,17 @@ class _LibraryCatalog:
     def __init__(
         self,
         entries: tuple[LibraryEntry, ...],
-        root: Path,
+        root: str,
         summary_cache: _SummaryCache,
         view: _BoundCapabilityView | None = None,
-        source: _CapabilitySource | None = None,
+        filesystem: _WorkspaceFilesystem | None = None,
     ) -> None:
         """Hold the facts, the effective Library root, and the summary cache."""
 
         self._root = root
         self._summary_cache = summary_cache
         self._view = view
-        self._source = source
+        self._filesystem = filesystem
         self._entries = {entry.path: entry for entry in entries}
         self._snapshot: dict[str, tuple[int, int]] = {}
         self._dirty_paths: set[str] = set()
@@ -108,8 +119,8 @@ class _LibraryCatalog:
     async def reconcile(
         cls,
         capability_view: _BoundCapabilityView,
+        filesystem: _WorkspaceFilesystem,
         summary_cache: _SummaryCache,
-        capability_source: _CapabilitySource,
     ) -> _LibraryCatalog:
         """Discover facts, resolve cache hits, and render every index.
 
@@ -118,41 +129,36 @@ class _LibraryCatalog:
                 The materialized Bound Capability View; ``library`` is read
                 as an ordinary capability directory with no source-layer
                 restrictions.
+            filesystem (`_WorkspaceFilesystem`):
+                Workspace Filesystem receiving the atomic index projections.
             summary_cache (`_SummaryCache`):
                 The application state summary cache; file fingerprints with
                 cached summaries become ``ready`` before the first render.
-            capability_source (`_CapabilitySource`):
-                Host Capability lower input; directory provenance derives
-                from lower presence.
 
         Returns:
             A catalog of trusted facts whose ``index.md`` projections have
             been written from the deepest directory up to the root.
         """
 
-        root = Path(capability_view.root) / _LIBRARY_DIRECTORY
-        if not root.is_dir():
-            return cls(
-                (),
-                root,
-                summary_cache,
-                capability_view,
-                capability_source,
-            )
+        root = posixpath.join(capability_view.root, _LIBRARY_DIRECTORY)
+        try:
+            listing = await capability_view.list(_LIBRARY_DIRECTORY)
+        except _FilesystemError:
+            return cls((), root, summary_cache, capability_view, filesystem)
         discovered: list[LibraryEntry] = []
-        for child in sorted(root.iterdir(), key=lambda path: path.name):
+        for child in sorted(listing, key=lambda entry: entry.name):
             if child.name != _INDEX_FILENAME:
                 discovered.extend(
-                    await _subtree(capability_view, root, child, capability_source)
+                    await _subtree(capability_view, child.name, child.metadata.kind)
                 )
         catalog = cls(
             _apply_cache_hits(tuple(discovered), summary_cache),
             root,
             summary_cache,
             capability_view,
-            capability_source,
+            filesystem,
         )
-        catalog._capture_snapshot()
+        await catalog._capture_snapshot()
         catalog._entries[""] = _root_entry()
         for directory in sorted(
             (entry.path for entry in catalog.entries if entry.kind == "directory"),
@@ -160,7 +166,7 @@ class _LibraryCatalog:
         ):
             await catalog._resolve_directory(directory, propagate=False)
         await catalog._resolve_directory("", propagate=False)
-        catalog.render_indexes()
+        await catalog.render_indexes()
         return catalog
 
     def get(self, path: str) -> LibraryEntry | None:
@@ -177,11 +183,10 @@ class _LibraryCatalog:
         of metadata.
         """
 
-        try:
-            relative = Path(target).resolve().relative_to(self._root.resolve())
-        except ValueError:
+        relative = posixpath.relpath(target, self._root)
+        if relative == "." or relative.startswith("..") or posixpath.isabs(relative):
             return
-        self._dirty_paths.add(relative.as_posix())
+        self._dirty_paths.add(relative)
 
     async def reconcile_changes(self) -> None:
         """Re-check Library source facts before one ordinary model request.
@@ -196,9 +201,12 @@ class _LibraryCatalog:
         is called and no internal summary request is triggered here.
         """
 
-        if self._view is None:
+        view = self._view
+        if view is None:
             return
-        if not self._root.is_dir():
+        try:
+            await view.list(_LIBRARY_DIRECTORY)
+        except _FilesystemError:
             async with self._mutation_lock:
                 if self._entries:
                     self._entries.clear()
@@ -229,9 +237,10 @@ class _LibraryCatalog:
                 if entry.path and _parent(entry.path) == directory
             }
             try:
-                actual = {child.name for child in (self._root / directory).iterdir()}
-            except OSError:
+                listing = await view.list(_view_relative(directory))
+            except _FilesystemError:
                 continue
+            actual = {entry.name for entry in listing}
             for name in actual - {_leaf(child) for child in children}:
                 changed.add(f"{directory}/{name}" if directory else name)
             for child in children - {
@@ -244,11 +253,11 @@ class _LibraryCatalog:
                 changed.add(path)
                 continue
             try:
-                st = (self._root / path).stat()
-            except OSError:
+                metadata = await view.stat(_view_relative(path))
+            except _FilesystemError:
                 removed.add(path)
                 continue
-            if self._snapshot.get(path) != (st.st_mtime_ns, st.st_size):
+            if self._snapshot.get(path) != (metadata.mtime_ns, metadata.size):
                 changed.add(path)
         for path in dirty:
             if path not in known_files and path not in known_directories:
@@ -259,17 +268,20 @@ class _LibraryCatalog:
         for path in sorted(changed):
             await self._recheck(path)
 
-    def _capture_snapshot(self) -> None:
+    async def _capture_snapshot(self) -> None:
         """Record the metadata facts for every known file path."""
 
+        view = self._view
+        if view is None:
+            return
         for entry in self._entries.values():
             if entry.kind != "file":
                 continue
             try:
-                st = (self._root / entry.path).stat()
-            except OSError:
+                metadata = await view.stat(_view_relative(entry.path))
+            except _FilesystemError:
                 continue
-            self._snapshot[entry.path] = (st.st_mtime_ns, st.st_size)
+            self._snapshot[entry.path] = (metadata.mtime_ns, metadata.size)
 
     async def _recheck(self, path: str) -> None:
         """Re-derive one changed path from the effective Library view."""
@@ -279,29 +291,24 @@ class _LibraryCatalog:
             return
         if _leaf(path) == _INDEX_FILENAME:
             return
-        view_path = self._root / path
         try:
-            inspection = await view.inspect(
-                (Path(_LIBRARY_DIRECTORY) / Path(path)).as_posix()
-            )
+            inspection = await view.inspect(_view_relative(path))
         except ValueError as exc:
-            await self._replace_failed(
-                path,
-                "directory" if view_path.is_dir() else "file",
-                str(exc),
-            )
+            try:
+                kind = (await view.stat(_view_relative(path))).kind
+            except _FilesystemError:
+                kind = "file"
+            await self._replace_failed(path, kind, str(exc))
             return
         if inspection.provenance not in {"repertoire", "workspace"}:
             await self._remove_path(path)
             return
-        if view_path.is_dir():
-            entries = await _directory_subtree(
-                view,
-                self._root,
-                view_path,
-                Path(path),
-                self._source,
-            )
+        try:
+            kind = (await view.stat(_view_relative(path))).kind
+        except _FilesystemError:
+            kind = "file"
+        if kind == "directory":
+            entries = await _directory_subtree(view, path)
             await self._replace_subtree(path, entries)
             for directory in sorted(
                 (path, *(entry.path for entry in entries if entry.kind == "directory")),
@@ -310,8 +317,8 @@ class _LibraryCatalog:
                 await self._resolve_directory(directory)
             return
         entry = await _file_entry(
-            view_path,
-            Path(path),
+            view,
+            path,
             inspection.provenance,
             inspection.shadows_repertoire,
         )
@@ -325,7 +332,7 @@ class _LibraryCatalog:
             if path not in self._entries and path not in self._snapshot:
                 return
             self._drop_subtree_locked(path)
-            self._render_ancestors(path)
+            await self._render_ancestors(path)
         await self._cascade(path)
 
     async def _replace_subtree(
@@ -339,14 +346,9 @@ class _LibraryCatalog:
             self._drop_subtree_locked(path)
             for entry in entries:
                 self._entries[entry.path] = entry
-            for entry in entries:
-                if entry.kind != "file":
-                    continue
-                try:
-                    st = (self._root / entry.path).stat()
-                except OSError:
-                    continue
-                self._snapshot[entry.path] = (st.st_mtime_ns, st.st_size)
+            await self._update_snapshot_locked(
+                entry.path for entry in entries if entry.kind == "file"
+            )
             directories = {
                 directory
                 for entry in entries
@@ -356,7 +358,7 @@ class _LibraryCatalog:
                 (path, *directories, *_ancestors(path)),
                 key=lambda candidate: (-_depth(candidate), candidate),
             ):
-                self._write_index(directory)
+                await self._write_index(directory)
 
     async def _replace_file(self, path: str, entry: LibraryEntry) -> None:
         """Replace one changed file path and refresh its affected indexes."""
@@ -367,13 +369,8 @@ class _LibraryCatalog:
                 self._drop_subtree_locked(path)
             updated = self._transition_file(old, entry)
             self._entries[path] = updated
-            try:
-                st = (self._root / path).stat()
-            except OSError:
-                pass
-            else:
-                self._snapshot[path] = (st.st_mtime_ns, st.st_size)
-            self._render_ancestors(path)
+            await self._update_snapshot_locked((path,))
+            await self._render_ancestors(path)
             if updated.status in {"pending", "stale"}:
                 self._enqueue_file(path)
 
@@ -391,7 +388,7 @@ class _LibraryCatalog:
                 self._drop_subtree_locked(path)
             self._queued.discard(path)
             self._entries[path] = _entry(
-                Path(path),
+                path,
                 kind,
                 provenance=None,
                 shadows_repertoire=False,
@@ -400,10 +397,23 @@ class _LibraryCatalog:
                 error=error,
             )
             if kind == "directory":
-                self._render_directory_chain(path)
+                await self._render_directory_chain(path)
             else:
-                self._render_ancestors(path)
+                await self._render_ancestors(path)
         await self._cascade(path)
+
+    async def _update_snapshot_locked(self, paths: Iterable[str]) -> None:
+        """Record current metadata facts for one iterable of file paths."""
+
+        view = self._view
+        if view is None:
+            return
+        for path in paths:
+            try:
+                metadata = await view.stat(_view_relative(path))
+            except _FilesystemError:
+                continue
+            self._snapshot[path] = (metadata.mtime_ns, metadata.size)
 
     def _drop_subtree_locked(self, path: str) -> None:
         """Remove one path and every known descendant from the fact state."""
@@ -503,7 +513,8 @@ class _LibraryCatalog:
         """Cancel the worker, wait for it, then close the state database.
 
         Committed SQLite summaries survive; unfinished tasks are rediscovered
-        as ``pending`` on the next Runtime open.
+        as ``pending`` on the next Runtime open. After ``close`` returns the
+        worker has stopped and never touches the Backend Filesystem again.
         """
 
         worker_task = self._worker_task
@@ -556,30 +567,38 @@ class _LibraryCatalog:
     ) -> None:
         """Generate, cache, and apply one file summary in the background."""
 
+        view = self._view
+        if view is None:
+            return
         entry = self._entries.get(path)
         if entry is None or entry.status not in {"pending", "stale"}:
             return
         fingerprint = entry.fingerprint
         if fingerprint is None:
             return
-        source = self._root / path
-        parser = _select_parser(source)
+        filename = _leaf(path)
+        parser = _select_parser(filename)
         if parser is None:
             await self._mark_failed(
                 path,
-                f"no parser supports file type: {source.name}",
+                f"no parser supports file type: {filename}",
                 on_diagnostic,
             )
             return
         try:
-            content = await parser.parse(source)
+            content = await view.read(_view_relative(path))
+        except _FilesystemError as exc:
+            await self._mark_failed(path, f"cannot read file: {exc}", on_diagnostic)
+            return
+        try:
+            text = await parser.parse(content, filename)
         except LibraryParseError as exc:
             await self._mark_failed(path, str(exc), on_diagnostic)
             return
         try:
             completion = await _collect_completion(
                 provider,
-                _file_summary_request(content),
+                _file_summary_request(text),
             )
         except ModelContextOverflowError:
             await self._mark_failed(
@@ -663,9 +682,9 @@ class _LibraryCatalog:
                 return
             self._entries[path] = replace(entry, status="failed", error=error)
             if entry.kind == "directory":
-                self._render_directory_chain(path)
+                await self._render_directory_chain(path)
             else:
-                self._render_ancestors(path)
+                await self._render_ancestors(path)
         _emit(
             on_diagnostic,
             kind,
@@ -705,7 +724,7 @@ class _LibraryCatalog:
                 directories,
                 key=lambda candidate: (-_depth(candidate), candidate),
             ):
-                self._write_index(directory)
+                await self._write_index(directory)
         for path in paths:
             await self._cascade(path)
 
@@ -731,7 +750,7 @@ class _LibraryCatalog:
                 error=None,
             )
             if propagate:
-                self._render_directory_chain(path)
+                await self._render_directory_chain(path)
         if propagate:
             await self._cascade(path)
 
@@ -813,7 +832,7 @@ class _LibraryCatalog:
                 ),
                 error=None,
             )
-            self._render_directory_chain(directory)
+            await self._render_directory_chain(directory)
 
     def _terminal_children(
         self,
@@ -856,7 +875,7 @@ class _LibraryCatalog:
         self._queued.add(path)
         self._queue.put_nowait(path)
 
-    def render_indexes(self) -> None:
+    async def render_indexes(self) -> None:
         """Atomically write every visible directory index, deepest first.
 
         The root index is written last. Each replacement is atomic on its own;
@@ -868,28 +887,33 @@ class _LibraryCatalog:
         ]
         directories.append("")
         for directory in sorted(directories, key=lambda path: (-_depth(path), path)):
-            self._write_index(directory)
+            await self._write_index(directory)
 
-    def _write_index(self, directory: str) -> None:
-        _atomic_write(
-            self._root / directory / _INDEX_FILENAME,
-            self.render_index(directory).encode("utf-8"),
+    async def _write_index(self, directory: str) -> None:
+        filesystem = self._filesystem
+        if filesystem is None:
+            return
+        await filesystem.write(
+            _FileWriteRequest(
+                path=posixpath.join(self._root, directory, _INDEX_FILENAME),
+                content=self.render_index(directory).encode("utf-8"),
+            )
         )
 
-    def _render_ancestors(self, path: str) -> None:
+    async def _render_ancestors(self, path: str) -> None:
         """Atomically refresh the parent directory and all ancestor indexes."""
 
         for directory in sorted(_ancestors(path), key=lambda p: (-_depth(p), p)):
-            self._write_index(directory)
+            await self._write_index(directory)
 
-    def _render_directory_chain(self, path: str) -> None:
+    async def _render_directory_chain(self, path: str) -> None:
         """Atomically refresh one directory index and every ancestor index."""
 
         for directory in sorted(
             (path, *_ancestors(path)),
             key=lambda candidate: (-_depth(candidate), candidate),
         ):
-            self._write_index(directory)
+            await self._write_index(directory)
 
     def render_index(self, directory: str) -> str:
         """Render one directory projection without creating authority.
@@ -967,6 +991,12 @@ class _LibraryCatalog:
         else:
             lines.append("_no files_")
         return "\n".join(lines) + "\n"
+
+
+def _view_relative(path: str) -> str:
+    """Return the managed relative View path for one logical Library path."""
+
+    return posixpath.join(_LIBRARY_DIRECTORY, path) if path else _LIBRARY_DIRECTORY
 
 
 def _apply_cache_hits(
@@ -1143,9 +1173,8 @@ def _emit(
 
 async def _subtree(
     capability_view: _BoundCapabilityView,
-    root: Path,
-    path: Path,
-    capability_source: _CapabilitySource,
+    relative: str,
+    kind: Literal["file", "directory"],
 ) -> tuple[LibraryEntry, ...]:
     """Return trusted facts for one discovered path and its subtree.
 
@@ -1154,16 +1183,13 @@ async def _subtree(
     corresponding entry.
     """
 
-    relative = path.relative_to(root)
     try:
-        inspection = await capability_view.inspect(
-            (Path(_LIBRARY_DIRECTORY) / relative).as_posix()
-        )
+        inspection = await capability_view.inspect(_view_relative(relative))
     except ValueError as exc:
         return (
             _entry(
                 relative,
-                "directory" if path.is_dir() else "file",
+                kind,
                 provenance=None,
                 shadows_repertoire=False,
                 fingerprint=None,
@@ -1173,17 +1199,11 @@ async def _subtree(
         )
     if inspection.provenance not in {"repertoire", "workspace"}:
         return ()
-    if path.is_dir():
-        return await _directory_subtree(
-            capability_view,
-            root,
-            path,
-            relative,
-            capability_source,
-        )
+    if kind == "directory":
+        return await _directory_subtree(capability_view, relative)
     return (
         await _file_entry(
-            path,
+            capability_view,
             relative,
             inspection.provenance,
             inspection.shadows_repertoire,
@@ -1191,35 +1211,33 @@ async def _subtree(
     )
 
 
-def _directory_facts(
-    capability_source: _CapabilitySource,
-    relative: Path,
+async def _directory_facts(
+    capability_view: _BoundCapabilityView,
+    relative: str,
 ) -> tuple[Literal["repertoire", "workspace"], bool]:
     """Return one directory's presence layer and its shadow fact.
 
     Workspace and Repertoire directories merge in the view instead of
-    shadowing, so ``shadows_repertoire`` is always false for directories. A
-    lower presence marks the directory as ``repertoire``; otherwise it is
-    Workspace-owned.
+    shadowing, so ``shadows_repertoire`` is always false for directories. The
+    Bound View answers directory provenance from lower presence.
     """
 
-    lower = capability_source.repertoire / _LIBRARY_DIRECTORY / relative
-    return ("repertoire" if lower.is_dir() else "workspace", False)
+    inspection = await capability_view.inspect(_view_relative(relative))
+    if inspection.provenance in {"repertoire", "workspace"}:
+        return inspection.provenance, False
+    return "workspace", False
 
 
 async def _directory_subtree(
     capability_view: _BoundCapabilityView,
-    root: Path,
-    directory: Path,
-    relative: Path,
-    capability_source: _CapabilitySource,
+    relative: str,
 ) -> tuple[LibraryEntry, ...]:
     """Return one directory fact followed by its direct-child subtree facts."""
 
-    provenance, shadows = _directory_facts(capability_source, relative)
+    provenance, shadows = await _directory_facts(capability_view, relative)
     try:
-        children = sorted(directory.iterdir(), key=lambda path: path.name)
-    except OSError as exc:
+        listing = await capability_view.list(_view_relative(relative))
+    except _FilesystemError as exc:
         return (
             _entry(
                 relative,
@@ -1232,10 +1250,15 @@ async def _directory_subtree(
             ),
         )
     child_entries: list[LibraryEntry] = []
-    for child in children:
+    for child in sorted(listing, key=lambda entry: entry.name):
         if child.name != _INDEX_FILENAME:
+            child_relative = f"{relative}/{child.name}" if relative else child.name
             child_entries.extend(
-                await _subtree(capability_view, root, child, capability_source)
+                await _subtree(
+                    capability_view,
+                    child_relative,
+                    child.metadata.kind,
+                )
             )
     return (
         _entry(
@@ -1252,14 +1275,14 @@ async def _directory_subtree(
 
 
 async def _file_entry(
-    path: Path,
-    relative: Path,
+    capability_view: _BoundCapabilityView,
+    relative: str,
     provenance: Literal["repertoire", "workspace"],
     shadows_repertoire: bool,
 ) -> LibraryEntry:
     try:
-        source = path.read_bytes()
-    except OSError as exc:
+        source = await capability_view.read(_view_relative(relative))
+    except _FilesystemError as exc:
         return _entry(
             relative,
             "file",
@@ -1270,7 +1293,7 @@ async def _file_entry(
             error=f"cannot read file: {exc}",
         )
     fingerprint = _file_fingerprint(_content_digest(source))
-    parser = _select_parser(path)
+    parser = _select_parser(relative)
     if parser is None:
         return _entry(
             relative,
@@ -1279,10 +1302,10 @@ async def _file_entry(
             shadows_repertoire=shadows_repertoire,
             fingerprint=fingerprint,
             status="unsupported",
-            error=f"no parser supports file type: {path.name}",
+            error=f"no parser supports file type: {_leaf(relative)}",
         )
     try:
-        await parser.parse(path)
+        await parser.parse(source, relative)
     except LibraryParseError as exc:
         return _entry(
             relative,
@@ -1305,7 +1328,7 @@ async def _file_entry(
 
 
 def _entry(
-    relative: Path,
+    relative: str,
     kind: Literal["file", "directory"],
     *,
     provenance: Literal["repertoire", "workspace"] | None,
@@ -1315,7 +1338,7 @@ def _entry(
     error: str | None,
 ) -> LibraryEntry:
     return LibraryEntry(
-        path=relative.as_posix(),
+        path=relative,
         kind=kind,
         provenance=provenance,
         shadows_repertoire=shadows_repertoire,

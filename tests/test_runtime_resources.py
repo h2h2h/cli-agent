@@ -161,10 +161,10 @@ def test_reconcile_runs_steps_in_documented_order(
         @staticmethod
         async def reconcile(
             capability_view: object,
+            filesystem: object,
             summary_cache: object,
-            capability_source: object,
         ) -> object:
-            del capability_view, summary_cache, capability_source
+            del capability_view, filesystem, summary_cache
             order.append("library_catalog")
             return object()
 
