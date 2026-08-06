@@ -3,6 +3,11 @@ from pathlib import Path
 from typing import Literal
 
 from cli_agent.runtime import ToolCall
+from cli_agent.runtime._backend.local import (
+    _LocalBackendWorkspace,
+    _LocalShellExecution,
+    _ProcessExecution,
+)
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
@@ -16,10 +21,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _ExecutionOutcome,
     _ExecutionOutput,
 )
-from cli_agent.runtime._environment.handlers.executions import (
-    _InlineExecution,
-    _ProcessExecution,
-)
+from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.routing import (
     _ExecutionRoute,
@@ -61,11 +63,11 @@ def test_custom_command_prepares_export_and_shell_handler_prepares_process(
         assert outcome == _ExecutionOutcome.exited()
         assert environment == {"A": "1", "MESSAGE": "two words"}
 
-        process_execution = _ShellHandler().prepare(
+        process_execution = _ShellHandler(_LocalBackendWorkspace(tmp_path, {})).prepare(
             parse_shell_ast("pwd"),
             context,
         )
-        assert isinstance(process_execution, _ProcessExecution)
+        assert isinstance(process_execution, _LocalShellExecution)
 
     asyncio.run(scenario())
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from cli_agent.runtime._backend import _BackendWorkspace
+from cli_agent.runtime._backend.local import _LocalBackendWorkspace
 from cli_agent.runtime._capability.command_parser import (
     ShellParseResult,
     parse_shell_ast,
@@ -84,7 +85,11 @@ class EnvironmentKernel:
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> None:
         self._workspace = Path(workspace).resolve()
+        if backend is None:
+            backend = _LocalBackendWorkspace(self._workspace, {})
         self._backend = backend
+        if capability_view is not None and isinstance(backend, _LocalBackendWorkspace):
+            backend.bind_capability_view(capability_view)
         self._policy = policy
         self._user_interaction = user_interaction
         self._session_id = session_id
@@ -112,7 +117,7 @@ class EnvironmentKernel:
         else:
             registry.register(tool_command)
             registry.register(file_command)
-        shell_handler = _ShellHandler(capability_view)
+        shell_handler = _ShellHandler(backend)
         self._router = _CommandRouter(
             shell_command=_ShellCommand(
                 prepare=shell_handler.prepare,

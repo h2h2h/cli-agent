@@ -7,6 +7,7 @@ import json
 import os
 from importlib.resources import files
 
+from cli_agent.runtime._backend.local import _ProcessExecution
 from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
@@ -15,10 +16,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _PreparedExecution,
 )
-from cli_agent.runtime._environment.handlers.executions import (
-    _ProcessExecution,
-    _text_execution,
-)
+from cli_agent.runtime._environment.handlers.executions import _text_execution
 
 
 class _ToolHandler:

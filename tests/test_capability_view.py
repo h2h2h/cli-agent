@@ -8,6 +8,7 @@ from interaction_fakes import _ScriptedInteraction
 from policy_fakes import _AskForWritesPolicy
 
 from cli_agent.runtime import ToolCall, ToolResult
+from cli_agent.runtime._backend.local import _LocalBackendWorkspace
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -291,7 +292,9 @@ def test_cancelled_shell_execution_does_not_copy_up(tmp_path: Path) -> None:
     visible = workspace / ".workspace" / "tools" / "cancelled.txt"
 
     async def scenario() -> None:
-        execution = _ShellHandler(view).prepare(
+        backend = _LocalBackendWorkspace(workspace, {})
+        backend.bind_capability_view(view)
+        execution = _ShellHandler(backend).prepare(
             parse_shell_ast("echo x > .workspace/tools/cancelled.txt"),
             _CommandContext(
                 workspace=workspace,

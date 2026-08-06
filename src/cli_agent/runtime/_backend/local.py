@@ -1,22 +1,26 @@
 """Local Backend: Host-filesystem Workspace and Host subprocess mechanics.
 
 The Local Backend is the reference RFC-0012 implementation: it owns the Host
-``Path`` used for filesystem operations and the Host ambient environment
-merge strategy, while exposing only backend-neutral facts and contracts.
-Shell/Tool preparation and Capability binding arrive with later issues; the
-corresponding members fail loudly with ``NotImplementedError`` until then.
+``Path`` used for filesystem operations, the Host ambient environment merge
+strategy, and every ordinary Shell subprocess, while exposing only
+backend-neutral facts and contracts. Tool preparation and Capability binding
+arrive with later issues; the corresponding members fail loudly with
+``NotImplementedError`` until then.
 """
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import os
 import shutil
+import signal
 import stat
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
+from typing import AsyncContextManager, Literal, Protocol
 
 from cli_agent.runtime._backend.facts import (
     _CapabilityInspection,
@@ -40,8 +44,15 @@ from cli_agent.runtime._backend.protocol import (
     _BoundCapabilityView,
     _WorkspaceMCPRuntime,
 )
+from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._capability.workspace import _load_workspace_env
-from cli_agent.runtime._environment.handlers.base import _PreparedExecution
+from cli_agent.runtime._environment.handlers.base import (
+    _ExecutionOutcome,
+    _ExecutionOutput,
+    _PreparedExecution,
+)
+
+_ProcessSpawner = Callable[[], Awaitable[asyncio.subprocess.Process]]
 
 
 class _LocalBackend:
@@ -89,6 +100,7 @@ class _LocalBackendWorkspace:
         self.capabilities: _BoundCapabilityView = _UnimplementedCapabilityView()
         self.mcp: _WorkspaceMCPRuntime = _UnimplementedMCPRuntime()
         self.workspace_environment = environment
+        self._capability_view: _ShellMutation | None = None
         self._closed = False
 
     def execution_base_environment(self) -> Mapping[str, str]:
@@ -101,14 +113,29 @@ class _LocalBackendWorkspace:
 
         return {**os.environ, **self.workspace_environment}
 
+    def bind_capability_view(self, view: _ShellMutation | None) -> None:
+        """Temporarily attach the legacy Capability View for Shell copy-up.
+
+        Removed when the Capability Source/State layering arrives.
+        """
+
+        self._capability_view = view
+
     def prepare_shell(
         self,
         request: _ShellExecutionRequest,
     ) -> _PreparedExecution:
-        """Prepare one Shell execution; arrives with Handler migration."""
+        """Prepare one Shell execution without starting a subprocess."""
 
-        del request
-        raise NotImplementedError("Local Shell preparation is not implemented yet")
+        return _LocalShellExecution(
+            command=request.command,
+            cwd=_resolve_path(self._root, request.cwd),
+            environment={
+                **self.execution_base_environment(),
+                **request.environment,
+            },
+            mutation=self._capability_view,
+        )
 
     def prepare_tool(
         self,
@@ -221,10 +248,154 @@ class _LocalWorkspaceFilesystem:
             raise _filesystem_error(path, exc) from exc
 
     def _resolve(self, path: str) -> Path:
-        candidate = Path(path)
-        if not candidate.is_absolute():
-            candidate = self._root / candidate
-        return Path(os.path.abspath(os.path.normpath(str(candidate))))
+        return _resolve_path(self._root, path)
+
+
+class _LocalShellExecution:
+    """Run one ordinary Shell command inside the Local Backend Workspace.
+
+    The subprocess is created only when :meth:`run` starts; cancellation
+    before ``run`` never allocates a process. The optional ``mutation`` seam
+    copies up output-redirected capability targets before the process spawns.
+    """
+
+    def __init__(
+        self,
+        command: ShellParseResult,
+        cwd: Path,
+        environment: Mapping[str, str],
+        mutation: _ShellMutation | None,
+    ) -> None:
+        self._command = command
+        self._cwd = cwd
+        self._mutation = mutation
+        self._cancel_requested = False
+        self._process = _ProcessExecution(
+            _shell_spawner(command.raw_command, cwd, environment)
+        )
+
+    async def run(self, output: _ExecutionOutput) -> _ExecutionOutcome:
+        mutation = self._mutation
+        if mutation is None:
+            return await self._process.run(output)
+        async with mutation.prepare_shell(
+            self._command,
+            self._cwd,
+            cancelled=lambda: self._cancel_requested,
+        ) as prepared:
+            if not prepared:
+                return _ExecutionOutcome.killed()
+            return await self._process.run(output)
+
+    async def cancel(self) -> None:
+        self._cancel_requested = True
+        await self._process.cancel()
+
+
+class _ProcessExecution:
+    """Own one child process and its process group."""
+
+    def __init__(
+        self,
+        spawn: _ProcessSpawner,
+        *,
+        input_data: bytes | None = None,
+    ) -> None:
+        self._spawn = spawn
+        self._input_data = input_data
+        self._process: asyncio.subprocess.Process | None = None
+        self._ready = asyncio.Event()
+        self._completed = asyncio.Event()
+        self._run_started = False
+        self._cancel_requested = False
+
+    async def run(self, output: _ExecutionOutput) -> _ExecutionOutcome:
+        self._run_started = True
+        process: asyncio.subprocess.Process | None = None
+        try:
+            if self._cancel_requested:
+                return _ExecutionOutcome.killed()
+
+            process = await self._spawn()
+            self._process = process
+            self._ready.set()
+            if self._cancel_requested:
+                _signal_process(process, force=False)
+            if self._input_data is not None:
+                if process.stdin is None:
+                    raise RuntimeError("process input was configured without stdin")
+                process.stdin.write(self._input_data)
+                await process.stdin.drain()
+                process.stdin.close()
+
+            stdout_task = asyncio.create_task(
+                self._capture_stream(output, process.stdout, "stdout")
+            )
+            stderr_task = asyncio.create_task(
+                self._capture_stream(output, process.stderr, "stderr")
+            )
+            exit_code = await process.wait()
+            await asyncio.gather(stdout_task, stderr_task)
+            if self._cancel_requested:
+                return _ExecutionOutcome.killed(exit_code)
+            if exit_code == 0:
+                return _ExecutionOutcome.exited(exit_code)
+            return _ExecutionOutcome.failed(exit_code)
+        except Exception:
+            if process is not None:
+                _signal_process(process, force=True)
+                with suppress(Exception):
+                    await process.wait()
+            exit_code = process.returncode if process is not None else None
+            if self._cancel_requested:
+                return _ExecutionOutcome.killed(exit_code)
+            return _ExecutionOutcome.failed(exit_code)
+        finally:
+            self._ready.set()
+            self._completed.set()
+
+    async def cancel(self) -> None:
+        self._cancel_requested = True
+        if not self._run_started:
+            return
+        await self._ready.wait()
+        process = self._process
+        if process is None or process.returncode is not None:
+            return
+
+        _signal_process(process, force=False)
+        try:
+            await asyncio.wait_for(
+                self._completed.wait(),
+                timeout=0.5,
+            )
+        except asyncio.TimeoutError:
+            _signal_process(process, force=True)
+
+    async def _capture_stream(
+        self,
+        output: _ExecutionOutput,
+        stream: asyncio.StreamReader | None,
+        stream_name: Literal["stdout", "stderr"],
+    ) -> None:
+        if stream is None:
+            return
+        while data := await stream.read(4096):
+            await output.write(stream_name, data)
+
+
+class _ShellMutation(Protocol):
+    """Temporary Shell redirect copy-up seam replaced by Capability layering."""
+
+    def prepare_shell(
+        self,
+        command: ShellParseResult,
+        cwd: Path,
+        *,
+        cancelled: Callable[[], bool],
+    ) -> AsyncContextManager[bool]:
+        """Return a context manager that copies up before one Shell runs."""
+        ...
 
 
 class _UnimplementedCapabilityView:
@@ -252,6 +423,52 @@ class _UnimplementedMCPRuntime:
 
     async def discover(self) -> tuple[_MCPServerFacts, ...]:
         raise NotImplementedError("Workspace MCP Runtime is not implemented yet")
+
+
+def _resolve_path(root: Path, path: str) -> Path:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    return Path(os.path.abspath(os.path.normpath(str(candidate))))
+
+
+def _shell_spawner(
+    raw_command: str,
+    cwd: Path,
+    environment: Mapping[str, str],
+) -> _ProcessSpawner:
+    """Return a spawner that starts one Shell process in the Workspace."""
+
+    async def spawn() -> asyncio.subprocess.Process:
+        return await asyncio.create_subprocess_shell(
+            raw_command,
+            cwd=cwd,
+            env=dict(environment),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=os.name == "posix",
+        )
+
+    return spawn
+
+
+def _signal_process(
+    process: asyncio.subprocess.Process,
+    *,
+    force: bool,
+) -> None:
+    if process.returncode is not None:
+        return
+    with suppress(ProcessLookupError):
+        if os.name == "posix":
+            os.killpg(
+                process.pid,
+                signal.SIGKILL if force else signal.SIGTERM,
+            )
+        elif force:
+            process.kill()
+        else:
+            process.terminate()
 
 
 def _metadata(info: os.stat_result) -> _FileMetadata:
