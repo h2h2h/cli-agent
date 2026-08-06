@@ -264,6 +264,7 @@ class AgentRuntime:
     def _new_kernel(self, session_id: str) -> EnvironmentKernel:
         return EnvironmentKernel(
             self._resources.workspace,
+            backend=self._resources.backend,
             capability_view=self._resources.capability_view,
             library_catalog=self._resources.library_catalog,
             tool_catalog=self._resources.tool_catalog,

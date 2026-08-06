@@ -8,6 +8,7 @@ from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
+from cli_agent.runtime._backend import _BackendWorkspace
 from cli_agent.runtime._capability.command_parser import (
     ShellParseResult,
     parse_shell_ast,
@@ -65,6 +66,7 @@ class EnvironmentKernel:
         self,
         workspace: str | Path,
         *,
+        backend: _BackendWorkspace | None = None,
         base_env: Mapping[str, str] | None = None,
         policy: ExecutionPolicy | None = None,
         chunk_limit: int = 2_000,
@@ -82,6 +84,7 @@ class EnvironmentKernel:
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> None:
         self._workspace = Path(workspace).resolve()
+        self._backend = backend
         self._policy = policy
         self._user_interaction = user_interaction
         self._session_id = session_id

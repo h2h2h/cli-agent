@@ -6,17 +6,21 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cli_agent.runtime._backend import (
+    _BackendWorkspace,
+    _CapabilitySource,
+    _CapabilityState,
+    _WorkspaceSource,
+)
+from cli_agent.runtime._backend.local import _LocalBackend
 from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
-from cli_agent.runtime._capability.view import _CapabilityView
-from cli_agent.runtime._capability.workspace import (
-    _load_workspace_env,
-    _prepare_workspace,
-)
+from cli_agent.runtime._capability.view import _CapabilityView, _prepare_repertoire
+from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._state_db import _StateDatabase
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
@@ -31,6 +35,7 @@ class _RuntimeResources:
     """
 
     workspace: Path
+    backend: _BackendWorkspace
     base_env: Mapping[str, str] = field(repr=False)
     capability_view: _CapabilityView
     tool_catalog: _ToolCatalog
@@ -63,8 +68,13 @@ async def _reconcile_runtime_resources(
     """
 
     paths = _prepare_workspace(workspace)
-    base_env = _load_workspace_env(paths.environment)
-    capability_view = _CapabilityView.open(paths.root, repertoire)
+    repertoire_root = _prepare_repertoire(repertoire)
+    backend = await _LocalBackend().open_workspace(
+        source=_WorkspaceSource(root=paths.root, environment=paths.environment),
+        capability_source=_CapabilitySource(repertoire=repertoire_root),
+        capability_state=_CapabilityState(root=paths.state),
+    )
+    capability_view = _CapabilityView.open(paths.root, repertoire_root)
     state_database = _StateDatabase.open()
     summary_cache = _SummaryCache(state_database)
     await _MCPCatalog.reconcile(
@@ -83,7 +93,8 @@ async def _reconcile_runtime_resources(
     )
     return _RuntimeResources(
         workspace=paths.root,
-        base_env=base_env,
+        backend=backend,
+        base_env=backend.workspace_environment,
         capability_view=capability_view,
         tool_catalog=tool_catalog,
         tool_environment=tool_environment,
