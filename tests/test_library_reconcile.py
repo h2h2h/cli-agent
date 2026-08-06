@@ -7,8 +7,10 @@ from cli_agent.runtime import (
     ModelCompletion,
     ScriptedModelProvider,
 )
+from cli_agent.runtime._backend import _CapabilitySource
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
+    _LocalCapabilityView,
     _LocalWorkspaceFilesystem,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
@@ -18,7 +20,6 @@ from cli_agent.runtime._capability.library.facts import (
     _content_digest,
     _file_fingerprint,
 )
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment.handlers.base import _CommandContext
 from cli_agent.runtime._environment.handlers.files import _FileHandler
@@ -72,28 +73,37 @@ async def _drain(catalog: _LibraryCatalog) -> None:
     await catalog._queue.join()  # type: ignore[union-attr]
 
 
-def _scenario(workspace: Path, repertoire: Path) -> _CapabilityView:
+def _scenario(
+    workspace: Path,
+    repertoire: Path,
+) -> tuple[_LocalCapabilityView, _CapabilitySource]:
     _prepare_workspace(workspace)
-    return _CapabilityView.open(workspace, repertoire)
+    return (
+        _LocalCapabilityView.materialize(workspace / ".workspace", repertoire),
+        _CapabilitySource(repertoire=repertoire),
+    )
 
 
-def _filesystem(workspace: Path, view: _CapabilityView) -> _LocalWorkspaceFilesystem:
-    backend = _LocalBackendWorkspace(workspace, {})
-    backend.bind_capability_view(view)
+def _filesystem(
+    workspace: Path,
+    view: _LocalCapabilityView,
+) -> _LocalWorkspaceFilesystem:
+    backend = _LocalBackendWorkspace(workspace, {}, view)
     return backend.filesystem
 
 
 async def _reconcile_catalog(
-    view: _CapabilityView,
+    view: _LocalCapabilityView,
     workspace: Path,
+    source: _CapabilitySource,
 ) -> _LibraryCatalog:
-    return await _LibraryCatalog.reconcile(view, _cache(workspace))
+    return await _LibraryCatalog.reconcile(view, _cache(workspace), source)
 
 
 async def _write_library_file(
     workspace: Path,
     catalog: _LibraryCatalog,
-    view: _CapabilityView,
+    view: _LocalCapabilityView,
     logical: str,
     content: str,
 ) -> None:
@@ -127,8 +137,8 @@ def test_external_edit_transitions_ready_to_stale_then_converges(
     )
 
     async def scenario() -> None:
-        view = _scenario(tmp_path, repertoire)
-        catalog = await _reconcile_catalog(view, tmp_path)
+        view, source = _scenario(tmp_path, repertoire)
+        catalog = await _reconcile_catalog(view, tmp_path, source)
         catalog.start(provider)
         await _drain(catalog)
         assert catalog.get("notes.md").status == "ready"  # type: ignore[union-attr]
@@ -167,8 +177,8 @@ def test_external_new_file_is_pending_and_reconcile_calls_no_model(
     provider = _RecordingProvider(script=("new summary.", "Root holds one file."))
 
     async def scenario() -> None:
-        view = _scenario(tmp_path, repertoire)
-        catalog = await _reconcile_catalog(view, tmp_path)
+        view, source = _scenario(tmp_path, repertoire)
+        catalog = await _reconcile_catalog(view, tmp_path, source)
         assert catalog.get("").status == "ready"  # type: ignore[union-attr]
         assert catalog.get("").summary == "Empty directory."  # type: ignore[union-attr]
 
@@ -196,8 +206,8 @@ def test_external_deletion_removes_entry_and_updates_index(tmp_path: Path) -> No
     provider = _RecordingProvider(script=("one", "Root holds one file."))
 
     async def scenario() -> None:
-        view = _scenario(tmp_path, repertoire)
-        catalog = await _reconcile_catalog(view, tmp_path)
+        view, source = _scenario(tmp_path, repertoire)
+        catalog = await _reconcile_catalog(view, tmp_path, source)
         catalog.start(provider)
         await _drain(catalog)
 
@@ -221,12 +231,14 @@ def test_external_new_directory_subtree_is_discovered(tmp_path: Path) -> None:
     provider = _RecordingProvider(script=("new summary.", "Root holds one file."))
 
     async def scenario() -> None:
-        view = _scenario(tmp_path, repertoire)
-        catalog = await _reconcile_catalog(view, tmp_path)
+        view, source = _scenario(tmp_path, repertoire)
+        catalog = await _reconcile_catalog(view, tmp_path, source)
 
-        (view.root / "library" / "newdir").mkdir()
-        (view.root / "library" / "newdir" / "a.md").write_text("a\n", encoding="utf-8")
-        (view.root / "library" / "newdir" / "empty").mkdir()
+        (Path(view.root) / "library" / "newdir").mkdir()
+        (Path(view.root) / "library" / "newdir" / "a.md").write_text(
+            "a\n", encoding="utf-8"
+        )
+        (Path(view.root) / "library" / "newdir" / "empty").mkdir()
         await catalog.reconcile_changes()
 
         by_path = {entry.path: entry for entry in catalog.entries}
@@ -247,11 +259,11 @@ def test_external_directory_deletion_removes_whole_subtree(tmp_path: Path) -> No
     (repertoire / "library" / "newdir" / "a.md").write_text("a\n", encoding="utf-8")
 
     async def scenario() -> None:
-        view = _scenario(tmp_path, repertoire)
-        catalog = await _reconcile_catalog(view, tmp_path)
+        view, source = _scenario(tmp_path, repertoire)
+        catalog = await _reconcile_catalog(view, tmp_path, source)
         assert catalog.get("newdir/a.md") is not None
 
-        shutil.rmtree(view.root / "library" / "newdir")
+        shutil.rmtree(Path(view.root) / "library" / "newdir")
         await catalog.reconcile_changes()
 
         assert catalog.get("newdir") is None
@@ -269,8 +281,8 @@ def test_files_write_marks_dirty_path_and_next_reconcile_applies(
     provider = _RecordingProvider(script=("written.", "Root holds one file."))
 
     async def scenario() -> None:
-        view = _scenario(tmp_path, repertoire)
-        catalog = await _reconcile_catalog(view, tmp_path)
+        view, source = _scenario(tmp_path, repertoire)
+        catalog = await _reconcile_catalog(view, tmp_path, source)
         await _write_library_file(tmp_path, catalog, view, "notes.md", "fresh\n")
 
         assert catalog._dirty_paths == {"notes.md"}
@@ -303,8 +315,8 @@ def test_files_edit_marks_dirty_and_transitions_to_stale(tmp_path: Path) -> None
     )
 
     async def scenario() -> None:
-        view = _scenario(tmp_path, repertoire)
-        catalog = await _reconcile_catalog(view, tmp_path)
+        view, source = _scenario(tmp_path, repertoire)
+        catalog = await _reconcile_catalog(view, tmp_path, source)
         catalog.start(provider)
         await _drain(catalog)
         assert catalog.get("notes.md").status == "ready"  # type: ignore[union-attr]
@@ -348,8 +360,8 @@ def test_failed_files_write_never_marks_dirty(tmp_path: Path) -> None:
     repertoire = _repertoire(tmp_path)
 
     async def scenario() -> None:
-        view = _scenario(tmp_path, repertoire)
-        catalog = await _reconcile_catalog(view, tmp_path)
+        view, source = _scenario(tmp_path, repertoire)
+        catalog = await _reconcile_catalog(view, tmp_path, source)
         (tmp_path / "blocker.txt").write_text("occupied\n", encoding="utf-8")
 
         handler = _FileHandler(
@@ -379,10 +391,10 @@ def test_cache_hit_restores_ready_without_the_worker(tmp_path: Path) -> None:
     provider = _RecordingProvider(script=("new summary.", "Root holds one file."))
 
     async def scenario() -> None:
-        view = _scenario(tmp_path, repertoire)
+        view, source = _scenario(tmp_path, repertoire)
         cache = _cache(tmp_path)
         cache.upsert(_fingerprint_of("cached\n"), "file", "Cached summary.")
-        catalog = await _LibraryCatalog.reconcile(view, cache)
+        catalog = await _LibraryCatalog.reconcile(view, cache, source)
 
         (_library(tmp_path) / "notes.md").write_text("cached\n", encoding="utf-8")
         await catalog.reconcile_changes()
@@ -402,8 +414,8 @@ def test_whiteouted_file_is_removed(tmp_path: Path) -> None:
     (repertoire / "library" / "notes.md").write_text("one\n", encoding="utf-8")
 
     async def scenario() -> None:
-        view = _scenario(tmp_path, repertoire)
-        catalog = await _reconcile_catalog(view, tmp_path)
+        view, source = _scenario(tmp_path, repertoire)
+        catalog = await _reconcile_catalog(view, tmp_path, source)
         assert catalog.get("notes.md") is not None
 
         (_library(tmp_path) / "notes.md").unlink()
@@ -425,9 +437,9 @@ def test_files_write_over_repertoire_file_becomes_workspace_override(
     (repertoire / "library" / "guide.md").write_text("lower\n", encoding="utf-8")
 
     async def scenario() -> None:
-        view = _scenario(tmp_path, repertoire)
-        catalog = await _reconcile_catalog(view, tmp_path)
-        view_md = view.root / "library" / "guide.md"
+        view, source = _scenario(tmp_path, repertoire)
+        catalog = await _reconcile_catalog(view, tmp_path, source)
+        view_md = Path(view.root) / "library" / "guide.md"
         assert view_md.is_symlink()
 
         await _write_library_file(tmp_path, catalog, view, "guide.md", "upper\n")

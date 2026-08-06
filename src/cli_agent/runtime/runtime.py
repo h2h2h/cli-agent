@@ -265,7 +265,6 @@ class AgentRuntime:
         return EnvironmentKernel(
             self._resources.workspace,
             backend=self._resources.backend,
-            capability_view=self._resources.capability_view,
             library_catalog=self._resources.library_catalog,
             tool_catalog=self._resources.tool_catalog,
             tool_environment=self._resources.tool_environment,

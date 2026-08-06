@@ -477,14 +477,14 @@ def test_capability_view_scenarios_index_the_effective_library(tmp_path: Path) -
         try:
             catalog = _catalog(runtime)
             view = runtime._resources.capability_view
-            view._copy_up(view.root / "library" / "override.md")
-            (view.root / "library" / "override.md").write_text(
+            view._copy_up(Path(view.root) / "library" / "override.md")
+            (Path(view.root) / "library" / "override.md").write_text(
                 "upper\n", encoding="utf-8"
             )
             whiteout = view._whiteouts / "library" / "hidden.md"
             whiteout.parent.mkdir(parents=True, exist_ok=True)
             whiteout.write_text("", encoding="utf-8")
-            (view.root / "library" / "hidden.md").unlink()
+            (Path(view.root) / "library" / "hidden.md").unlink()
 
             await _collect(runtime)
             await _drain(catalog)

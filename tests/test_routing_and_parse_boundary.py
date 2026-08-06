@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from cli_agent.runtime import ToolCall, ToolResult
+from cli_agent.runtime._backend.local import _LocalBackendWorkspace
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
     _CustomCommand,
@@ -163,9 +164,7 @@ def test_malformed_tools_heredoc_no_longer_bypasses_parser(
                 ToolCall(
                     call_id="bypassed-custom-heredoc",
                     name="exec",
-                    arguments={
-                        "command": "cli_run PY<<\ntools.echo.value()\nPY"
-                    },
+                    arguments={"command": "cli_run PY<<\ntools.echo.value()\nPY"},
                 )
             )
 
@@ -180,9 +179,10 @@ def test_malformed_tools_heredoc_no_longer_bypasses_parser(
 
 def test_parse_failure_never_reaches_capability_view(tmp_path: Path) -> None:
     view = _RaiseOnPrepareView()
+    backend = _LocalBackendWorkspace(tmp_path, {}, view)  # type: ignore[arg-type]
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path, capability_view=view)
+        kernel = EnvironmentKernel(tmp_path, backend=backend)
         try:
             result = await kernel.dispatch(
                 ToolCall(

@@ -7,8 +7,8 @@ import keyword
 from collections.abc import Callable
 from pathlib import Path
 
+from cli_agent.runtime._backend import _BoundCapabilityView
 from cli_agent.runtime._capability.tools.facts import ToolEntry
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _atomic_write
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
@@ -24,15 +24,15 @@ class _ToolCatalog:
         self._by_name = {entry.name: entry for entry in entries}
 
     @classmethod
-    def reconcile(
+    async def reconcile(
         cls,
-        capability_view: _CapabilityView,
+        capability_view: _BoundCapabilityView,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> _ToolCatalog:
         """Build trusted entries and atomically refresh the derived index.
 
         Args:
-            capability_view (`_CapabilityView`):
+            capability_view (`_BoundCapabilityView`):
                 Effective Runtime-open capability files to inspect.
             on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
                 Optional callback for non-blocking metadata parse notices.
@@ -41,18 +41,14 @@ class _ToolCatalog:
             The immutable Tool Catalog for the effective capability files.
         """
 
-        tools_directory = capability_view.root / "tools"
-        entries = tuple(
-            _inspect_tool(path, capability_view, on_diagnostic)
-            for path in sorted(
-                (
-                    path
-                    for path in tools_directory.iterdir()
-                    if path.name.endswith(".py")
-                ),
-                key=lambda path: path.name,
-            )
-        )
+        tools_directory = Path(capability_view.root) / "tools"
+        inspected: list[ToolEntry] = []
+        for path in sorted(
+            (path for path in tools_directory.iterdir() if path.name.endswith(".py")),
+            key=lambda path: path.name,
+        ):
+            inspected.append(await _inspect_tool(path, capability_view, on_diagnostic))
+        entries = tuple(inspected)
         catalog = cls(entries)
         _atomic_write(
             tools_directory / "index.md",
@@ -117,10 +113,7 @@ class _ToolCatalog:
             "",
             f"- Status: {'valid' if entry.valid else 'invalid'}",
             f"- Provenance: {entry.provenance or 'unknown'}",
-            (
-                "- Shadows Repertoire: "
-                f"{'yes' if entry.shadows_repertoire else 'no'}"
-            ),
+            (f"- Shadows Repertoire: {'yes' if entry.shadows_repertoire else 'no'}"),
             f"- Parallel Safe: {'yes' if entry.parallel_safe else 'no'}",
         ]
         if entry.validation_error:
@@ -135,16 +128,16 @@ class _ToolCatalog:
         return "\n".join(lines).rstrip() + "\n", True
 
 
-def _inspect_tool(
+async def _inspect_tool(
     path: Path,
-    capability_view: _CapabilityView,
+    capability_view: _BoundCapabilityView,
     on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
 ) -> ToolEntry:
     name = path.stem
     default_parallel_safe = _default_parallel_safe(name)
     relative = Path("tools") / path.name
     try:
-        inspection = capability_view.inspect(relative)
+        inspection = await capability_view.inspect(relative.as_posix())
     except ValueError as exc:
         return _invalid_entry(name, path, str(exc), default_parallel_safe)
 
@@ -164,10 +157,10 @@ def _inspect_tool(
             valid=False,
             validation_error=(
                 "Tool filename stem must be a non-keyword Python identifier"
-                ),
-                documentation=None,
-                parallel_safe=default_parallel_safe,
-            )
+            ),
+            documentation=None,
+            parallel_safe=default_parallel_safe,
+        )
     if not inspection.valid:
         return ToolEntry(
             **common,
@@ -272,8 +265,7 @@ def _parse_parallel_safe(
             matching_targets = [
                 target
                 for target in node.targets
-                if isinstance(target, ast.Name)
-                and target.id == _PARALLEL_SAFE_NAME
+                if isinstance(target, ast.Name) and target.id == _PARALLEL_SAFE_NAME
             ]
             if matching_targets:
                 if len(node.targets) != 1:
@@ -317,10 +309,7 @@ def _parse_parallel_safe(
 
 
 def _is_boolean_literal(value: ast.expr | None) -> bool:
-    return (
-        isinstance(value, ast.Constant)
-        and type(value.value) is bool
-    )
+    return isinstance(value, ast.Constant) and type(value.value) is bool
 
 
 def _parallel_safe_error(declarations: list[ast.expr | None]) -> str:

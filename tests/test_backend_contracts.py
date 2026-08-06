@@ -7,6 +7,7 @@ path and result fact is backend-neutral data, and the existing
 """
 
 import asyncio
+import posixpath
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import get_args, get_origin, get_type_hints
@@ -28,6 +29,7 @@ from cli_agent.runtime._backend import (
     _FileWriteResult,
     _MCPServerFacts,
     _MCPToolFacts,
+    _ResolvedPath,
     _ShellExecutionRequest,
     _ToolBinding,
     _ToolExecutionRequest,
@@ -52,6 +54,7 @@ _BACKEND_NEUTRAL_FACTS = (
     _ToolExecutionRequest,
     _ToolBinding,
     _FileMetadata,
+    _ResolvedPath,
     _DirectoryEntry,
     _FileWriteRequest,
     _FileWriteResult,
@@ -77,6 +80,15 @@ class _FakeFilesystem:
 
     def __init__(self) -> None:
         self._files: dict[str, bytes] = {}
+
+    def resolve(self, path: str, cwd: str) -> _ResolvedPath:
+        target = posixpath.normpath(
+            path if posixpath.isabs(path) else posixpath.join(cwd, path)
+        )
+        return _ResolvedPath(
+            path=target,
+            within_workspace=target == "/workspace" or target.startswith("/workspace/"),
+        )
 
     async def stat(self, path: str) -> _FileMetadata:
         try:
@@ -144,6 +156,65 @@ class _FakeCapabilityView:
     async def stat(self, relative_path: str) -> _FileMetadata:
         del relative_path
         return _FileMetadata(kind="directory", size=0, mtime_ns=0, mode=0o700)
+
+
+class _InMemoryCapabilityView:
+    """Bound Capability View fake with no symlink mechanics.
+
+    Proves the Bound View contract is implementable without Host symlink,
+    copy-up or whiteout machinery: effective files live in one logical
+    dictionary, and provenance is derived from a plain membership rule.
+    """
+
+    root = "/workspace"
+    _BACKING = {
+        "tools/math.py": b"def add(a, b):\n    return a + b\n",
+        "skills/review/SKILL.md": b"# Review\n",
+    }
+
+    async def inspect(self, relative_path: str) -> _CapabilityInspection:
+        if relative_path not in self._BACKING:
+            return _CapabilityInspection(
+                relative_path=relative_path,
+                provenance=None,
+                shadows_repertoire=False,
+                valid=True,
+                validation_error=None,
+            )
+        return _CapabilityInspection(
+            relative_path=relative_path,
+            provenance="repertoire",
+            shadows_repertoire=False,
+            valid=True,
+            validation_error=None,
+        )
+
+    async def list(self, relative_path: str) -> tuple[_DirectoryEntry, ...]:
+        prefix = relative_path.rstrip("/") + "/"
+        entries: list[_DirectoryEntry] = []
+        for name in sorted(self._BACKING):
+            if name.startswith(prefix) and "/" not in name[len(prefix) :]:
+                entries.append(
+                    _DirectoryEntry(
+                        name=name[len(prefix) :],
+                        metadata=await self.stat(name),
+                    )
+                )
+        return tuple(entries)
+
+    async def read(self, relative_path: str) -> bytes:
+        return self._BACKING[relative_path]
+
+    async def stat(self, relative_path: str) -> _FileMetadata:
+        if relative_path not in self._BACKING:
+            raise _FilesystemError("not_found", f"no such file: {relative_path}")
+        content = self._BACKING[relative_path]
+        return _FileMetadata(
+            kind="file",
+            size=len(content),
+            mtime_ns=0,
+            mode=0o644,
+        )
 
 
 class _FakeMCPRuntime:
@@ -334,6 +405,25 @@ def test_fake_backend_workspace_runs_execution_and_filesystem_flows() -> None:
         )
         await workspace.flush()
         await workspace.close()
+
+    asyncio.run(scenario())
+
+
+def test_bound_capability_view_contract_needs_no_host_mechanics() -> None:
+    view = _InMemoryCapabilityView()
+
+    assert isinstance(view, _BoundCapabilityView)
+
+    async def scenario() -> None:
+        inspection = await view.inspect("tools/math.py")
+        assert inspection.provenance == "repertoire"
+        assert inspection.shadows_repertoire is False
+        assert inspection.valid is True
+        missing = await view.inspect("tools/unknown.py")
+        assert missing.provenance is None
+        assert [entry.name for entry in await view.list("tools")] == ["math.py"]
+        assert await view.read("skills/review/SKILL.md") == b"# Review\n"
+        assert (await view.stat("tools/math.py")).kind == "file"
 
     asyncio.run(scenario())
 

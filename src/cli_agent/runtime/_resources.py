@@ -8,7 +8,7 @@ from pathlib import Path
 
 from cli_agent.runtime._backend import (
     _BackendWorkspace,
-    _CapabilitySource,
+    _BoundCapabilityView,
     _CapabilityState,
     _WorkspaceSource,
 )
@@ -17,9 +17,9 @@ from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.source import _prepare_capability_source
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
-from cli_agent.runtime._capability.view import _CapabilityView, _prepare_repertoire
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._state_db import _StateDatabase
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
@@ -37,7 +37,7 @@ class _RuntimeResources:
     workspace: Path
     backend: _BackendWorkspace
     base_env: Mapping[str, str] = field(repr=False)
-    capability_view: _CapabilityView
+    capability_view: _BoundCapabilityView
     tool_catalog: _ToolCatalog
     tool_environment: _ToolEnvironment
     skill_catalog: _SkillCatalog
@@ -68,34 +68,34 @@ async def _reconcile_runtime_resources(
     """
 
     paths = _prepare_workspace(workspace)
-    repertoire_root = _prepare_repertoire(repertoire)
+    capability_source = _prepare_capability_source(repertoire, paths.state)
     backend = await _LocalBackend().open_workspace(
         source=_WorkspaceSource(root=paths.root, environment=paths.environment),
-        capability_source=_CapabilitySource(repertoire=repertoire_root),
+        capability_source=capability_source,
         capability_state=_CapabilityState(root=paths.state),
     )
-    capability_view = _CapabilityView.open(paths.root, repertoire_root)
     state_database = _StateDatabase.open()
     summary_cache = _SummaryCache(state_database)
     await _MCPCatalog.reconcile(
-        capability_view,
+        backend.capabilities,
         on_diagnostic=on_diagnostic,
     )
-    tool_catalog = _ToolCatalog.reconcile(
-        capability_view,
+    tool_catalog = await _ToolCatalog.reconcile(
+        backend.capabilities,
         on_diagnostic=on_diagnostic,
     )
-    tool_environment = await _ToolEnvironment.reconcile(capability_view)
-    skill_catalog = _SkillCatalog.reconcile(capability_view)
+    tool_environment = await _ToolEnvironment.reconcile(backend.capabilities)
+    skill_catalog = await _SkillCatalog.reconcile(backend.capabilities)
     library_catalog = await _LibraryCatalog.reconcile(
-        capability_view,
+        backend.capabilities,
         summary_cache,
+        capability_source,
     )
     return _RuntimeResources(
         workspace=paths.root,
         backend=backend,
         base_env=backend.workspace_environment,
-        capability_view=capability_view,
+        capability_view=backend.capabilities,
         tool_catalog=tool_catalog,
         tool_environment=tool_environment,
         skill_catalog=skill_catalog,

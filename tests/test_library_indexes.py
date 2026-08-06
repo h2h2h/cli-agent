@@ -4,13 +4,14 @@ from pathlib import Path
 import pytest
 
 import cli_agent.runtime._capability.library.catalog as catalog_module
+from cli_agent.runtime._backend import _CapabilitySource
+from cli_agent.runtime._backend.local import _LocalCapabilityView
 from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.library.facts import (
     _content_digest,
     _file_fingerprint,
 )
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._state_db import _StateDatabase
 
@@ -33,8 +34,10 @@ def _fingerprint_of(content: str) -> str:
 def _reconcile(workspace: Path, repertoire: Path) -> _LibraryCatalog:
     async def scenario() -> _LibraryCatalog:
         _prepare_workspace(workspace)
-        view = _CapabilityView.open(workspace, repertoire)
-        return await _LibraryCatalog.reconcile(view, _cache(workspace))
+        view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
+        return await _LibraryCatalog.reconcile(
+            view, _cache(workspace), _CapabilitySource(repertoire=repertoire)
+        )
 
     return asyncio.run(scenario())
 
@@ -211,12 +214,16 @@ def test_workspace_override_renders_workspace_provenance_and_shadow(
     (repertoire / "library" / "guide.md").write_text("lower\n", encoding="utf-8")
 
     _prepare_workspace(tmp_path)
-    view = _CapabilityView.open(tmp_path, repertoire)
-    view_md = view.root / "library" / "guide.md"
+    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    view_md = Path(view.root) / "library" / "guide.md"
     view._copy_up(view_md)
     view_md.write_text("upper\n", encoding="utf-8")
 
-    asyncio.run(_LibraryCatalog.reconcile(view, _cache(tmp_path)))
+    asyncio.run(
+        _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
+    )
 
     index = _index(tmp_path)
     assert (

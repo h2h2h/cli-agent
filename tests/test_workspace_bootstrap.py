@@ -109,7 +109,7 @@ def test_runtime_open_uses_explicit_repertoire(tmp_path: Path) -> None:
             context_policy=_context_policy,
         )
         try:
-            assert runtime._resources.capability_view.repertoire == repertoire
+            assert runtime._resources.capability_view._repertoire == repertoire
         finally:
             await runtime.close()
 

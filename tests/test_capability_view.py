@@ -1,4 +1,13 @@
+"""Local Bound Capability View materialization and mutation tests.
+
+RFC-0012 issue 05 moves the file-level symlink attach, stale-link cleanup,
+copy-up, whiteout and mutation lock into the Local Backend Bound Capability
+View implementation; the generic Handler and Catalog contracts no longer
+depend on Host symlink mechanics.
+"""
+
 import asyncio
+import importlib.util
 import os
 import shlex
 from pathlib import Path
@@ -8,9 +17,13 @@ from interaction_fakes import _ScriptedInteraction
 from policy_fakes import _AskForWritesPolicy
 
 from cli_agent.runtime import ToolCall, ToolResult
-from cli_agent.runtime._backend.local import _LocalBackendWorkspace
+from cli_agent.runtime._backend import _BoundCapabilityView, _CapabilityInspection
+from cli_agent.runtime._backend.local import (
+    _LocalBackendWorkspace,
+    _LocalCapabilityView,
+)
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
-from cli_agent.runtime._capability.view import _CapabilityView
+from cli_agent.runtime._capability.source import _prepare_capability_source
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
@@ -36,7 +49,7 @@ def test_attach_exposes_lower_files_and_preserves_workspace_overrides(
     upper_tool.parent.mkdir(parents=True)
     upper_tool.write_text("LOCAL = 1\n", encoding="utf-8")
 
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
 
     visible_lower = workspace / ".workspace" / "tools" / "calc.py"
     visible_skill = workspace / ".workspace" / "skills" / "review" / "SKILL.md"
@@ -44,8 +57,72 @@ def test_attach_exposes_lower_files_and_preserves_workspace_overrides(
     assert visible_lower.read_text(encoding="utf-8") == "LOWER = 1\n"
     assert visible_skill.is_symlink()
     assert upper_tool.read_text(encoding="utf-8") == "LOCAL = 1\n"
-    assert view.inspect("tools/calc.py").provenance == "repertoire"
-    assert view.inspect("tools/local.py").provenance == "workspace"
+    assert _inspect(view, "tools/calc.py").provenance == "repertoire"
+    assert _inspect(view, "tools/local.py").provenance == "workspace"
+
+
+def test_materialized_view_implements_the_bound_capability_contract(
+    tmp_path: Path,
+) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    lower = repertoire / "tools" / "calc.py"
+    lower.write_text("LOWER = 1\n", encoding="utf-8")
+
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
+
+    assert isinstance(view, _BoundCapabilityView)
+    assert view.root == str(workspace / ".workspace")
+
+    async def scenario() -> None:
+        assert [entry.name for entry in await view.list("tools")] == ["calc.py"]
+        assert await view.read("tools/calc.py") == b"LOWER = 1\n"
+        metadata = await view.stat("tools/calc.py")
+        assert (metadata.kind, metadata.size) == ("file", len("LOWER = 1\n"))
+
+    asyncio.run(scenario())
+
+
+def test_bound_view_reads_reject_symlink_intermediate(tmp_path: Path) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret\n", encoding="utf-8")
+    nested = workspace / ".workspace" / "tools" / "nested"
+    nested.symlink_to(outside, target_is_directory=True)
+
+    async def scenario() -> None:
+        for operation, path in (
+            (view.inspect, "tools/nested/secret.txt"),
+            (view.list, "tools/nested"),
+            (view.read, "tools/nested/secret.txt"),
+            (view.stat, "tools/nested/secret.txt"),
+        ):
+            with pytest.raises(ValueError, match="symbolic link"):
+                await operation(path)
+
+    asyncio.run(scenario())
+
+
+def test_bound_view_reads_reject_forged_file_symlink(tmp_path: Path) -> None:
+    workspace, repertoire = _roots(tmp_path)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
+    outside = tmp_path / "outside.py"
+    outside.write_text("SECRET = True\n", encoding="utf-8")
+    forged = workspace / ".workspace" / "tools" / "forged.py"
+    forged.symlink_to(outside)
+
+    async def scenario() -> None:
+        for operation, path in (
+            (view.inspect, "tools/forged.py"),
+            (view.list, "tools"),
+            (view.read, "tools/forged.py"),
+            (view.stat, "tools/forged.py"),
+        ):
+            with pytest.raises(ValueError, match="invalid Workspace capability"):
+                await operation(path)
+
+    asyncio.run(scenario())
 
 
 def test_workspace_override_shadows_lower_across_reopen(tmp_path: Path) -> None:
@@ -56,15 +133,15 @@ def test_workspace_override_shadows_lower_across_reopen(tmp_path: Path) -> None:
     upper.parent.mkdir(parents=True)
     upper.write_text("workspace\n", encoding="utf-8")
 
-    first = _CapabilityView.open(workspace, repertoire)
+    first = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     lower.write_text("lower-v2\n", encoding="utf-8")
-    second = _CapabilityView.open(workspace, repertoire)
+    second = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
 
     assert upper.is_file()
     assert not upper.is_symlink()
     assert upper.read_text(encoding="utf-8") == "workspace\n"
-    assert first.inspect("tools/same.py").shadows_repertoire is True
-    assert second.inspect("tools/same.py").shadows_repertoire is True
+    assert _inspect(first, "tools/same.py").shadows_repertoire is True
+    assert _inspect(second, "tools/same.py").shadows_repertoire is True
 
 
 def test_invalid_workspace_override_remains_authoritative_and_is_reported(
@@ -76,8 +153,8 @@ def test_invalid_workspace_override_remains_authoritative_and_is_reported(
     override = workspace / ".workspace" / "tools" / "invalid.py"
     override.mkdir(parents=True)
 
-    view = _CapabilityView.open(workspace, repertoire)
-    inspected = view.inspect("tools/invalid.py")
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
+    inspected = _inspect(view, "tools/invalid.py")
 
     assert override.is_dir()
     assert inspected.provenance == "workspace"
@@ -92,7 +169,7 @@ def test_approved_output_redirection_copies_up_before_shell_spawn(
     workspace, repertoire = _roots(tmp_path)
     lower = repertoire / "tools" / "message.txt"
     lower.write_text("lower\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     visible = workspace / ".workspace" / "tools" / "message.txt"
     interaction = _ScriptedInteraction("allow_once")
     command = "echo workspace > .workspace/tools/message.txt"
@@ -100,7 +177,7 @@ def test_approved_output_redirection_copies_up_before_shell_spawn(
     async def scenario() -> None:
         kernel = EnvironmentKernel(
             workspace,
-            capability_view=view,
+            backend=_LocalBackendWorkspace(workspace, {}, view),
             policy=_AskForWritesPolicy(),
             user_interaction=interaction,
         )
@@ -118,20 +195,20 @@ def test_approved_output_redirection_copies_up_before_shell_spawn(
     assert visible.is_file()
     assert not visible.is_symlink()
     assert visible.read_text(encoding="utf-8") == "workspace\n"
-    assert view.inspect("tools/message.txt").shadows_repertoire is True
+    assert _inspect(view, "tools/message.txt").shadows_repertoire is True
 
 
 def test_denied_modification_does_not_copy_up(tmp_path: Path) -> None:
     workspace, repertoire = _roots(tmp_path)
     lower = repertoire / "tools" / "preserved.txt"
     lower.write_text("lower\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     visible = workspace / ".workspace" / "tools" / "preserved.txt"
 
     async def scenario() -> None:
         kernel = EnvironmentKernel(
             workspace,
-            capability_view=view,
+            backend=_LocalBackendWorkspace(workspace, {}, view),
             policy=_AskForWritesPolicy(),
             user_interaction=_ScriptedInteraction("deny"),
         )
@@ -157,7 +234,7 @@ def test_rm_lower_link_removes_view_link_without_piercing_repertoire(
     workspace, repertoire = _roots(tmp_path)
     lower = repertoire / "tools" / "hidden.py"
     lower.write_text("lower\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     visible = workspace / ".workspace" / "tools" / "hidden.py"
     assert visible.is_symlink()
 
@@ -165,34 +242,32 @@ def test_rm_lower_link_removes_view_link_without_piercing_repertoire(
 
     assert lower.is_file()
     assert not os.path.lexists(visible)
-    assert view.inspect("tools/hidden.py").provenance is None
+    assert _inspect(view, "tools/hidden.py").provenance is None
 
-    reopened = _CapabilityView.open(workspace, repertoire)
+    reopened = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     assert visible.is_symlink()
     assert visible.read_text(encoding="utf-8") == "lower\n"
-    assert reopened.inspect("tools/hidden.py").provenance == "repertoire"
+    assert _inspect(reopened, "tools/hidden.py").provenance == "repertoire"
 
 
-def test_rm_workspace_override_removes_entity_until_reopen(
-    tmp_path: Path,
-) -> None:
+def test_rm_workspace_override_removes_entity_until_reopen(tmp_path: Path) -> None:
     workspace, repertoire = _roots(tmp_path)
     lower = repertoire / "tools" / "restored.py"
     lower.write_text("lower\n", encoding="utf-8")
     upper = workspace / ".workspace" / "tools" / "restored.py"
     upper.parent.mkdir(parents=True)
     upper.write_text("workspace\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
 
     _run_approved(workspace, view, "rm .workspace/tools/restored.py")
 
     assert not os.path.lexists(upper)
-    assert view.inspect("tools/restored.py").provenance is None
+    assert _inspect(view, "tools/restored.py").provenance is None
 
-    reopened = _CapabilityView.open(workspace, repertoire)
+    reopened = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     assert upper.is_symlink()
     assert upper.read_text(encoding="utf-8") == "lower\n"
-    assert reopened.inspect("tools/restored.py").provenance == "repertoire"
+    assert _inspect(reopened, "tools/restored.py").provenance == "repertoire"
 
 
 def test_rm_workspace_only_file_leaves_path_absent(tmp_path: Path) -> None:
@@ -200,26 +275,24 @@ def test_rm_workspace_only_file_leaves_path_absent(tmp_path: Path) -> None:
     local = workspace / ".workspace" / "tools" / "local.py"
     local.parent.mkdir(parents=True)
     local.write_text("workspace\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
 
     _run_approved(workspace, view, "rm .workspace/tools/local.py")
 
     assert not local.exists()
-    assert view.inspect("tools/local.py").provenance is None
+    assert _inspect(view, "tools/local.py").provenance is None
 
 
-def test_removing_capability_root_is_recreated_on_reopen(
-    tmp_path: Path,
-) -> None:
+def test_removing_capability_root_is_recreated_on_reopen(tmp_path: Path) -> None:
     workspace, repertoire = _roots(tmp_path)
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     tools = workspace / ".workspace" / "tools"
 
     _run_approved(workspace, view, "rmdir .workspace/tools")
 
     assert not tools.exists()
 
-    _CapabilityView.open(workspace, repertoire)
+    _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     assert tools.is_dir()
     assert not tools.is_symlink()
 
@@ -230,34 +303,34 @@ def test_reopen_removes_generated_link_after_lower_file_is_removed(
     workspace, repertoire = _roots(tmp_path)
     lower = repertoire / "tools" / "removed.py"
     lower.write_text("lower\n", encoding="utf-8")
-    _CapabilityView.open(workspace, repertoire)
+    _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     visible = workspace / ".workspace" / "tools" / "removed.py"
     assert visible.is_symlink()
 
     lower.unlink()
-    reopened = _CapabilityView.open(workspace, repertoire)
+    reopened = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
 
     assert not os.path.lexists(visible)
-    assert reopened.inspect("tools/removed.py").provenance is None
+    assert _inspect(reopened, "tools/removed.py").provenance is None
 
 
 def test_copy_up_is_atomic_across_concurrent_sessions(tmp_path: Path) -> None:
     workspace, repertoire = _roots(tmp_path)
     lower = repertoire / "tools" / "shared.txt"
     lower.write_text("lower\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     interaction = _ScriptedInteraction("allow_once")
 
     async def scenario() -> None:
         first = EnvironmentKernel(
             workspace,
-            capability_view=view,
+            backend=_LocalBackendWorkspace(workspace, {}, view),
             policy=_AskForWritesPolicy(),
             user_interaction=interaction,
         )
         second = EnvironmentKernel(
             workspace,
-            capability_view=view,
+            backend=_LocalBackendWorkspace(workspace, {}, view),
             policy=_AskForWritesPolicy(),
             user_interaction=interaction,
         )
@@ -288,17 +361,16 @@ def test_cancelled_shell_execution_does_not_copy_up(tmp_path: Path) -> None:
     workspace, repertoire = _roots(tmp_path)
     lower = repertoire / "tools" / "cancelled.txt"
     lower.write_text("lower\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     visible = workspace / ".workspace" / "tools" / "cancelled.txt"
 
     async def scenario() -> None:
-        backend = _LocalBackendWorkspace(workspace, {})
-        backend.bind_capability_view(view)
+        backend = _LocalBackendWorkspace(workspace, {}, view)
         execution = _ShellHandler(backend).prepare(
             parse_shell_ast("echo x > .workspace/tools/cancelled.txt"),
             _CommandContext(
-                workspace=workspace,
-                cwd=workspace,
+                workspace=str(workspace),
+                cwd=str(workspace),
                 environment={},
             ),
         )
@@ -313,15 +385,13 @@ def test_cancelled_shell_execution_does_not_copy_up(tmp_path: Path) -> None:
     assert lower.read_text(encoding="utf-8") == "lower\n"
 
 
-def test_copy_up_rejects_symbolic_link_directory_traversal(
-    tmp_path: Path,
-) -> None:
+def test_copy_up_rejects_symbolic_link_directory_traversal(tmp_path: Path) -> None:
     workspace, repertoire = _roots(tmp_path)
     lower_directory = repertoire / "tools" / "nested"
     lower_directory.mkdir()
     lower = lower_directory / "protected.txt"
     lower.write_text("lower\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     visible_directory = workspace / ".workspace" / "tools" / "nested"
     for entry in tuple(visible_directory.iterdir()):
         entry.unlink()
@@ -331,7 +401,7 @@ def test_copy_up_rejects_symbolic_link_directory_traversal(
     async def scenario() -> None:
         kernel = EnvironmentKernel(
             workspace,
-            capability_view=view,
+            backend=_LocalBackendWorkspace(workspace, {}, view),
             policy=_AskForWritesPolicy(),
             user_interaction=_ScriptedInteraction("allow_once"),
         )
@@ -365,10 +435,22 @@ def test_rejects_workspace_capability_symlink_that_forges_lower_origin(
         ValueError,
         match="matching Repertoire file",
     ):
-        _CapabilityView.open(workspace, repertoire)
+        _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
 
     assert forged.is_symlink()
     assert forged.read_text(encoding="utf-8") == "forged\n"
+
+
+def test_materialize_fails_closed_when_repertoire_is_missing(
+    tmp_path: Path,
+) -> None:
+    workspace, repertoire = _roots(tmp_path)
+
+    with pytest.raises(ValueError, match="existing directory"):
+        _LocalCapabilityView.materialize(
+            workspace / ".workspace",
+            tmp_path / "missing-repertoire",
+        )
 
 
 def test_rejects_repertoire_inside_workspace(tmp_path: Path) -> None:
@@ -376,9 +458,9 @@ def test_rejects_repertoire_inside_workspace(tmp_path: Path) -> None:
     workspace.mkdir()
 
     with pytest.raises(ValueError, match="outside the Workspace state"):
-        _CapabilityView.open(
-            workspace,
+        _prepare_capability_source(
             workspace / ".workspace" / "repertoire",
+            workspace / ".workspace",
         )
 
 
@@ -388,11 +470,13 @@ def test_allows_default_repertoire_beneath_workspace_ancestor(
     workspace = tmp_path / "home"
     workspace.mkdir()
     repertoire = workspace / ".cli-agent" / "repertoire"
+    for name in ("tools", "skills", "library"):
+        (repertoire / name).mkdir(parents=True)
 
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
 
-    assert view.repertoire == repertoire
     assert (workspace / ".workspace" / "tools").is_dir()
+    assert view.root == str(workspace / ".workspace")
 
 
 def test_prepare_path_leaves_ordinary_files_untouched(tmp_path: Path) -> None:
@@ -404,7 +488,7 @@ def test_prepare_path_leaves_ordinary_files_untouched(tmp_path: Path) -> None:
     override = workspace / ".workspace" / "tools" / "local.py"
     override.parent.mkdir(parents=True)
     override.write_text("LOCAL = 1\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
 
     view.prepare_path(outside)
     view.prepare_path(override)
@@ -414,14 +498,14 @@ def test_prepare_path_leaves_ordinary_files_untouched(tmp_path: Path) -> None:
     assert not override.is_symlink()
     assert override.read_text(encoding="utf-8") == "LOCAL = 1\n"
     assert lower.read_text(encoding="utf-8") == "LOWER = 1\n"
-    assert view.inspect("tools/local.py").provenance == "workspace"
+    assert _inspect(view, "tools/local.py").provenance == "workspace"
 
 
 def test_prepare_path_copies_up_in_view_lower_link(tmp_path: Path) -> None:
     workspace, repertoire = _roots(tmp_path)
     lower = repertoire / "tools" / "calc.py"
     lower.write_text("LOWER = 1\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     visible = workspace / ".workspace" / "tools" / "calc.py"
     assert visible.is_symlink()
 
@@ -430,15 +514,15 @@ def test_prepare_path_copies_up_in_view_lower_link(tmp_path: Path) -> None:
     assert not visible.is_symlink()
     assert visible.read_text(encoding="utf-8") == "LOWER = 1\n"
     assert lower.read_text(encoding="utf-8") == "LOWER = 1\n"
-    assert view.inspect("tools/calc.py").provenance == "workspace"
-    assert view.inspect("tools/calc.py").shadows_repertoire is True
+    assert _inspect(view, "tools/calc.py").provenance == "workspace"
+    assert _inspect(view, "tools/calc.py").shadows_repertoire is True
 
 
 def test_prepare_path_removes_whiteout_before_write(tmp_path: Path) -> None:
     workspace, repertoire = _roots(tmp_path)
     lower = repertoire / "tools" / "hidden.py"
     lower.write_text("lower\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     visible = workspace / ".workspace" / "tools" / "hidden.py"
     whiteout = (
         workspace
@@ -451,12 +535,12 @@ def test_prepare_path_removes_whiteout_before_write(tmp_path: Path) -> None:
     whiteout.parent.mkdir(parents=True)
     whiteout.touch()
     visible.unlink()
-    assert view.inspect("tools/hidden.py").provenance == "whiteout"
+    assert _inspect(view, "tools/hidden.py").provenance == "whiteout"
 
     view.prepare_path(visible)
 
     assert not os.path.lexists(visible)
-    assert view.inspect("tools/hidden.py").provenance is None
+    assert _inspect(view, "tools/hidden.py").provenance is None
     assert lower.is_file()
     assert lower.read_text(encoding="utf-8") == "lower\n"
 
@@ -467,7 +551,7 @@ def test_prepare_path_rejects_symlink_intermediate(tmp_path: Path) -> None:
     lower_directory.mkdir()
     lower = lower_directory / "protected.txt"
     lower.write_text("lower\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     visible_directory = workspace / ".workspace" / "tools" / "nested"
     for entry in tuple(visible_directory.iterdir()):
         entry.unlink()
@@ -483,18 +567,16 @@ def test_prepare_path_rejects_symlink_intermediate(tmp_path: Path) -> None:
     assert lower.read_text(encoding="utf-8") == "lower\n"
 
 
-def test_prepare_path_allows_new_file_under_real_directory(
-    tmp_path: Path,
-) -> None:
+def test_prepare_path_allows_new_file_under_real_directory(tmp_path: Path) -> None:
     workspace, repertoire = _roots(tmp_path)
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     target = workspace / ".workspace" / "tools" / "generated" / "new.py"
     target.parent.mkdir(parents=True)
 
     view.prepare_path(target)
 
     assert not os.path.lexists(target)
-    assert view.inspect("tools/generated/new.py").provenance is None
+    assert _inspect(view, "tools/generated/new.py").provenance is None
 
 
 def test_prepare_path_rejects_invalid_lower_link(tmp_path: Path) -> None:
@@ -503,7 +585,7 @@ def test_prepare_path_rejects_invalid_lower_link(tmp_path: Path) -> None:
     lower.write_text("lower\n", encoding="utf-8")
     forged_target = tmp_path / "forged.py"
     forged_target.write_text("forged\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     forged = workspace / ".workspace" / "tools" / "real.py"
     forged.unlink()
     forged.symlink_to(forged_target)
@@ -514,10 +596,11 @@ def test_prepare_path_rejects_invalid_lower_link(tmp_path: Path) -> None:
     assert lower.read_text(encoding="utf-8") == "lower\n"
 
 
-def test_shell_mutator_heuristics_are_removed_from_view() -> None:
+def test_legacy_shell_mutator_heuristics_are_gone_from_backend_and_parser() -> None:
+    import cli_agent.runtime._backend.local as local_module
     import cli_agent.runtime._capability.command_parser as parser_module
-    import cli_agent.runtime._capability.view as view_module
 
+    assert importlib.util.find_spec("cli_agent.runtime._capability.view") is None
     for symbol in (
         "_DIRECT_MUTATORS",
         "_sed_is_in_place",
@@ -528,7 +611,7 @@ def test_shell_mutator_heuristics_are_removed_from_view() -> None:
         "_reconcile_deletes",
         "_create_whiteout",
     ):
-        assert not hasattr(view_module, symbol)
+        assert not hasattr(local_module, symbol)
         assert not hasattr(parser_module, symbol)
 
 
@@ -541,15 +624,19 @@ def _roots(tmp_path: Path) -> tuple[Path, Path]:
     return workspace, repertoire
 
 
+def _inspect(view: _LocalCapabilityView, relative: str) -> _CapabilityInspection:
+    return asyncio.run(view.inspect(relative))
+
+
 def _run_approved(
     workspace: Path,
-    view: _CapabilityView,
+    view: _LocalCapabilityView,
     command: str,
 ) -> None:
     async def scenario() -> None:
         kernel = EnvironmentKernel(
             workspace,
-            capability_view=view,
+            backend=_LocalBackendWorkspace(workspace, {}, view),
             policy=_AskForWritesPolicy(),
             user_interaction=_ScriptedInteraction("allow_once"),
         )

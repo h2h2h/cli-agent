@@ -13,10 +13,10 @@ from typing import Literal
 from cli_agent.runtime._backend import _ShellExecutionRequest
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
+    _LocalCapabilityView,
     _LocalShellExecution,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment.handlers.base import (
     _ExecutionOutcome,
 )
@@ -166,12 +166,11 @@ def test_capability_redirect_copy_up_happens_before_spawn(tmp_path: Path) -> Non
     lower = repertoire / "tools" / "message.txt"
     lower.parent.mkdir(parents=True)
     lower.write_text("lower\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     visible = workspace / ".workspace" / "tools" / "message.txt"
 
     async def scenario() -> None:
-        backend = _LocalBackendWorkspace(workspace, {})
-        backend.bind_capability_view(view)
+        backend = _LocalBackendWorkspace(workspace, {}, view)
         output = _BufferOutput()
 
         outcome = await backend.prepare_shell(

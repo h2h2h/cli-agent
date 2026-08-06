@@ -17,7 +17,6 @@ from cli_agent.runtime._capability.command_parser import (
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
     _CustomCommand,
@@ -78,7 +77,6 @@ class EnvironmentKernel:
         registry: _CustomCommandRegistry | None = None,
         user_interaction: UserInteraction | None = None,
         session_id: str | None = None,
-        capability_view: _CapabilityView | None = None,
         library_catalog: _LibraryCatalog | None = None,
         tool_catalog: _ToolCatalog | None = None,
         tool_environment: _ToolEnvironment | None = None,
@@ -89,8 +87,6 @@ class EnvironmentKernel:
             backend = _LocalBackendWorkspace(host_workspace, {})
         self._backend = backend
         self._workspace = backend.root
-        if capability_view is not None and isinstance(backend, _LocalBackendWorkspace):
-            backend.bind_capability_view(capability_view)
         self._policy = policy
         self._user_interaction = user_interaction
         self._session_id = session_id

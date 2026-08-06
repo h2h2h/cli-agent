@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cli_agent.runtime._backend import _BoundCapabilityView
 from cli_agent.runtime._capability.skills.facts import SkillEntry
 from cli_agent.runtime._capability.skills.parser import (
     SkillParseError,
@@ -11,7 +12,6 @@ from cli_agent.runtime._capability.skills.parser import (
     parse_frontmatter,
     validate,
 )
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _atomic_write
 
 
@@ -25,25 +25,23 @@ class _SkillCatalog:
         self._by_name = {entry.name: entry for entry in entries}
 
     @classmethod
-    def reconcile(cls, capability_view: _CapabilityView) -> _SkillCatalog:
+    async def reconcile(
+        cls,
+        capability_view: _BoundCapabilityView,
+    ) -> _SkillCatalog:
         """Build trusted entries and atomically refresh the derived index."""
 
-        skills_directory = capability_view.root / "skills"
+        skills_directory = Path(capability_view.root) / "skills"
         candidates = sorted(
-            (
-                path
-                for path in skills_directory.iterdir()
-                if path.is_dir()
-            ),
+            (path for path in skills_directory.iterdir() if path.is_dir()),
             key=lambda path: path.name,
         )
-        entries = tuple(
-            entry
-            for entry in (
-                _inspect_skill(path, capability_view) for path in candidates
-            )
-            if entry is not None
-        )
+        entries: list[SkillEntry] = []
+        for path in candidates:
+            entry = await _inspect_skill(path, capability_view)
+            if entry is not None:
+                entries.append(entry)
+        entries = tuple(entries)
         catalog = cls(entries)
         _atomic_write(
             skills_directory / "index.md",
@@ -107,10 +105,7 @@ class _SkillCatalog:
             "",
             f"- Status: {'valid' if entry.valid else 'invalid'}",
             f"- Provenance: {entry.provenance or 'unknown'}",
-            (
-                "- Shadows Repertoire: "
-                f"{'yes' if entry.shadows_repertoire else 'no'}"
-            ),
+            (f"- Shadows Repertoire: {'yes' if entry.shadows_repertoire else 'no'}"),
         ]
         if entry.validation_error:
             lines.append(f"- Validation error: {entry.validation_error}")
@@ -124,9 +119,9 @@ class _SkillCatalog:
         return "\n".join(lines).rstrip() + "\n", True
 
 
-def _inspect_skill(
+async def _inspect_skill(
     path: Path,
-    capability_view: _CapabilityView,
+    capability_view: _BoundCapabilityView,
 ) -> SkillEntry | None:
     """Build one SkillEntry from a candidate directory, or None if whiteouted."""
 
@@ -137,7 +132,7 @@ def _inspect_skill(
     validation_error: str | None = None
 
     try:
-        inspection = capability_view.inspect(relative)
+        inspection = await capability_view.inspect(relative.as_posix())
     except ValueError as exc:
         validation_error = str(exc)
     else:
@@ -160,9 +155,7 @@ def _inspect_skill(
         shadows_repertoire=shadows,
         valid=validation_error is None,
         validation_error=validation_error,
-        description=(
-            None if validation_error is not None else _read_description(path)
-        ),
+        description=(None if validation_error is not None else _read_description(path)),
     )
 
 

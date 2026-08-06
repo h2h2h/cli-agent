@@ -11,7 +11,7 @@ import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
-from cli_agent.runtime._capability.view import _CapabilityView
+from cli_agent.runtime._backend import _BoundCapabilityView
 from cli_agent.runtime._capability.workspace import (
     _atomic_write,
     _ensure_real_directory,
@@ -41,9 +41,9 @@ class _ToolEnvironment:
     @classmethod
     async def reconcile(
         cls,
-        capability_view: _CapabilityView,
+        capability_view: _BoundCapabilityView,
     ) -> _ToolEnvironment:
-        root = capability_view.root / ".tool-environment"
+        root = Path(capability_view.root) / ".tool-environment"
         loop = asyncio.get_running_loop()
         locks = _RECONCILE_LOCKS.setdefault(loop, {})
         lock = locks.setdefault(root, asyncio.Lock())
@@ -53,7 +53,7 @@ class _ToolEnvironment:
     @classmethod
     async def _reconcile_locked(
         cls,
-        capability_view: _CapabilityView,
+        capability_view: _BoundCapabilityView,
         root: Path,
     ) -> _ToolEnvironment:
         try:
@@ -69,7 +69,7 @@ class _ToolEnvironment:
                 )
 
             python = _venv_python(venv_directory)
-            requirements = capability_view.root / "tools" / "requirements.txt"
+            requirements = Path(capability_view.root) / "tools" / "requirements.txt"
             content = requirements.read_bytes() if requirements.is_file() else b""
             effective_content = _effective_requirements(content)
             digest = hashlib.sha256(effective_content).hexdigest()
@@ -77,9 +77,7 @@ class _ToolEnvironment:
             marker = root / _REQUIREMENTS_DIGEST
             _atomic_write(effective, effective_content)
             previous = (
-                marker.read_text(encoding="ascii").strip()
-                if marker.is_file()
-                else None
+                marker.read_text(encoding="ascii").strip() if marker.is_file() else None
             )
             if previous != digest:
                 if effective_content or not created:
@@ -212,6 +210,5 @@ async def _run_uv(
         if len(detail) > 4_000:
             detail = detail[-4_000:]
         raise RuntimeError(
-            "dependency synchronization failed"
-            + (f": {detail}" if detail else "")
+            "dependency synchronization failed" + (f": {detail}" if detail else "")
         )

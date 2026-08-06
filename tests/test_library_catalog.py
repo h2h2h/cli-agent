@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+from cli_agent.runtime._backend import _CapabilitySource
+from cli_agent.runtime._backend.local import _LocalCapabilityView
 from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.library.facts import (
@@ -14,7 +16,6 @@ from cli_agent.runtime._capability.library.parser import (
     LibraryParseError,
     TextLibraryFileParser,
 )
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._state_db import _StateDatabase
 
@@ -33,8 +34,10 @@ def _cache(tmp_path: Path) -> _SummaryCache:
 def _reconcile(workspace: Path, repertoire: Path) -> _LibraryCatalog:
     async def scenario() -> _LibraryCatalog:
         _prepare_workspace(workspace)
-        view = _CapabilityView.open(workspace, repertoire)
-        return await _LibraryCatalog.reconcile(view, _cache(workspace))
+        view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
+        return await _LibraryCatalog.reconcile(
+            view, _cache(workspace), _CapabilitySource(repertoire=repertoire)
+        )
 
     return asyncio.run(scenario())
 
@@ -51,10 +54,14 @@ def test_catalog_discovers_effective_library_facts(tmp_path: Path) -> None:
     )
 
     _prepare_workspace(tmp_path)
-    view = _CapabilityView.open(tmp_path, repertoire)
-    (view.root / "library" / "local.md").write_text("# Local\n", encoding="utf-8")
+    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    (Path(view.root) / "library" / "local.md").write_text("# Local\n", encoding="utf-8")
 
-    catalog = asyncio.run(_LibraryCatalog.reconcile(view, _cache(tmp_path)))
+    catalog = asyncio.run(
+        _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
+    )
 
     by_path = {entry.path: entry for entry in catalog.entries}
     assert set(by_path) == {
@@ -94,13 +101,17 @@ def test_workspace_override_shadows_repertoire_file(tmp_path: Path) -> None:
     (repertoire / "library" / "guide.md").write_text("lower\n", encoding="utf-8")
 
     _prepare_workspace(tmp_path)
-    view = _CapabilityView.open(tmp_path, repertoire)
-    view_md = view.root / "library" / "guide.md"
+    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    view_md = Path(view.root) / "library" / "guide.md"
     assert view_md.is_symlink()
     view._copy_up(view_md)
     view_md.write_text("upper\n", encoding="utf-8")
 
-    catalog = asyncio.run(_LibraryCatalog.reconcile(view, _cache(tmp_path)))
+    catalog = asyncio.run(
+        _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
+    )
 
     entry = catalog.get("guide.md")
     assert entry is not None
@@ -113,11 +124,17 @@ def test_workspace_only_directory_is_workspace_provenance(tmp_path: Path) -> Non
     repertoire = _repertoire(tmp_path)
 
     _prepare_workspace(tmp_path)
-    view = _CapabilityView.open(tmp_path, repertoire)
-    (view.root / "library" / "scratch").mkdir()
-    (view.root / "library" / "scratch" / "tmp.md").write_text("tmp\n", encoding="utf-8")
+    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    (Path(view.root) / "library" / "scratch").mkdir()
+    (Path(view.root) / "library" / "scratch" / "tmp.md").write_text(
+        "tmp\n", encoding="utf-8"
+    )
 
-    catalog = asyncio.run(_LibraryCatalog.reconcile(view, _cache(tmp_path)))
+    catalog = asyncio.run(
+        _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
+    )
 
     scratch = catalog.get("scratch")
     assert scratch is not None
@@ -133,13 +150,19 @@ def test_whiteouted_library_file_is_skipped(tmp_path: Path) -> None:
     (repertoire / "library" / "kept.md").write_text("kept\n", encoding="utf-8")
 
     _prepare_workspace(tmp_path)
-    view = _CapabilityView.open(tmp_path, repertoire)
-    whiteout = view.root / ".capability-view" / "whiteouts" / "library" / "gone.md"
+    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    whiteout = (
+        Path(view.root) / ".capability-view" / "whiteouts" / "library" / "gone.md"
+    )
     whiteout.parent.mkdir(parents=True, exist_ok=True)
     whiteout.touch()
-    (view.root / "library" / "gone.md").unlink()
+    (Path(view.root) / "library" / "gone.md").unlink()
 
-    catalog = asyncio.run(_LibraryCatalog.reconcile(view, _cache(tmp_path)))
+    catalog = asyncio.run(
+        _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
+    )
 
     assert catalog.get("gone.md") is None
     assert catalog.get("kept.md") is not None
@@ -248,10 +271,14 @@ def test_file_fingerprint_ignores_name_provenance_and_extension(
     (repertoire / "library" / "b.txt").write_text("same\n", encoding="utf-8")
 
     _prepare_workspace(tmp_path)
-    view = _CapabilityView.open(tmp_path, repertoire)
-    (view.root / "library" / "c.md").write_text("same\n", encoding="utf-8")
+    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    (Path(view.root) / "library" / "c.md").write_text("same\n", encoding="utf-8")
 
-    catalog = asyncio.run(_LibraryCatalog.reconcile(view, _cache(tmp_path)))
+    catalog = asyncio.run(
+        _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
+    )
 
     fingerprints = {
         entry.fingerprint for entry in catalog.entries if entry.kind == "file"

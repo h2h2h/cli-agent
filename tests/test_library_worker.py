@@ -18,6 +18,8 @@ from cli_agent.runtime import (
     TextBlock,
     UserMessage,
 )
+from cli_agent.runtime._backend import _CapabilitySource
+from cli_agent.runtime._backend.local import _LocalCapabilityView
 from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.library.facts import (
@@ -25,7 +27,6 @@ from cli_agent.runtime._capability.library.facts import (
     _directory_fingerprint,
     _file_fingerprint,
 )
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._state_db import _StateDatabase
 
@@ -121,8 +122,10 @@ def test_worker_generates_file_summaries_and_refreshes_indexes(
 
     async def scenario() -> None:
         _prepare_workspace(tmp_path)
-        view = _CapabilityView.open(tmp_path, repertoire)
-        catalog = await _LibraryCatalog.reconcile(view, _cache(tmp_path))
+        view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+        catalog = await _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
         assert catalog.get("first.md").status == "pending"  # type: ignore[union-attr]
 
         catalog.start(provider)
@@ -190,8 +193,10 @@ def test_one_summary_updates_every_file_with_the_same_fingerprint(
 
     async def scenario() -> None:
         _prepare_workspace(tmp_path)
-        view = _CapabilityView.open(tmp_path, repertoire)
-        catalog = await _LibraryCatalog.reconcile(view, _cache(tmp_path))
+        view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+        catalog = await _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
 
         catalog.start(provider)
         await catalog._queue.join()  # type: ignore[union-attr]
@@ -239,8 +244,10 @@ def test_cache_hit_never_calls_the_model(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         _prepare_workspace(tmp_path)
-        view = _CapabilityView.open(tmp_path, repertoire)
-        catalog = await _LibraryCatalog.reconcile(view, _cache(tmp_path))
+        view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+        catalog = await _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
         assert catalog.get("cached.md").status == "ready"  # type: ignore[union-attr]
 
         catalog.start(provider)
@@ -260,8 +267,10 @@ def test_provider_failure_marks_entry_failed_with_diagnostic(tmp_path: Path) -> 
 
     async def scenario() -> None:
         _prepare_workspace(tmp_path)
-        view = _CapabilityView.open(tmp_path, repertoire)
-        catalog = await _LibraryCatalog.reconcile(view, _cache(tmp_path))
+        view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+        catalog = await _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
         catalog.start(provider, on_diagnostic=diagnostics.append)
         await catalog._queue.join()  # type: ignore[union-attr]
 
@@ -294,8 +303,10 @@ def test_context_overflow_marks_entry_failed_with_specific_diagnostic(
 
     async def scenario() -> None:
         _prepare_workspace(tmp_path)
-        view = _CapabilityView.open(tmp_path, repertoire)
-        catalog = await _LibraryCatalog.reconcile(view, _cache(tmp_path))
+        view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+        catalog = await _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
         catalog.start(provider, on_diagnostic=diagnostics.append)
         await catalog._queue.join()  # type: ignore[union-attr]
 
@@ -324,8 +335,10 @@ def test_failure_diagnostics_never_contain_source_content(tmp_path: Path) -> Non
 
     async def scenario() -> None:
         _prepare_workspace(tmp_path)
-        view = _CapabilityView.open(tmp_path, repertoire)
-        catalog = await _LibraryCatalog.reconcile(view, _cache(tmp_path))
+        view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+        catalog = await _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
         catalog.start(provider, on_diagnostic=diagnostics.append)
         await catalog._queue.join()  # type: ignore[union-attr]
 
@@ -345,8 +358,10 @@ def test_close_cancels_in_progress_worker(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         _prepare_workspace(tmp_path)
-        view = _CapabilityView.open(tmp_path, repertoire)
-        catalog = await _LibraryCatalog.reconcile(view, _cache(tmp_path))
+        view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+        catalog = await _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
         catalog.start(provider)
         await provider.started.wait()
         worker_task = catalog._worker_task
@@ -432,8 +447,11 @@ def test_internal_summaries_stay_out_of_session_history(tmp_path: Path) -> None:
 def test_close_without_start_still_closes_database(tmp_path: Path) -> None:
     async def scenario() -> None:
         _prepare_workspace(tmp_path)
-        view = _CapabilityView.open(tmp_path, _repertoire(tmp_path))
-        catalog = await _LibraryCatalog.reconcile(view, _cache(tmp_path))
+        repertoire = _repertoire(tmp_path)
+        view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+        catalog = await _LibraryCatalog.reconcile(
+            view, _cache(tmp_path), _CapabilitySource(repertoire=repertoire)
+        )
         await catalog.close()
 
     asyncio.run(scenario())

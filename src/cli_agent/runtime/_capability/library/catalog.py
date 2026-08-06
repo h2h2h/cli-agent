@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
+from cli_agent.runtime._backend import _BoundCapabilityView, _CapabilitySource
 from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.facts import (
     _SUMMARY_UNAVAILABLE,
@@ -20,7 +21,6 @@ from cli_agent.runtime._capability.library.parser import (
     LibraryParseError,
     _select_parser,
 )
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _atomic_write
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
@@ -81,13 +81,15 @@ class _LibraryCatalog:
         entries: tuple[LibraryEntry, ...],
         root: Path,
         summary_cache: _SummaryCache,
-        view: _CapabilityView | None = None,
+        view: _BoundCapabilityView | None = None,
+        source: _CapabilitySource | None = None,
     ) -> None:
         """Hold the facts, the effective Library root, and the summary cache."""
 
         self._root = root
         self._summary_cache = summary_cache
         self._view = view
+        self._source = source
         self._entries = {entry.path: entry for entry in entries}
         self._snapshot: dict[str, tuple[int, int]] = {}
         self._dirty_paths: set[str] = set()
@@ -105,36 +107,50 @@ class _LibraryCatalog:
     @classmethod
     async def reconcile(
         cls,
-        capability_view: _CapabilityView,
+        capability_view: _BoundCapabilityView,
         summary_cache: _SummaryCache,
+        capability_source: _CapabilitySource,
     ) -> _LibraryCatalog:
         """Discover facts, resolve cache hits, and render every index.
 
         Args:
-            capability_view (`_CapabilityView`):
-                The opened Capability View; ``library`` is read as an ordinary
-                capability directory with no source-layer restrictions.
+            capability_view (`_BoundCapabilityView`):
+                The materialized Bound Capability View; ``library`` is read
+                as an ordinary capability directory with no source-layer
+                restrictions.
             summary_cache (`_SummaryCache`):
                 The application state summary cache; file fingerprints with
                 cached summaries become ``ready`` before the first render.
+            capability_source (`_CapabilitySource`):
+                Host Capability lower input; directory provenance derives
+                from lower presence.
 
         Returns:
             A catalog of trusted facts whose ``index.md`` projections have
             been written from the deepest directory up to the root.
         """
 
-        root = capability_view.root / _LIBRARY_DIRECTORY
+        root = Path(capability_view.root) / _LIBRARY_DIRECTORY
         if not root.is_dir():
-            return cls((), root, summary_cache, capability_view)
+            return cls(
+                (),
+                root,
+                summary_cache,
+                capability_view,
+                capability_source,
+            )
         discovered: list[LibraryEntry] = []
         for child in sorted(root.iterdir(), key=lambda path: path.name):
             if child.name != _INDEX_FILENAME:
-                discovered.extend(await _subtree(capability_view, root, child))
+                discovered.extend(
+                    await _subtree(capability_view, root, child, capability_source)
+                )
         catalog = cls(
             _apply_cache_hits(tuple(discovered), summary_cache),
             root,
             summary_cache,
             capability_view,
+            capability_source,
         )
         catalog._capture_snapshot()
         catalog._entries[""] = _root_entry()
@@ -265,7 +281,9 @@ class _LibraryCatalog:
             return
         view_path = self._root / path
         try:
-            inspection = view.inspect(Path(_LIBRARY_DIRECTORY) / Path(path))
+            inspection = await view.inspect(
+                (Path(_LIBRARY_DIRECTORY) / Path(path)).as_posix()
+            )
         except ValueError as exc:
             await self._replace_failed(
                 path,
@@ -277,7 +295,13 @@ class _LibraryCatalog:
             await self._remove_path(path)
             return
         if view_path.is_dir():
-            entries = await _directory_subtree(view, self._root, view_path, Path(path))
+            entries = await _directory_subtree(
+                view,
+                self._root,
+                view_path,
+                Path(path),
+                self._source,
+            )
             await self._replace_subtree(path, entries)
             for directory in sorted(
                 (path, *(entry.path for entry in entries if entry.kind == "directory")),
@@ -1118,9 +1142,10 @@ def _emit(
 
 
 async def _subtree(
-    capability_view: _CapabilityView,
+    capability_view: _BoundCapabilityView,
     root: Path,
     path: Path,
+    capability_source: _CapabilitySource,
 ) -> tuple[LibraryEntry, ...]:
     """Return trusted facts for one discovered path and its subtree.
 
@@ -1131,7 +1156,9 @@ async def _subtree(
 
     relative = path.relative_to(root)
     try:
-        inspection = capability_view.inspect(Path(_LIBRARY_DIRECTORY) / relative)
+        inspection = await capability_view.inspect(
+            (Path(_LIBRARY_DIRECTORY) / relative).as_posix()
+        )
     except ValueError as exc:
         return (
             _entry(
@@ -1147,7 +1174,13 @@ async def _subtree(
     if inspection.provenance not in {"repertoire", "workspace"}:
         return ()
     if path.is_dir():
-        return await _directory_subtree(capability_view, root, path, relative)
+        return await _directory_subtree(
+            capability_view,
+            root,
+            path,
+            relative,
+            capability_source,
+        )
     return (
         await _file_entry(
             path,
@@ -1159,7 +1192,7 @@ async def _subtree(
 
 
 def _directory_facts(
-    capability_view: _CapabilityView,
+    capability_source: _CapabilitySource,
     relative: Path,
 ) -> tuple[Literal["repertoire", "workspace"], bool]:
     """Return one directory's presence layer and its shadow fact.
@@ -1170,19 +1203,20 @@ def _directory_facts(
     Workspace-owned.
     """
 
-    lower = capability_view.repertoire / _LIBRARY_DIRECTORY / relative
+    lower = capability_source.repertoire / _LIBRARY_DIRECTORY / relative
     return ("repertoire" if lower.is_dir() else "workspace", False)
 
 
 async def _directory_subtree(
-    capability_view: _CapabilityView,
+    capability_view: _BoundCapabilityView,
     root: Path,
     directory: Path,
     relative: Path,
+    capability_source: _CapabilitySource,
 ) -> tuple[LibraryEntry, ...]:
     """Return one directory fact followed by its direct-child subtree facts."""
 
-    provenance, shadows = _directory_facts(capability_view, relative)
+    provenance, shadows = _directory_facts(capability_source, relative)
     try:
         children = sorted(directory.iterdir(), key=lambda path: path.name)
     except OSError as exc:
@@ -1200,7 +1234,9 @@ async def _directory_subtree(
     child_entries: list[LibraryEntry] = []
     for child in children:
         if child.name != _INDEX_FILENAME:
-            child_entries.extend(await _subtree(capability_view, root, child))
+            child_entries.extend(
+                await _subtree(capability_view, root, child, capability_source)
+            )
     return (
         _entry(
             relative,

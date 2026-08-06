@@ -9,9 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from cli_agent.runtime._backend.local import _LocalBackendWorkspace
+from cli_agent.runtime._backend.local import (
+    _LocalBackendWorkspace,
+    _LocalCapabilityView,
+)
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
@@ -162,7 +164,7 @@ def test_files_write_copies_up_in_view_lower_link(tmp_path: Path) -> None:
     (repertoire / "tools").mkdir(parents=True)
     lower = repertoire / "tools" / "calc.py"
     lower.write_text("LOWER = 1\n", encoding="utf-8")
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     visible = workspace / ".workspace" / "tools" / "calc.py"
     assert visible.is_symlink()
 
@@ -176,18 +178,17 @@ def test_files_write_copies_up_in_view_lower_link(tmp_path: Path) -> None:
     assert not visible.is_symlink()
     assert visible.read_text(encoding="utf-8") == "NEW = 2\n"
     assert lower.read_text(encoding="utf-8") == "LOWER = 1\n"
-    assert view.inspect("tools/calc.py").provenance == "workspace"
+    assert asyncio.run(view.inspect("tools/calc.py")).provenance == "workspace"
 
 
 def _write(
     cwd: Path,
     command: str,
     *,
-    view: _CapabilityView | None = None,
+    view: _LocalCapabilityView | None = None,
 ) -> tuple[_ExecutionOutcome, _RecordedOutput]:
     output = _RecordedOutput()
-    backend = _LocalBackendWorkspace(cwd, {})
-    backend.bind_capability_view(view)
+    backend = _LocalBackendWorkspace(cwd, {}, view)
     execution = _FileHandler(backend.filesystem).prepare(
         parse_shell_ast(command),
         _CommandContext(workspace=str(cwd), cwd=str(cwd), environment={}),

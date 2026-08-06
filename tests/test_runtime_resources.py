@@ -6,12 +6,11 @@ from pathlib import Path
 import pytest
 
 import cli_agent.runtime._resources as resources_module
-from cli_agent.runtime._backend import _BackendWorkspace
+from cli_agent.runtime._backend import _BackendWorkspace, _BoundCapabilityView
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._resources import (
     _reconcile_runtime_resources,
     _RuntimeResources,
@@ -47,7 +46,7 @@ def test_reconcile_returns_complete_resource_aggregate(tmp_path: Path) -> None:
         assert resources.backend.root == str(workspace.resolve())
         assert isinstance(resources.base_env, Mapping)
         assert dict(resources.base_env) == {"TOKEN": "secret"}
-        assert isinstance(resources.capability_view, _CapabilityView)
+        assert isinstance(resources.capability_view, _BoundCapabilityView)
         assert isinstance(resources.tool_catalog, _ToolCatalog)
         assert isinstance(resources.tool_environment, _ToolEnvironment)
         assert isinstance(resources.skill_catalog, _SkillCatalog)
@@ -89,8 +88,12 @@ def test_reconcile_runs_steps_in_documented_order(
         environment = tmp_path / "env"
         state = tmp_path / "workspace" / ".workspace"
 
+    class _FakeCapabilitySource:
+        repertoire = tmp_path / "repertoire"
+
     class _FakeBackendWorkspace:
         workspace_environment = {"TOKEN": "secret"}
+        capabilities = object()
 
     class _FakeLocalBackend:
         @staticmethod
@@ -102,13 +105,6 @@ def test_reconcile_runs_steps_in_documented_order(
             del source, capability_source, capability_state
             order.append("backend_open")
             return _FakeBackendWorkspace()
-
-    class _FakeCapabilityView:
-        @staticmethod
-        def open(workspace: Path, repertoire: object) -> object:
-            del workspace, repertoire
-            order.append("capability_view")
-            return object()
 
     class _FakeMCPCatalog:
         @staticmethod
@@ -123,7 +119,7 @@ def test_reconcile_runs_steps_in_documented_order(
 
     class _FakeToolCatalog:
         @staticmethod
-        def reconcile(
+        async def reconcile(
             capability_view: object,
             on_diagnostic: object = None,
         ) -> object:
@@ -140,7 +136,7 @@ def test_reconcile_runs_steps_in_documented_order(
 
     class _FakeSkillCatalog:
         @staticmethod
-        def reconcile(capability_view: object) -> object:
+        async def reconcile(capability_view: object) -> object:
             del capability_view
             order.append("skill_catalog")
             return object()
@@ -161,8 +157,9 @@ def test_reconcile_runs_steps_in_documented_order(
         async def reconcile(
             capability_view: object,
             summary_cache: object,
+            capability_source: object,
         ) -> object:
-            del capability_view, summary_cache
+            del capability_view, summary_cache, capability_source
             order.append("library_catalog")
             return object()
 
@@ -171,15 +168,21 @@ def test_reconcile_runs_steps_in_documented_order(
         order.append("prepare_workspace")
         return _FakePaths()
 
-    def prepare_repertoire(repertoire: object) -> Path:
-        del repertoire
-        order.append("prepare_repertoire")
-        return tmp_path / "repertoire"
+    def prepare_capability_source(
+        repertoire: object,
+        state_root: object,
+    ) -> _FakeCapabilitySource:
+        del repertoire, state_root
+        order.append("prepare_capability_source")
+        return _FakeCapabilitySource()
 
     monkeypatch.setattr(resources_module, "_prepare_workspace", prepare_workspace)
-    monkeypatch.setattr(resources_module, "_prepare_repertoire", prepare_repertoire)
+    monkeypatch.setattr(
+        resources_module,
+        "_prepare_capability_source",
+        prepare_capability_source,
+    )
     monkeypatch.setattr(resources_module, "_LocalBackend", _FakeLocalBackend)
-    monkeypatch.setattr(resources_module, "_CapabilityView", _FakeCapabilityView)
     monkeypatch.setattr(resources_module, "_StateDatabase", _FakeStateDatabase)
     monkeypatch.setattr(resources_module, "_SummaryCache", _FakeSummaryCache)
     monkeypatch.setattr(resources_module, "_MCPCatalog", _FakeMCPCatalog)
@@ -197,9 +200,8 @@ def test_reconcile_runs_steps_in_documented_order(
 
         assert order == [
             "prepare_workspace",
-            "prepare_repertoire",
+            "prepare_capability_source",
             "backend_open",
-            "capability_view",
             "state_database",
             "summary_cache",
             "mcp",
@@ -329,3 +331,5 @@ def test_environment_kernel_does_not_accept_resource_aggregate() -> None:
 
     parameters = inspect.signature(EnvironmentKernel.__init__).parameters
     assert "resources" not in parameters
+    assert "capability_view" not in parameters
+    assert "backend" in parameters

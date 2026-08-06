@@ -6,8 +6,11 @@ from pathlib import Path
 import pytest
 
 from cli_agent.runtime import ToolCall, ToolResult
+from cli_agent.runtime._backend.local import (
+    _LocalBackendWorkspace,
+    _LocalCapabilityView,
+)
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
@@ -174,10 +177,12 @@ def test_files_command_resolves_to_custom_route_and_is_serial(
     (repertoire / "tools").mkdir(parents=True)
     lower = repertoire / "tools" / "calc.py"
     lower.write_text("LOWER = 1\n", encoding="utf-8")
-    view = _CapabilityView.open(tmp_path, repertoire)
+    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path, capability_view=view)
+        kernel = EnvironmentKernel(
+            tmp_path, backend=_LocalBackendWorkspace(tmp_path, {}, view)
+        )
         try:
             registered = kernel._router._custom_registry.resolve(
                 parse_shell_ast("files write f <<'EOF'\nx\nEOF")
@@ -260,7 +265,7 @@ def test_files_head_is_not_matched_by_path_qualified_commands(
         "files write f",
         "files write f | cat",
         "files write f <<'EOF' > out.txt\nx\nEOF",
-        'files write "$VAR" <<\'EOF\'\nx\nEOF',
+        "files write \"$VAR\" <<'EOF'\nx\nEOF",
         "files edit f <<'EDI'\nnot json\nEDI",
     ),
 )

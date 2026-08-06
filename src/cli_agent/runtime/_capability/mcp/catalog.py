@@ -11,11 +11,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from cli_agent.runtime._backend import _BoundCapabilityView
 from cli_agent.runtime._capability.mcp.facts import (
     MCPServerConfig,
     load_server_config,
 )
-from cli_agent.runtime._capability.view import _MCP_DIRECTORY, _CapabilityView
+from cli_agent.runtime._capability.source import _MCP_DIRECTORY
 from cli_agent.runtime._capability.workspace import _atomic_write
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
@@ -60,16 +61,16 @@ class _MCPCatalog:
     @classmethod
     async def reconcile(
         cls,
-        capability_view: _CapabilityView,
+        capability_view: _BoundCapabilityView,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> _MCPCatalog:
         """Align `_mcp` descriptions with generated Tools by full rebuild.
 
         Args:
-            capability_view (`_CapabilityView`):
-                The opened Capability View; Repertoire ``_mcp`` descriptions
-                are read from its lower layer and projections are written into
-                the Workspace ``tools`` tree.
+            capability_view (`_BoundCapabilityView`):
+                The materialized Bound Capability View; Repertoire ``_mcp``
+                descriptions are read from its lower layer and projections
+                are written into the Workspace ``tools`` tree.
             on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
                 Optional Host callback for non-blocking reconcile notices.
 
@@ -77,10 +78,10 @@ class _MCPCatalog:
             A catalog naming the servers successfully projected this run.
         """
 
-        tools_directory = capability_view.root / "tools"
+        tools_directory = Path(capability_view.root) / "tools"
         _remove_stale_stubs(tools_directory)
 
-        configs = _valid_configs(capability_view, on_diagnostic)
+        configs = await _valid_configs(capability_view, on_diagnostic)
         results = await asyncio.gather(
             *(_discover(config, on_diagnostic) for config in configs)
         )
@@ -109,8 +110,8 @@ def _remove_stale_stubs(tools_directory: Path) -> None:
             path.unlink(missing_ok=True)
 
 
-def _valid_configs(
-    capability_view: _CapabilityView,
+async def _valid_configs(
+    capability_view: _BoundCapabilityView,
     on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
 ) -> tuple[MCPServerConfig, ...]:
     """Read and validate every ``_mcp/<server>/config.json``, skipping bad ones.
@@ -122,7 +123,7 @@ def _valid_configs(
     produces no projection.
     """
 
-    mcp_directory = capability_view.root / _MCP_DIRECTORY
+    mcp_directory = Path(capability_view.root) / _MCP_DIRECTORY
     servers = (
         sorted(
             (path for path in mcp_directory.iterdir() if path.is_dir()),
@@ -136,8 +137,8 @@ def _valid_configs(
         server_name = directory.name
         config_path = directory / "config.json"
         try:
-            inspection = capability_view.inspect(
-                Path(_MCP_DIRECTORY) / server_name / "config.json"
+            inspection = await capability_view.inspect(
+                (Path(_MCP_DIRECTORY) / server_name / "config.json").as_posix()
             )
         except ValueError:
             continue
@@ -236,9 +237,7 @@ async def _connect(config: MCPServerConfig) -> AsyncIterator[tuple[Any, Any]]:
 
 
 def _resolved_env(config: MCPServerConfig) -> dict[str, str] | None:
-    resolved = {
-        name: os.environ[name] for name in config.env if name in os.environ
-    }
+    resolved = {name: os.environ[name] for name in config.env if name in os.environ}
     return resolved or None
 
 
@@ -262,9 +261,7 @@ def _render_stub(
         + "from mcp import ClientSession\n"
     )
     connect = (
-        _stdio_connect(config)
-        if config.transport == "stdio"
-        else _http_connect(config)
+        _stdio_connect(config) if config.transport == "stdio" else _http_connect(config)
     )
     used: set[str] = set(_STUB_RESERVED_NAMES)
     functions = [
@@ -367,7 +364,8 @@ def _tool_function(tool: dict[str, Any], *, func_name: str) -> str:
     return (
         "def " + func_name + "(" + signature + "):\n"
         '    """' + description.replace('"""', '\\"\\"\\"') + '"""\n'
-        "    return _call_mcp(" + repr(name)
+        "    return _call_mcp("
+        + repr(name)
         + ", {k: v for k, v in locals().items() if v is not None})\n"
     )
 
@@ -442,6 +440,4 @@ def _emit(
 ) -> None:
     if on_diagnostic is None:
         return
-    on_diagnostic(
-        RuntimeDiagnostic(kind=kind, message=message, detail=detail or {})
-    )
+    on_diagnostic(RuntimeDiagnostic(kind=kind, message=message, detail=detail or {}))

@@ -18,10 +18,13 @@ from cli_agent.runtime import (
     ToolResult,
     UserMessage,
 )
+from cli_agent.runtime._backend.local import (
+    _LocalBackendWorkspace,
+    _LocalCapabilityView,
+)
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
 
@@ -67,14 +70,14 @@ def _fixture_command() -> list[str]:
 @pytest.mark.live_sync
 async def _kernel(workspace: Path, repertoire: Path) -> EnvironmentKernel:
     _prepare_workspace(workspace)
-    view = _CapabilityView.open(workspace, repertoire)
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     await _MCPCatalog.reconcile(view)
-    catalog = _ToolCatalog.reconcile(view)
+    catalog = await _ToolCatalog.reconcile(view)
     environment = await _ToolEnvironment.reconcile(view)
     assert environment.available, environment.error
     return EnvironmentKernel(
         workspace,
-        capability_view=view,
+        backend=_LocalBackendWorkspace(workspace, {}, view),
         tool_catalog=catalog,
         tool_environment=environment,
     )

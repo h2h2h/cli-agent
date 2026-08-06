@@ -11,8 +11,11 @@ from pathlib import Path
 from policy_fakes import _AllowAllPolicy
 
 from cli_agent.runtime import ToolCall, ToolResult
+from cli_agent.runtime._backend.local import (
+    _LocalBackendWorkspace,
+    _LocalCapabilityView,
+)
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
@@ -85,12 +88,12 @@ def test_files_write_in_view_under_policy_never_pierces_repertoire(
     (repertoire / "tools").mkdir(parents=True)
     lower = repertoire / "tools" / "calc.py"
     lower.write_text("LOWER = 1\n", encoding="utf-8")
-    view = _CapabilityView.open(tmp_path, repertoire)
+    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
 
     async def scenario() -> None:
         kernel = EnvironmentKernel(
             tmp_path,
-            capability_view=view,
+            backend=_LocalBackendWorkspace(tmp_path, {}, view),
             policy=_AllowAllPolicy(),
         )
         try:
@@ -110,14 +113,18 @@ def test_files_write_in_view_under_policy_never_pierces_repertoire(
     assert not visible.is_symlink()
     assert visible.read_text(encoding="utf-8") == "NEW = 2\n"
     assert lower.read_text(encoding="utf-8") == "LOWER = 1\n"
-    assert view.inspect("tools/calc.py").provenance == "workspace"
+    assert asyncio.run(view.inspect("tools/calc.py")).provenance == "workspace"
 
 
 def test_files_write_cancelled_before_run_creates_nothing(tmp_path: Path) -> None:
     async def scenario() -> None:
         execution = _FileHandler().prepare(
             parse_shell_ast("files write partial.txt <<'EOF'\ncontent\nEOF"),
-            _CommandContext(workspace=tmp_path, cwd=tmp_path, environment={}),
+            _CommandContext(
+                workspace=str(tmp_path),
+                cwd=str(tmp_path),
+                environment={},
+            ),
         )
         await execution.cancel()
         outcome = await execution.run(_DiscardOutput())

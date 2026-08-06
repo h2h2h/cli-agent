@@ -32,9 +32,11 @@ async def _open_workspace(
     env = root / ".workspace" / "env"
     env.parent.mkdir()
     env.write_text(environment, encoding="utf-8")
+    repertoire = root / "repertoire"
+    repertoire.mkdir(exist_ok=True)
     return await _LocalBackend().open_workspace(
         source=_WorkspaceSource(root=root, environment=env),
-        capability_source=_CapabilitySource(repertoire=root / "repertoire"),
+        capability_source=_CapabilitySource(repertoire=repertoire),
         capability_state=_CapabilityState(root=root / ".workspace"),
     )
 
@@ -209,8 +211,6 @@ def test_unmigrated_members_fail_loudly(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = await _open_workspace(tmp_path)
 
-        with pytest.raises(NotImplementedError, match="not implemented"):
-            await workspace.capabilities.inspect("tools")
         with pytest.raises(NotImplementedError, match="not implemented"):
             await workspace.mcp.discover()
         with pytest.raises(NotImplementedError, match="not implemented"):

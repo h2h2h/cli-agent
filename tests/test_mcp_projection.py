@@ -13,9 +13,9 @@ from cli_agent.runtime import (
     ContextPolicy,
     ScriptedModelProvider,
 )
+from cli_agent.runtime._backend.local import _LocalCapabilityView
 from cli_agent.runtime._capability.mcp import catalog as mcp_catalog_module
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
@@ -54,9 +54,9 @@ def _server_config(repertoire: Path, name: str, command: list[str]) -> None:
     )
 
 
-def _open_view(workspace: Path, repertoire: Path) -> _CapabilityView:
+def _open_view(workspace: Path, repertoire: Path) -> _LocalCapabilityView:
     _prepare_workspace(workspace)
-    return _CapabilityView.open(workspace, repertoire)
+    return _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
 
 
 def _fixture_command() -> list[str]:
@@ -76,7 +76,7 @@ def test_reconcile_generates_a_stub_with_mcp_prefix(tmp_path: Path) -> None:
         assert received == []
         assert catalog.servers == ("math",)
 
-        stub = view.root / "tools" / "mcp_math.py"
+        stub = Path(view.root) / "tools" / "mcp_math.py"
         assert stub.is_file()
         content = stub.read_text(encoding="utf-8")
         assert content.startswith('"""\nMCP Server (stdio): math')
@@ -147,11 +147,11 @@ def test_reconcile_recontacts_servers_every_run(
     async def scenario() -> None:
         await _MCPCatalog.reconcile(view)
         assert calls == 1
-        first_stub = (view.root / "tools" / "mcp_math.py").read_bytes()
+        first_stub = (Path(view.root) / "tools" / "mcp_math.py").read_bytes()
 
         second = await _MCPCatalog.reconcile(view)
         assert calls == 2
-        assert (view.root / "tools" / "mcp_math.py").read_bytes() == first_stub
+        assert (Path(view.root) / "tools" / "mcp_math.py").read_bytes() == first_stub
         assert second.servers == ("math",)
 
     asyncio.run(scenario())
@@ -173,7 +173,7 @@ def test_reconcile_retries_discovery_and_emits_diagnostic(tmp_path: Path) -> Non
         catalog = await _MCPCatalog.reconcile(view, on_diagnostic=received.append)
 
         assert catalog.servers == ()
-        assert not (view.root / "tools" / "mcp_broken.py").exists()
+        assert not (Path(view.root) / "tools" / "mcp_broken.py").exists()
 
         failures = [
             diagnostic
@@ -203,7 +203,7 @@ def test_reconcile_skips_invalid_config_with_diagnostic(tmp_path: Path) -> None:
         catalog = await _MCPCatalog.reconcile(view, on_diagnostic=received.append)
 
         assert catalog.servers == ()
-        assert not (view.root / "tools" / "mcp_bad.py").exists()
+        assert not (Path(view.root) / "tools" / "mcp_bad.py").exists()
         kinds = {diagnostic.kind for diagnostic in received}
         assert "mcp.config_invalid" in kinds
 
@@ -219,7 +219,7 @@ def test_reconcile_removes_stub_for_a_removed_description(tmp_path: Path) -> Non
 
     async def scenario() -> None:
         await _MCPCatalog.reconcile(view)
-        stub = view.root / "tools" / "mcp_math.py"
+        stub = Path(view.root) / "tools" / "mcp_math.py"
         assert stub.is_file()
 
         shutil.rmtree(repertoire / "_mcp" / "math")
@@ -242,7 +242,7 @@ def test_reconcile_overwrites_a_locally_modified_stub(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         await _MCPCatalog.reconcile(view)
-        stub = view.root / "tools" / "mcp_math.py"
+        stub = Path(view.root) / "tools" / "mcp_math.py"
         stub.write_text("# user-edited\n", encoding="utf-8")
 
         catalog = await _MCPCatalog.reconcile(view, on_diagnostic=received.append)
@@ -267,13 +267,13 @@ def test_reconcile_never_touches_non_prefix_tools(tmp_path: Path) -> None:
     view = _open_view(workspace, repertoire)
 
     async def scenario() -> None:
-        keep = view.root / "tools" / "keep.py"
+        keep = Path(view.root) / "tools" / "keep.py"
         keep.write_text("# user tool\n", encoding="utf-8")
 
         await _MCPCatalog.reconcile(view)
 
         assert keep.read_text(encoding="utf-8") == "# user tool\n"
-        assert (view.root / "tools" / "mcp_math.py").is_file()
+        assert (Path(view.root) / "tools" / "mcp_math.py").is_file()
 
     asyncio.run(scenario())
 
@@ -345,7 +345,7 @@ def test_generated_stub_is_valid_python_and_callable(tmp_path: Path) -> None:
 
     asyncio.run(_MCPCatalog.reconcile(view))
 
-    stub_path = view.root / "tools" / "mcp_math.py"
+    stub_path = Path(view.root) / "tools" / "mcp_math.py"
     spec = importlib.util.spec_from_file_location("cli_agent_math", stub_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -363,15 +363,15 @@ def test_reconcile_replaces_stub_when_server_is_renamed(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         await _MCPCatalog.reconcile(view)
-        assert (view.root / "tools" / "mcp_math.py").is_file()
+        assert (Path(view.root) / "tools" / "mcp_math.py").is_file()
 
         shutil.rmtree(repertoire / "_mcp" / "math")
         _server_config(repertoire, "renamed", _fixture_command())
         refreshed = _open_view(workspace, repertoire)
         catalog = await _MCPCatalog.reconcile(refreshed)
 
-        assert not (view.root / "tools" / "mcp_math.py").exists()
-        assert (view.root / "tools" / "mcp_renamed.py").is_file()
+        assert not (Path(view.root) / "tools" / "mcp_math.py").exists()
+        assert (Path(view.root) / "tools" / "mcp_renamed.py").is_file()
         assert catalog.servers == ("renamed",)
 
     asyncio.run(scenario())
@@ -386,7 +386,7 @@ def test_failed_reconcile_removes_a_previous_stub(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         await _MCPCatalog.reconcile(view)
-        stub = view.root / "tools" / "mcp_flaky.py"
+        stub = Path(view.root) / "tools" / "mcp_flaky.py"
         assert stub.is_file()
 
         _server_config(
@@ -437,8 +437,10 @@ def test_runtime_open_reports_invalid_config_without_blocking(
     asyncio.run(scenario())
 
 
-def _workspace_server(view: _CapabilityView, name: str, command: list[str]) -> None:
-    directory = view.root / "_mcp" / name
+def _workspace_server(
+    view: _LocalCapabilityView, name: str, command: list[str]
+) -> None:
+    directory = Path(view.root) / "_mcp" / name
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "config.json").write_text(
         json.dumps(
@@ -463,7 +465,7 @@ def test_workspace_config_projects_without_repertoire(tmp_path: Path) -> None:
     async def scenario() -> None:
         catalog = await _MCPCatalog.reconcile(view)
         assert catalog.servers == ("math",)
-        assert (view.root / "tools" / "mcp_math.py").is_file()
+        assert (Path(view.root) / "tools" / "mcp_math.py").is_file()
 
     asyncio.run(scenario())
 
@@ -475,7 +477,7 @@ def test_workspace_config_overrides_repertoire(tmp_path: Path) -> None:
     _server_config(repertoire, "math", _fixture_command())
     view = _open_view(workspace, repertoire)
 
-    config_link = view.root / "_mcp" / "math" / "config.json"
+    config_link = Path(view.root) / "_mcp" / "math" / "config.json"
     assert config_link.is_symlink()
     config_link.unlink()
     (config_link).write_text(
@@ -492,7 +494,7 @@ def test_workspace_config_overrides_repertoire(tmp_path: Path) -> None:
     async def scenario() -> None:
         received: list[RuntimeDiagnostic] = []
         catalog = await _MCPCatalog.reconcile(view, on_diagnostic=received.append)
-        assert not (view.root / "tools" / "mcp_math.py").exists()
+        assert not (Path(view.root) / "tools" / "mcp_math.py").exists()
         assert catalog.servers == ()
         assert any(diagnostic.kind == "mcp.discovery_failed" for diagnostic in received)
 
@@ -508,13 +510,13 @@ def test_workspace_whiteout_disables_repertoire_server(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         await _MCPCatalog.reconcile(view)
-        stub = view.root / "tools" / "mcp_math.py"
+        stub = Path(view.root) / "tools" / "mcp_math.py"
         assert stub.is_file()
 
-        config_link = view.root / "_mcp" / "math" / "config.json"
+        config_link = Path(view.root) / "_mcp" / "math" / "config.json"
         config_link.unlink()
         whiteout = (
-            view.root
+            Path(view.root)
             / ".capability-view"
             / "whiteouts"
             / "_mcp"
@@ -545,10 +547,10 @@ def test_workspace_removed_server_removes_its_stub(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         await _MCPCatalog.reconcile(view)
-        stub = view.root / "tools" / "mcp_math.py"
+        stub = Path(view.root) / "tools" / "mcp_math.py"
         assert stub.is_file()
 
-        shutil.rmtree(view.root / "_mcp" / "math")
+        shutil.rmtree(Path(view.root) / "_mcp" / "math")
         catalog = await _MCPCatalog.reconcile(view)
 
         assert not stub.exists()

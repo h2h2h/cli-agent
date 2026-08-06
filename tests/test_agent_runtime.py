@@ -26,11 +26,10 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._backend import _BackendWorkspace
+from cli_agent.runtime._backend import _BackendWorkspace, _BoundCapabilityView
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
-from cli_agent.runtime._capability.view import _CapabilityView
 from cli_agent.runtime._resources import _RuntimeResources
 
 _user_interaction = _ScriptedInteraction("allow_once")
@@ -546,7 +545,7 @@ def test_runtime_holds_single_resource_aggregate(tmp_path: Path) -> None:
         assert isinstance(resources, _RuntimeResources)
         assert resources.workspace == tmp_path.resolve()
         assert isinstance(resources.backend, _BackendWorkspace)
-        assert isinstance(resources.capability_view, _CapabilityView)
+        assert isinstance(resources.capability_view, _BoundCapabilityView)
         assert isinstance(resources.tool_catalog, _ToolCatalog)
         assert isinstance(resources.tool_environment, _ToolEnvironment)
         assert isinstance(resources.skill_catalog, _SkillCatalog)
@@ -595,8 +594,8 @@ def test_sessions_borrow_the_same_workspace_resources(
         resources = runtime._resources
         assert first.backend is resources.backend
         assert second.backend is resources.backend
-        assert first.capability_view is resources.capability_view
-        assert second.capability_view is resources.capability_view
+        assert first.backend.capabilities is resources.capability_view
+        assert second.backend.capabilities is resources.capability_view
         assert first.tool_catalog is resources.tool_catalog
         assert second.tool_catalog is resources.tool_catalog
         assert first.tool_environment is resources.tool_environment
@@ -772,7 +771,6 @@ class _TrackingEnvironmentKernel:
         backend: object,
         base_env: Mapping[str, str],
         policy: object,
-        capability_view: object,
         library_catalog: object,
         tool_catalog: object,
         tool_environment: object,
@@ -785,7 +783,6 @@ class _TrackingEnvironmentKernel:
         self.backend = backend
         self.base_env = dict(base_env or {})
         self.policy = policy
-        self.capability_view = capability_view
         self.library_catalog = library_catalog
         self.tool_catalog = tool_catalog
         self.tool_environment = tool_environment
