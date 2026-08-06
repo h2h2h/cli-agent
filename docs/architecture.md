@@ -1,8 +1,11 @@
 # cli-agent Architecture
 
-Current implementation status: M15 explicit Runtime resource ownership is
-implemented. The next milestone is M14, which will replace direct MCP worker
-connections with bounded IPC bindings.
+Current implementation status: the model-generated Library index milestone is
+implemented. `_LibraryCatalog` owns a fingerprint-keyed SQLite summary cache
+and a non-blocking serial summary worker; every visible Library directory has
+a generated `index.md` projection with explicit `ready`/`pending`/`stale`/
+`failed`/`unsupported` states, and source changes are reconciled before every
+ordinary model request.
 
 ```mermaid
 flowchart TB
@@ -67,6 +70,22 @@ flowchart TB
                 S_CAT["catalog.py<br/>Skill Catalog<br/>生成 skills/index.md"]
             end
 
+            subgraph LIB["library/ · 模型摘要索引"]
+                direction LR
+
+                L_FACTS["facts.py<br/>LibraryEntry · fingerprint<br/>_directory_fingerprint"]
+                L_PARSE["parser.py<br/>LibraryFileParser 协议<br/>.md / .txt UTF-8"]
+                L_CACHE["cache.py<br/>_SummaryCache<br/>SQLite library_summary_cache"]
+                L_CAT["catalog.py<br/>_LibraryCatalog<br/>状态机 · 串行 worker<br/>reconcile · 级联 · 索引渲染"]
+                L_DB["state.sqlite3<br/>library_summary_cache 表"]
+
+                L_FACTS --> L_CAT
+                VIEW --> L_PARSE --> L_CAT
+                L_CACHE --> L_DB
+                L_CAT --> L_CACHE
+                L_CAT -->|原子刷新 index.md| VIEW
+            end
+
             subgraph MCP["mcp/ · M13"]
                 direction LR
 
@@ -86,6 +105,12 @@ flowchart TB
 
             S_FACTS --> S_CAT
             VIEW --> S_PARSE --> S_CAT
+
+            L_FACTS --> L_CAT
+            VIEW --> L_PARSE --> L_CAT
+            L_CACHE --> L_DB
+            L_CAT --> L_CACHE
+            L_CAT -->|原子刷新 index.md| VIEW
 
             M_FACTS --> M_CAT
             VIEW --> M_CAT
@@ -169,6 +194,7 @@ flowchart TB
     classDef runtime fill:#fff4cf,stroke:#b88a00,stroke-width:1.5px
     classDef capability fill:#e9f7e9,stroke:#4b9b50,stroke-width:1.5px
     classDef skill fill:#f1e8ff,stroke:#7950b8,stroke-width:1.5px
+    classDef library fill:#e8f6ee,stroke:#2f8f5b,stroke-width:1.5px
     classDef mcp fill:#ffe9f2,stroke:#c45183,stroke-width:1.5px
     classDef environment fill:#ffe9e7,stroke:#c2554d,stroke-width:1.5px
     classDef adapter fill:#fff0dc,stroke:#bd7a22,stroke-width:1.5px
@@ -182,9 +208,77 @@ flowchart TB
     class S_FACTS,S_PARSE,S_CAT skill
     class M_FACTS,M_CAT mcp
     class M_STUB artifact
+    class L_FACTS,L_PARSE,L_CACHE,L_CAT library
     class SESSION_NODE,RES boundary
     class KERNEL,PROTO,POLICY,INVALID,DENIED,ROUTER,SCHED,SUPV,EXEC,CMDS,HAND_BASE,SHELL_HANDLER,TOOL_HANDLER,PROC environment
 ```
+
+## Library model-generated indexes
+
+The Library is the effective `.workspace/library` Capability View merged from
+the user-maintained Repertoire lower tree and the Workspace upper tree. On
+Runtime open `_LibraryCatalog.reconcile` discovers source facts, computes
+content fingerprints, resolves cached summaries, renders every visible
+directory `index.md`, and returns without calling any model; the Runtime then
+starts one serial summary worker that owns the queue.
+
+```text
+Repertoire lower ─┐
+                  ├─> .workspace/library effective view
+Workspace upper ──┘                  │
+                                     ▼
+                          LibraryCatalog.reconcile()
+                           │        │          │
+                           │        │          └─> 渲染 index.md（不含模型）
+                           │        └─> 查询 SQLite 缓存
+                           └─> 提交 pending 任务
+                                         │
+                                         ▼
+                             Runtime-owned 串行 worker
+                                │        │
+                                │        └─> 目录摘要（自底向上）
+                                └─> file parser -> 模型摘要
+                                         │
+                                         ▼
+                             SQLite upsert + 原子索引刷新
+```
+
+### 应用状态数据库与摘要缓存
+
+`~/.config/cli-agent/state.sqlite3` 是 cli-agent 的本地应用状态数据库
+（`_state_db.py`，`PRAGMA user_version` 显式 migration，短事务 +
+`busy_timeout`）。Library 首期只使用 `library_summary_cache` 表，缓存键是
+包含对象类型域分隔的 fingerprint；只有成功摘要落库，原文、parser 正文、
+pending job 和凭证绝不入库。删除该表或数据库只会丢失派生摘要、触发重新生成；
+未来引入 Session History 等非派生应用状态后，不得再把删除整个
+`state.sqlite3` 描述为无损操作。
+
+### File Parser 范围
+
+`parser.py` 定义 `LibraryFileParser` 协议（`supports` / `parse`），首期
+registry 只有一个 UTF-8 text parser，只声明支持 `.md` 和 `.txt`。Parser
+只返回供摘要模型的完整规范化文本，不承担摘要、缓存或索引渲染职责；后续
+PDF/PPT 等格式通过新增 parser 实现接入，不改变 Catalog、缓存或 renderer。
+
+### 状态语义与后台生命周期
+
+每个条目公开五种状态：`ready`（当前摘要）、`pending`（无摘要、已排队或执行
+中）、`stale`（Runtime 观察到 source 变化，保留显式过期摘要并排队刷新）、
+`failed`（最近一次生成失败，`error` 保存有界原因）、`unsupported`（没有
+parser 支持）。只有 `ready` 摘要可视为当前摘要。文件摘要完成后，目录只在其
+直接子项全部达到终态时按深度自底向上排队；每次终态转换都会级联重新评估全部
+祖先目录。Runtime close 取消 worker；已提交 SQLite 的摘要保留，未完成任务在
+下一次 open 重新发现为 `pending`。
+
+### 失效检测与 reconcile 时机
+
+Runtime `files write` / `files edit` 成功修改 Library 后，精确路径立即进入
+Catalog 内部 `dirty_paths` 集合（失败操作不标记）。每次普通 Agent 模型请求
+前，AgentLoop 通过 Kernel 触发 `reconcile_changes`：dirty 路径强制重读，其他
+路径比较成员关系、`mtime_ns` 与 size，变化路径重新计算 fingerprint 并迁移为
+`pending` 或 `stale`，删除条目立即移除，随后失效祖先目录并排队，全程不调用
+模型、不等待摘要。内部摘要请求直接调用 provider，不递归触发该 hook。不使用
+文件 watcher，也没有任何 `library` 命令。
 
 ## Unified command execution
 
