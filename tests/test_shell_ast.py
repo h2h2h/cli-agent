@@ -21,7 +21,7 @@ from cli_agent.runtime._capability.command_parser import (
 def test_simple_command_exposes_executable_and_argv() -> None:
     parsed = parse_shell_ast("ls -la")
 
-    assert parsed.tokenization_succeeded is True
+    assert parsed.syntax_valid is True
     assert isinstance(parsed.root, SimpleCommand)
     assert parsed.root.executable.text == "ls"
     assert parsed.root.executable.span.start == 0
@@ -231,23 +231,22 @@ def test_malformed_commands_fail_closed(raw: str) -> None:
     parsed = parse_shell_ast(raw)
 
     assert isinstance(parsed, ShellParseResult)
-    assert parsed.tokenization_succeeded is False
+    assert parsed.syntax_valid is False
     assert parsed.root is None
     assert parsed.contains_shell_composition is True
 
 
-def test_failed_parse_keeps_tokens_and_detects_redirection() -> None:
+def test_failed_parse_keeps_conservative_syntax_facts() -> None:
     parsed = parse_shell_ast("echo hi >")
 
-    assert parsed.tokenization_succeeded is False
-    assert parsed.tokens == ("echo", "hi", ">")
+    assert parsed.syntax_valid is False
     assert parsed.contains_output_redirection is True
 
 
 def test_empty_command_is_valid_but_empty() -> None:
     parsed = parse_shell_ast("")
 
-    assert parsed.tokenization_succeeded is True
+    assert parsed.syntax_valid is True
     assert parsed.root is None
     assert parsed.executable_basename is None
     assert parsed.contains_shell_composition is False
@@ -342,10 +341,10 @@ def test_contains_output_redirection_is_derived_from_ast(
     assert parse_shell_ast(raw).contains_output_redirection is expected
 
 
-def test_tokens_stay_quote_stripped_for_existing_consumers() -> None:
+def test_leading_arguments_are_derived_from_static_ast_words() -> None:
     parsed = parse_shell_ast("sed -n '5,10p' file.txt")
 
-    assert parsed.tokens == ("sed", "-n", "5,10p", "file.txt")
+    assert parsed.leading_arguments == ("-n", "5,10p", "file.txt")
 
 
 def test_collect_redirects_returns_flat_source_order() -> None:

@@ -121,7 +121,7 @@ class _ShellCommand(_Command):
         """Return whether the parsed Shell command is trusted for parallel use."""
 
         return bool(
-            command.tokenization_succeeded
+            command.syntax_valid
             and command.executable_basename in self._parallel_commands
             and not command.contains_shell_composition
         )

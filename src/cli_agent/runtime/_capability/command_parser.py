@@ -7,8 +7,6 @@ entry point and produces one immutable ``ShellParseResult`` per command.
 
 from __future__ import annotations
 
-import re
-import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -211,8 +209,6 @@ _DYNAMIC_WORD_NODES = frozenset(
         "simple_expansion",
     }
 )
-_REDIRECTION_TOKEN_PATTERN = re.compile(r"\d*(?:>>?|<>|>\|)")
-
 _PARSER = Parser(Language(tree_sitter_bash.language()))
 
 
@@ -250,9 +246,8 @@ class ShellParseResult:
     """Syntax facts for one exact command, including its parsed AST root."""
 
     raw_command: str
-    tokens: tuple[str, ...]
     root: ShellNode | None
-    tokenization_succeeded: bool
+    syntax_valid: bool
     contains_shell_composition: bool
     contains_output_redirection: bool
 
@@ -270,6 +265,18 @@ class ShellParseResult:
         if command is None or command.prefix_assignments or command.executable is None:
             return None
         return command.executable.value
+
+    @property
+    def leading_arguments(self) -> tuple[str, ...]:
+        """Return AST-derived arguments of the leading top-level command."""
+
+        command = self.leading_command
+        if command is None:
+            return ()
+        return tuple(
+            word.value if word.value is not None else _literal_word_text(word)
+            for word in command.argv
+        )
 
     @property
     def executable_basename(self) -> str | None:
@@ -295,45 +302,23 @@ def parse_shell_ast(raw_command: str) -> ShellParseResult:
         no exception handling.
     """
 
-    tokens, tokenization_succeeded = _tokenize(raw_command)
     source = _Source.from_text(raw_command)
     root_node = _PARSER.parse(source.data).root_node
-    if not tokenization_succeeded or root_node.has_error:
+    if root_node.has_error:
         return ShellParseResult(
             raw_command=raw_command,
-            tokens=tokens,
             root=None,
-            tokenization_succeeded=False,
+            syntax_valid=False,
             contains_shell_composition=True,
-            contains_output_redirection=_tokens_contain_output_redirection(tokens),
+            contains_output_redirection=True,
         )
     root = _convert_statement(root_node, source)
     return ShellParseResult(
         raw_command=raw_command,
-        tokens=tokens,
         root=root,
-        tokenization_succeeded=True,
+        syntax_valid=True,
         contains_shell_composition=_contains_composition(root),
         contains_output_redirection=_contains_output_redirection(root),
-    )
-
-
-def _tokenize(raw_command: str) -> tuple[tuple[str, ...], bool]:
-    """Split the command into quote-stripped tokens like the shell would."""
-
-    try:
-        tokens = shlex.split(raw_command, posix=True, comments=False)
-    except ValueError:
-        return (), False
-    return tuple(tokens), True
-
-
-def _tokens_contain_output_redirection(tokens: tuple[str, ...]) -> bool:
-    """Detect file-writing redirections among tokens without a valid AST."""
-
-    return any(
-        ">&" not in token and _REDIRECTION_TOKEN_PATTERN.match(token)
-        for token in tokens
     )
 
 
@@ -568,11 +553,55 @@ def _static_word_value(node: Node, text: str) -> str | None:
 
     if any(_contains_node_type(node, node_type) for node_type in _DYNAMIC_WORD_NODES):
         return None
-    try:
-        values = shlex.split(text, comments=False, posix=True)
-    except ValueError:
-        return None
-    return values[0] if len(values) == 1 else None
+    return _decode_static_word(text)
+
+
+def _decode_static_word(text: str) -> str | None:
+    """Decode quotes and escapes in one tree-sitter-validated static word."""
+
+    decoded: list[str] = []
+    quote: Literal["single", "double"] | None = None
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if quote == "single":
+            if character == "'":
+                quote = None
+            else:
+                decoded.append(character)
+        elif quote == "double":
+            if character == '"':
+                quote = None
+            elif character == "\\" and index + 1 < len(text):
+                escaped = text[index + 1]
+                if escaped in {"$", "`", '"', "\\"}:
+                    decoded.append(escaped)
+                    index += 1
+                elif escaped == "\n":
+                    index += 1
+                else:
+                    decoded.append(character)
+            else:
+                decoded.append(character)
+        elif character == "'":
+            quote = "single"
+        elif character == '"':
+            quote = "double"
+        elif character == "\\" and index + 1 < len(text):
+            escaped = text[index + 1]
+            if escaped != "\n":
+                decoded.append(escaped)
+            index += 1
+        else:
+            decoded.append(character)
+        index += 1
+    return "".join(decoded) if quote is None else None
+
+
+def _literal_word_text(word: ShellWord) -> str:
+    """Return a non-expanded literal argument when its value is dynamic."""
+
+    return word.quoted_content if word.quoted_content is not None else word.text
 
 
 def _word_quote(

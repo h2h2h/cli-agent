@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cli_agent.runtime._capability.command_parser import ShellParseResult
+from cli_agent.runtime._capability.command_parser import ShellParseResult, SimpleCommand
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
@@ -17,9 +17,16 @@ def _prepare_export(
 ) -> _InlineExecution:
     """Prepare an environment mutation without applying it before execution."""
 
-    args = command.tokens[1:]
+    args = command.leading_arguments
+    valid = (
+        isinstance(command.root, SimpleCommand)
+        and not command.contains_shell_composition
+    )
 
     async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+        if not valid:
+            await output.write("stderr", b"export does not support Shell composition\n")
+            return _ExecutionOutcome.failed(1)
         if not args:
             text = "\n".join(
                 f"{key}={value}" for key, value in context.environment.items()

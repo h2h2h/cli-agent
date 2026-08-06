@@ -72,7 +72,7 @@ def test_files_write_empty_content_reports_zero_bytes(tmp_path: Path) -> None:
 
 
 def test_files_write_preserves_heredoc_content_exactly(tmp_path: Path) -> None:
-    content = '$HOME  `ls`  "quoted"\n  keep   spaces  '
+    content = '$HOME  `ls`  "quoted"\nstd::function\'s callables\n  keep   spaces  '
     outcome, output = _write(
         tmp_path,
         f"files write exact.txt <<'EOF'\n{content}\nEOF",

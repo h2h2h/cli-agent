@@ -13,18 +13,13 @@ def test_parser_reports_only_generic_shell_syntax_facts() -> None:
     malformed = parse_shell_ast("export VALID=value BROKEN")
 
     assert direct.raw_command == "  export A=1 MESSAGE='two words' EMPTY=  "
-    assert direct.tokens == (
-        "export",
-        "A=1",
-        "MESSAGE=two words",
-        "EMPTY=",
-    )
+    assert direct.leading_arguments == ("A=1", "MESSAGE=two words", "EMPTY=")
     assert direct.executable_basename == "export"
-    assert direct.tokenization_succeeded is True
+    assert direct.syntax_valid is True
     assert direct.contains_shell_composition is False
-    assert malformed.tokens == ("export", "VALID=value", "BROKEN")
+    assert malformed.leading_arguments == ("VALID=value", "BROKEN")
     assert malformed.executable_basename == "export"
-    assert malformed.tokenization_succeeded is True
+    assert malformed.syntax_valid is True
     assert malformed.contains_shell_composition is False
 
     for command in (

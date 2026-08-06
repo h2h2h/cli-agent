@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from cli_agent.runtime._capability.command_parser import ShellParseResult
+from cli_agent.runtime._capability.command_parser import ShellParseResult, SimpleCommand
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
@@ -20,9 +20,16 @@ def _prepare_cd(
 ) -> _InlineExecution:
     """Prepare a cwd mutation without applying it before execution starts."""
 
-    args = command.tokens[1:]
+    args = command.leading_arguments
+    valid = (
+        isinstance(command.root, SimpleCommand)
+        and not command.contains_shell_composition
+    )
 
     async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+        if not valid:
+            await output.write("stderr", b"cd does not support Shell composition\n")
+            return _ExecutionOutcome.failed(1)
         target = context.workspace if not args else _target_path(args[0], context.cwd)
         new_cwd = Path(os.path.normpath(str(target)))
         if not new_cwd.exists():

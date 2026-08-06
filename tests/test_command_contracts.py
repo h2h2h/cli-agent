@@ -45,9 +45,8 @@ def test_parser_emits_only_generic_shell_syntax_facts() -> None:
     assert not hasattr(command, "tool")
     assert tuple(command.__dataclass_fields__) == (
         "raw_command",
-        "tokens",
         "root",
-        "tokenization_succeeded",
+        "syntax_valid",
         "contains_shell_composition",
         "contains_output_redirection",
     )
