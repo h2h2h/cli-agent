@@ -2,17 +2,19 @@
 
 The Local Backend is the reference RFC-0012 implementation: it owns the Host
 ``Path`` used for filesystem operations, the Host ambient environment merge
-strategy, every ordinary Shell subprocess, and the file-level Capability View
-materialization (symlink attach, copy-up, whiteouts, mutation lock), while
-exposing only backend-neutral facts and contracts. Tool preparation and the
-Workspace MCP Runtime arrive with later issues; the corresponding members
-fail loudly with ``NotImplementedError`` until then.
+strategy, every ordinary Shell subprocess, the file-level Capability View
+materialization (symlink attach, copy-up, whiteouts, mutation lock), and the
+Tool Runtime (Workspace-private venv, materialized worker, worker
+subprocesses), while exposing only backend-neutral facts and contracts. The
+Workspace MCP Runtime arrives with a later issue; the corresponding member
+fails loudly with ``NotImplementedError`` until then.
 """
 
 from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import os
 import shutil
 import signal
@@ -48,6 +50,7 @@ from cli_agent.runtime._backend.protocol import (
     _BoundCapabilityView,
     _WorkspaceMCPRuntime,
 )
+from cli_agent.runtime._backend.tool_runtime import _LocalToolRuntime
 from cli_agent.runtime._capability.command_parser import (
     FileRedirect,
     ShellParseResult,
@@ -63,6 +66,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _ExecutionOutput,
     _PreparedExecution,
 )
+from cli_agent.runtime._environment.handlers.executions import _text_execution
 
 _ProcessSpawner = Callable[[], Awaitable[asyncio.subprocess.Process]]
 
@@ -127,6 +131,7 @@ class _LocalBackendWorkspace:
         self.mcp: _WorkspaceMCPRuntime = _UnimplementedMCPRuntime()
         self.workspace_environment = environment
         self._capability_view = capability_view
+        self._tool_runtime: _LocalToolRuntime | None = None
         self._closed = False
 
     def execution_base_environment(self) -> Mapping[str, str]:
@@ -159,15 +164,83 @@ class _LocalBackendWorkspace:
         self,
         request: _ToolExecutionRequest,
     ) -> _PreparedExecution:
-        """Prepare one Tool worker execution; arrives with Handler migration."""
+        """Prepare one Tool worker execution inside this Workspace.
 
-        del request
-        raise NotImplementedError("Local Tool preparation is not implemented yet")
+        The worker, its venv, and the effective Tools directory come from the
+        reconciled Local Tool Runtime; the Host ambient environment is merged
+        under the Session environment by the Backend. A missing or failed Tool
+        Runtime fails this execution with text output; it never falls back to
+        the Host Python.
+        """
+
+        runtime = self._tool_runtime
+        if runtime is None:
+            return _text_execution(
+                "Tool environment is unavailable\n",
+                success=False,
+            )
+        if (
+            not runtime.available
+            or runtime.python is None
+            or runtime.worker is None
+            or runtime.tools_directory is None
+        ):
+            return _text_execution(
+                (runtime.error or "Tool environment is unavailable") + "\n",
+                success=False,
+            )
+
+        cwd = _resolve_path(self._root, request.cwd)
+        payload = json.dumps(
+            {
+                "code": request.code,
+                "workspace": self.root,
+                "cwd": str(cwd),
+                "tools_directory": str(runtime.tools_directory),
+                "tool_paths": {
+                    binding.name: binding.path for binding in request.bindings
+                },
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        python = runtime.python
+        environment = {**self.execution_base_environment(), **request.environment}
+        environment["VIRTUAL_ENV"] = str(runtime.root / ".venv")
+        environment["PYTHONNOUSERSITE"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        bin_directory = str(python.parent)
+        existing_path = environment.get("PATH")
+        environment["PATH"] = (
+            bin_directory
+            if not existing_path
+            else bin_directory + os.pathsep + existing_path
+        )
+        return _ProcessExecution(
+            _tool_worker_spawner(python, runtime.worker, cwd, environment),
+            input_data=payload,
+        )
 
     async def reconcile_tool_runtime(self) -> _ToolRuntimeStatus:
-        """Reconcile the Local Tool Runtime; arrives with Tool migration."""
+        """Reconcile the Local Tool Runtime and return its availability.
 
-        raise NotImplementedError("Local Tool Runtime reconcile is not implemented yet")
+        The Workspace-private venv and the materialized worker are created
+        under the Bound Capability View root; dependency failures produce an
+        unavailable status instead of raising.
+        """
+
+        view = self._capability_view
+        if view is None:
+            runtime = _LocalToolRuntime(
+                root=self._root / ".workspace" / ".tool-environment",
+                python=None,
+                worker=None,
+                tools_directory=None,
+                error="Tool environment is unavailable: no Capability View",
+            )
+        else:
+            runtime = await _LocalToolRuntime.reconcile(Path(view.root))
+        self._tool_runtime = runtime
+        return runtime.status
 
     async def flush(self) -> None:
         """Local Workspace changes are immediately durable; nothing to flush."""
@@ -953,6 +1026,33 @@ def _shell_spawner(
             raw_command,
             cwd=cwd,
             env=dict(environment),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=os.name == "posix",
+        )
+
+    return spawn
+
+
+def _tool_worker_spawner(
+    python: Path,
+    worker: Path,
+    cwd: Path,
+    environment: Mapping[str, str],
+) -> _ProcessSpawner:
+    """Return a spawner that starts one fresh Tool worker in the Workspace.
+
+    The materialized worker path and the Workspace-private venv Python are
+    resolved by the Local Backend; the Handler never sees either path.
+    """
+
+    async def spawn() -> asyncio.subprocess.Process:
+        return await asyncio.create_subprocess_exec(
+            str(python),
+            str(worker),
+            cwd=cwd,
+            env=dict(environment),
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=os.name == "posix",

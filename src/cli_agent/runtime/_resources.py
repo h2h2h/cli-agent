@@ -19,7 +19,6 @@ from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.source import _prepare_capability_source
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._state_db import _StateDatabase
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
@@ -39,7 +38,6 @@ class _RuntimeResources:
     base_env: Mapping[str, str] = field(repr=False)
     capability_view: _BoundCapabilityView
     tool_catalog: _ToolCatalog
-    tool_environment: _ToolEnvironment
     skill_catalog: _SkillCatalog
     library_catalog: _LibraryCatalog
 
@@ -85,7 +83,7 @@ async def _reconcile_runtime_resources(
         backend.filesystem,
         on_diagnostic=on_diagnostic,
     )
-    tool_environment = await _ToolEnvironment.reconcile(backend.capabilities)
+    await backend.reconcile_tool_runtime()
     skill_catalog = await _SkillCatalog.reconcile(
         backend.capabilities,
         backend.filesystem,
@@ -101,7 +99,6 @@ async def _reconcile_runtime_resources(
         base_env=backend.workspace_environment,
         capability_view=backend.capabilities,
         tool_catalog=tool_catalog,
-        tool_environment=tool_environment,
         skill_catalog=skill_catalog,
         library_catalog=library_catalog,
     )

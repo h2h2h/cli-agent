@@ -1,4 +1,9 @@
-"""Fixed stdlib-only worker executed by a Workspace Tool venv."""
+"""Fixed stdlib-only worker executed by a Workspace Tool venv.
+
+The Local Backend materializes this template into the Workspace Tool
+environment during Tool Runtime reconcile; the Handler only references the
+materialized worker through ``BackendWorkspace.prepare_tool``.
+"""
 
 from __future__ import annotations
 
@@ -48,8 +53,7 @@ def main() -> int:
             setattr(tools, name, module)
         except Exception as exc:
             print(
-                f"Warning: Failed to load tool {name}: "
-                f"{type(exc).__name__}: {exc}",
+                f"Warning: Failed to load tool {name}: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
 

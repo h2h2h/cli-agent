@@ -24,7 +24,6 @@ from cli_agent.runtime._backend.local import (
 )
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
 
@@ -71,17 +70,15 @@ def _fixture_command() -> list[str]:
 async def _kernel(workspace: Path, repertoire: Path) -> EnvironmentKernel:
     _prepare_workspace(workspace)
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
+    backend = _LocalBackendWorkspace(workspace, {}, view)
     await _MCPCatalog.reconcile(view)
-    catalog = await _ToolCatalog.reconcile(
-        view, _LocalBackendWorkspace(workspace, {}, view).filesystem
-    )
-    environment = await _ToolEnvironment.reconcile(view)
-    assert environment.available, environment.error
+    catalog = await _ToolCatalog.reconcile(view, backend.filesystem)
+    status = await backend.reconcile_tool_runtime()
+    assert status.available, status.error
     return EnvironmentKernel(
         workspace,
-        backend=_LocalBackendWorkspace(workspace, {}, view),
+        backend=backend,
         tool_catalog=catalog,
-        tool_environment=environment,
     )
 
 

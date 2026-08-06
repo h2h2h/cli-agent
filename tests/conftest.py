@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-import cli_agent.runtime._capability.tools.environment as tool_environment_module
+import cli_agent.runtime._backend.tool_runtime as tool_runtime_module
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ def _fast_tool_environment_sync(
         del python, requirements, working_directory
 
     monkeypatch.setattr(
-        tool_environment_module,
+        tool_runtime_module,
         "_sync_requirements",
         _noop_sync,
     )

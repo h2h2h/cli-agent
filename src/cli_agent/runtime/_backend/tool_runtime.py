@@ -1,4 +1,12 @@
-"""Workspace-private Python dependency environment for Tool workers."""
+"""Local Backend Tool Runtime: Workspace-private venv and materialized worker.
+
+The Local Backend owns the Tool worker execution environment: it reconciles
+a Workspace-private virtual environment from the effective Tool requirements,
+materializes the Runtime-owned worker into that environment, and exposes the
+Host paths that ``prepare_tool`` needs to spawn one fresh worker. All of this
+is Local-only mechanical detail; the generic Backend contract only sees the
+backend-neutral ``_ToolRuntimeStatus`` returned by reconcile.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +17,10 @@ import signal
 import venv
 import weakref
 from dataclasses import dataclass
+from importlib.resources import files
 from pathlib import Path
 
-from cli_agent.runtime._backend import _BoundCapabilityView
+from cli_agent.runtime._backend.facts import _ToolRuntimeStatus
 from cli_agent.runtime._capability.workspace import (
     _atomic_write,
     _ensure_real_directory,
@@ -20,6 +29,7 @@ from cli_agent.runtime._capability.workspace import (
 _EFFECTIVE_REQUIREMENTS = "effective-requirements.txt"
 _REQUIREMENTS_DIGEST = "requirements.sha256"
 _RUNTIME_BASE_REQUIREMENTS = "mcp"
+_WORKER_FILENAME = "worker.py"
 _RECONCILE_LOCKS: weakref.WeakKeyDictionary[
     asyncio.AbstractEventLoop,
     dict[Path, asyncio.Lock],
@@ -27,35 +37,55 @@ _RECONCILE_LOCKS: weakref.WeakKeyDictionary[
 
 
 @dataclass(frozen=True, slots=True)
-class _ToolEnvironment:
-    """One reconciled Tool environment or a fail-soft unavailable state."""
+class _LocalToolRuntime:
+    """One reconciled Local Tool Runtime or a fail-soft unavailable state."""
 
     root: Path
     python: Path | None
+    worker: Path | None
+    tools_directory: Path | None
     error: str | None
 
     @property
     def available(self) -> bool:
-        return self.python is not None and self.error is None
+        return (
+            self.python is not None
+            and self.worker is not None
+            and self.tools_directory is not None
+            and self.error is None
+        )
+
+    @property
+    def status(self) -> _ToolRuntimeStatus:
+        return _ToolRuntimeStatus(available=self.available, error=self.error)
 
     @classmethod
-    async def reconcile(
-        cls,
-        capability_view: _BoundCapabilityView,
-    ) -> _ToolEnvironment:
-        root = Path(capability_view.root) / ".tool-environment"
+    async def reconcile(cls, view_root: Path) -> _LocalToolRuntime:
+        """Reconcile one Tool Runtime under a materialized Capability View.
+
+        Args:
+            view_root (`Path`):
+                The Local Bound Capability View root; the venv and the
+                materialized worker live under ``view_root/.tool-environment``.
+
+        Returns:
+            The reconciled Local Tool Runtime; dependency failures produce an
+            unavailable Runtime instead of raising.
+        """
+
+        root = view_root / ".tool-environment"
         loop = asyncio.get_running_loop()
         locks = _RECONCILE_LOCKS.setdefault(loop, {})
         lock = locks.setdefault(root, asyncio.Lock())
         async with lock:
-            return await cls._reconcile_locked(capability_view, root)
+            return await cls._reconcile_locked(view_root, root)
 
     @classmethod
     async def _reconcile_locked(
         cls,
-        capability_view: _BoundCapabilityView,
+        view_root: Path,
         root: Path,
-    ) -> _ToolEnvironment:
+    ) -> _LocalToolRuntime:
         try:
             _ensure_real_directory(root, label="Tool environment path")
             venv_directory = root / ".venv"
@@ -69,7 +99,7 @@ class _ToolEnvironment:
                 )
 
             python = _venv_python(venv_directory)
-            requirements = Path(capability_view.root) / "tools" / "requirements.txt"
+            requirements = view_root / "tools" / "requirements.txt"
             content = requirements.read_bytes() if requirements.is_file() else b""
             effective_content = _effective_requirements(content)
             digest = hashlib.sha256(effective_content).hexdigest()
@@ -87,13 +117,29 @@ class _ToolEnvironment:
                         working_directory=requirements.parent,
                     )
                 _atomic_write(marker, (digest + "\n").encode("ascii"))
-            return cls(root=root, python=python, error=None)
+
+            worker = root / _WORKER_FILENAME
+            template = (
+                files("cli_agent.runtime._backend")
+                .joinpath(_WORKER_FILENAME)
+                .read_bytes()
+            )
+            _atomic_write(worker, template)
+            return cls(
+                root=root,
+                python=python,
+                worker=worker,
+                tools_directory=view_root / "tools",
+                error=None,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             return cls(
                 root=root,
                 python=None,
+                worker=None,
+                tools_directory=None,
                 error=f"Tool environment is unavailable: {exc}",
             )
 

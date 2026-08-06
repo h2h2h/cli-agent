@@ -10,7 +10,6 @@ from cli_agent.runtime._backend import _BackendWorkspace, _BoundCapabilityView
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._resources import (
     _reconcile_runtime_resources,
     _RuntimeResources,
@@ -48,7 +47,6 @@ def test_reconcile_returns_complete_resource_aggregate(tmp_path: Path) -> None:
         assert dict(resources.base_env) == {"TOKEN": "secret"}
         assert isinstance(resources.capability_view, _BoundCapabilityView)
         assert isinstance(resources.tool_catalog, _ToolCatalog)
-        assert isinstance(resources.tool_environment, _ToolEnvironment)
         assert isinstance(resources.skill_catalog, _SkillCatalog)
         assert isinstance(resources.library_catalog, _LibraryCatalog)
 
@@ -96,6 +94,11 @@ def test_reconcile_runs_steps_in_documented_order(
         capabilities = object()
         filesystem = object()
 
+        @staticmethod
+        async def reconcile_tool_runtime() -> object:
+            order.append("tool_runtime")
+            return object()
+
     class _FakeLocalBackend:
         @staticmethod
         async def open_workspace(
@@ -127,13 +130,6 @@ def test_reconcile_runs_steps_in_documented_order(
         ) -> object:
             del capability_view, filesystem, on_diagnostic
             order.append("tool_catalog")
-            return object()
-
-    class _FakeToolEnvironment:
-        @staticmethod
-        async def reconcile(capability_view: object) -> object:
-            del capability_view
-            order.append("tool_environment")
             return object()
 
     class _FakeSkillCatalog:
@@ -192,7 +188,6 @@ def test_reconcile_runs_steps_in_documented_order(
     monkeypatch.setattr(resources_module, "_SummaryCache", _FakeSummaryCache)
     monkeypatch.setattr(resources_module, "_MCPCatalog", _FakeMCPCatalog)
     monkeypatch.setattr(resources_module, "_ToolCatalog", _FakeToolCatalog)
-    monkeypatch.setattr(resources_module, "_ToolEnvironment", _FakeToolEnvironment)
     monkeypatch.setattr(resources_module, "_SkillCatalog", _FakeSkillCatalog)
     monkeypatch.setattr(resources_module, "_LibraryCatalog", _FakeLibraryCatalog)
 
@@ -211,7 +206,7 @@ def test_reconcile_runs_steps_in_documented_order(
             "summary_cache",
             "mcp",
             "tool_catalog",
-            "tool_environment",
+            "tool_runtime",
             "skill_catalog",
             "library_catalog",
         ]
@@ -241,7 +236,6 @@ def test_mcp_projection_result_is_not_retained_in_aggregate(
             "base_env",
             "capability_view",
             "tool_catalog",
-            "tool_environment",
             "skill_catalog",
             "library_catalog",
         }
@@ -249,7 +243,7 @@ def test_mcp_projection_result_is_not_retained_in_aggregate(
     asyncio.run(scenario())
 
 
-def test_tool_environment_fail_soft_state_enters_aggregate(
+def test_tool_runtime_fail_soft_state_does_not_break_runtime_open(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path)
@@ -264,10 +258,9 @@ def test_tool_environment_fail_soft_state_enters_aggregate(
             on_diagnostic=None,
         )
 
-        assert isinstance(resources.tool_environment, _ToolEnvironment)
-        assert resources.tool_environment.available is False
-        assert resources.tool_environment.python is None
-        assert "must be a real directory" in (resources.tool_environment.error or "")
+        status = await resources.backend.reconcile_tool_runtime()
+        assert status.available is False
+        assert "must be a real directory" in (status.error or "")
 
     asyncio.run(scenario())
 

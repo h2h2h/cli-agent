@@ -207,13 +207,30 @@ def test_flush_is_noop_and_close_is_idempotent(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_unmigrated_members_fail_loudly(tmp_path: Path) -> None:
+def test_tool_runtime_reconciles_venv_and_materialized_worker(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        workspace = await _open_workspace(tmp_path)
+
+        status = await workspace.reconcile_tool_runtime()
+
+        assert status.available, status.error
+        environment = tmp_path / ".workspace" / ".tool-environment"
+        assert (environment / ".venv" / "bin" / "python").is_file()
+        worker = environment / "worker.py"
+        assert worker.is_file()
+        assert not worker.is_symlink()
+        assert "stdlib-only worker" in worker.read_text(encoding="utf-8")
+
+    asyncio.run(scenario())
+
+
+def test_unmigrated_mcp_runtime_fails_loudly(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = await _open_workspace(tmp_path)
 
         with pytest.raises(NotImplementedError, match="not implemented"):
             await workspace.mcp.discover()
-        with pytest.raises(NotImplementedError, match="not implemented"):
-            await workspace.reconcile_tool_runtime()
 
     asyncio.run(scenario())

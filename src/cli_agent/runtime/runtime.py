@@ -267,7 +267,6 @@ class AgentRuntime:
             backend=self._resources.backend,
             library_catalog=self._resources.library_catalog,
             tool_catalog=self._resources.tool_catalog,
-            tool_environment=self._resources.tool_environment,
             base_env=self._resources.base_env,
             policy=self._policy,
             user_interaction=self._user_interaction,

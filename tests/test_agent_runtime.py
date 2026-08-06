@@ -29,7 +29,6 @@ from cli_agent.runtime import (
 from cli_agent.runtime._backend import _BackendWorkspace, _BoundCapabilityView
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._resources import _RuntimeResources
 
 _user_interaction = _ScriptedInteraction("allow_once")
@@ -547,13 +546,11 @@ def test_runtime_holds_single_resource_aggregate(tmp_path: Path) -> None:
         assert isinstance(resources.backend, _BackendWorkspace)
         assert isinstance(resources.capability_view, _BoundCapabilityView)
         assert isinstance(resources.tool_catalog, _ToolCatalog)
-        assert isinstance(resources.tool_environment, _ToolEnvironment)
         assert isinstance(resources.skill_catalog, _SkillCatalog)
         assert not hasattr(runtime, "_workspace")
         assert not hasattr(runtime, "_backend")
         assert not hasattr(runtime, "_capability_view")
         assert not hasattr(runtime, "_tool_catalog")
-        assert not hasattr(runtime, "_tool_environment")
         assert not hasattr(runtime, "_skill_catalog")
         assert not hasattr(runtime, "_mcp_catalog")
         assert not hasattr(runtime, "_base_env")
@@ -598,8 +595,6 @@ def test_sessions_borrow_the_same_workspace_resources(
         assert second.backend.capabilities is resources.capability_view
         assert first.tool_catalog is resources.tool_catalog
         assert second.tool_catalog is resources.tool_catalog
-        assert first.tool_environment is resources.tool_environment
-        assert second.tool_environment is resources.tool_environment
         await runtime.close()
 
     asyncio.run(scenario())
@@ -688,7 +683,6 @@ def test_runtime_close_only_closes_session_owned_state(
         assert resources.base_env == {}
         assert resources.capability_view is runtime._resources.capability_view
         assert resources.tool_catalog is runtime._resources.tool_catalog
-        assert resources.tool_environment is runtime._resources.tool_environment
         assert resources.skill_catalog is runtime._resources.skill_catalog
 
     asyncio.run(scenario())
@@ -773,7 +767,6 @@ class _TrackingEnvironmentKernel:
         policy: object,
         library_catalog: object,
         tool_catalog: object,
-        tool_environment: object,
         user_interaction: object,
         session_id: str,
         parallel_commands: frozenset[str],
@@ -785,7 +778,6 @@ class _TrackingEnvironmentKernel:
         self.policy = policy
         self.library_catalog = library_catalog
         self.tool_catalog = tool_catalog
-        self.tool_environment = tool_environment
         self.user_interaction = user_interaction
         self.session_id = session_id
         self.parallel_commands = parallel_commands

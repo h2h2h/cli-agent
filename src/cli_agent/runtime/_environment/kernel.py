@@ -16,7 +16,6 @@ from cli_agent.runtime._capability.command_parser import (
 )
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._environment.commands import (
     _builtin_custom_commands,
     _CustomCommand,
@@ -79,7 +78,6 @@ class EnvironmentKernel:
         session_id: str | None = None,
         library_catalog: _LibraryCatalog | None = None,
         tool_catalog: _ToolCatalog | None = None,
-        tool_environment: _ToolEnvironment | None = None,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> None:
         host_workspace = Path(workspace).resolve()
@@ -92,7 +90,7 @@ class EnvironmentKernel:
         self._session_id = session_id
         self._on_diagnostic = on_diagnostic
         self._library_catalog = library_catalog
-        tool_handler = _ToolHandler(tool_catalog, tool_environment)
+        tool_handler = _ToolHandler(tool_catalog, backend)
         tool_command = _CustomCommand(
             name="tools",
             prepare=tool_handler.prepare,

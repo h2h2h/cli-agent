@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from policy_fakes import _AllowAllPolicy, _DenyExecutablePolicy
 
-import cli_agent.runtime._capability.tools.environment as tool_environment_module
+import cli_agent.runtime._backend.tool_runtime as tool_runtime_module
 from cli_agent.runtime import (
     PolicyAction,
     RuntimeDiagnostic,
@@ -21,7 +21,6 @@ from cli_agent.runtime._backend.local import (
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.tools.facts import ToolCommand
 from cli_agent.runtime._capability.tools.grammar import parse_tool_command
 from cli_agent.runtime._capability.workspace import _prepare_workspace
@@ -572,26 +571,40 @@ def test_tool_grammar_facts_stay_out_of_policy(
     asyncio.run(scenario())
 
 
-def test_unavailable_tool_environment_fails_run_without_host_fallback(
+def test_unavailable_tool_runtime_fails_run_without_host_fallback(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     repertoire = _repertoire(tmp_path)
     (repertoire / "tools" / "example.py").write_text("VALUE = 1\n")
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
     catalog = asyncio.run(_ToolCatalog.reconcile(view, _filesystem(tmp_path, view)))
-    unavailable = _ToolEnvironment(
-        root=Path(view.root) / ".tool-environment",
-        python=None,
-        error="Tool environment is unavailable: sync failed",
+
+    async def fail_sync(
+        *,
+        python: Path,
+        requirements: Path,
+        working_directory: Path,
+    ) -> None:
+        del python, requirements, working_directory
+        raise RuntimeError("sync failed")
+
+    monkeypatch.setattr(
+        tool_runtime_module,
+        "_sync_requirements",
+        fail_sync,
     )
 
     async def scenario() -> None:
+        backend = _LocalBackendWorkspace(tmp_path, {}, view)
+        status = await backend.reconcile_tool_runtime()
+        assert status.available is False
+        assert "sync failed" in (status.error or "")
         kernel = EnvironmentKernel(
             tmp_path,
-            backend=_LocalBackendWorkspace(tmp_path, {}, view),
+            backend=backend,
             tool_catalog=catalog,
-            tool_environment=unavailable,
         )
         try:
             listed = _output(await _exec(kernel, "tools list"))
@@ -609,13 +622,14 @@ def test_unavailable_tool_environment_fails_run_without_host_fallback(
     asyncio.run(scenario())
 
 
-def test_tool_environment_syncs_user_requirements_plus_runtime_base(
+def test_tool_runtime_syncs_user_requirements_plus_runtime_base(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     repertoire = _repertoire(tmp_path)
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    backend = _LocalBackendWorkspace(tmp_path, {}, view)
     requirements = Path(view.root) / "tools" / "requirements.txt"
 
     calls: list[tuple[Path, Path, Path]] = []
@@ -629,27 +643,26 @@ def test_tool_environment_syncs_user_requirements_plus_runtime_base(
         calls.append((python, requirements, working_directory))
 
     monkeypatch.setattr(
-        tool_environment_module,
+        tool_runtime_module,
         "_sync_requirements",
         record_sync,
     )
 
     async def scenario() -> None:
-        initial = await _ToolEnvironment.reconcile(view)
+        initial = await backend.reconcile_tool_runtime()
         assert initial.available
         assert len(calls) == 1
         assert calls[0][1].read_text() == "mcp\n"
 
         requirements.write_text("example-package==1.2.3\n")
-        changed = await _ToolEnvironment.reconcile(view)
-        unchanged = await _ToolEnvironment.reconcile(view)
+        changed = await backend.reconcile_tool_runtime()
+        unchanged = await backend.reconcile_tool_runtime()
 
         assert changed.available and unchanged.available
         assert len(calls) == 2
-        assert calls[0][0] == changed.python
+        assert calls[0][0] == _runtime_python(backend)
         assert calls[1][1].read_text() == "example-package==1.2.3\nmcp\n"
         assert calls[1][2] == Path(view.root) / "tools"
-        assert changed.root == tmp_path / ".workspace" / ".tool-environment"
 
         other_workspace = tmp_path / "other"
         other_workspace.mkdir()
@@ -658,11 +671,25 @@ def test_tool_environment_syncs_user_requirements_plus_runtime_base(
         other_view = _LocalCapabilityView.materialize(
             other_workspace / ".workspace", other_repertoire
         )
-        other = await _ToolEnvironment.reconcile(other_view)
-        assert other.root != changed.root
-        assert other.python != changed.python
+        other_backend = _LocalBackendWorkspace(other_workspace, {}, other_view)
+        other = await other_backend.reconcile_tool_runtime()
+        assert _runtime_root(other_backend) != _runtime_root(backend)
+        assert _runtime_python(other_backend) != _runtime_python(backend)
+        assert other.available
 
     asyncio.run(scenario())
+
+
+def _runtime_python(backend: _LocalBackendWorkspace) -> Path:
+    runtime = backend._tool_runtime
+    assert runtime is not None and runtime.python is not None
+    return runtime.python
+
+
+def _runtime_root(backend: _LocalBackendWorkspace) -> Path:
+    runtime = backend._tool_runtime
+    assert runtime is not None
+    return runtime.root
 
 
 def test_effective_requirements_do_not_duplicate_user_declared_base(
@@ -672,6 +699,7 @@ def test_effective_requirements_do_not_duplicate_user_declared_base(
     repertoire = _repertoire(tmp_path)
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    backend = _LocalBackendWorkspace(tmp_path, {}, view)
     requirements = Path(view.root) / "tools" / "requirements.txt"
     requirements.write_text("requests\nmcp\n")
 
@@ -684,13 +712,13 @@ def test_effective_requirements_do_not_duplicate_user_declared_base(
         del python, requirements, working_directory
 
     monkeypatch.setattr(
-        tool_environment_module,
+        tool_runtime_module,
         "_sync_requirements",
         record_sync,
     )
 
     async def scenario() -> None:
-        await _ToolEnvironment.reconcile(view)
+        await backend.reconcile_tool_runtime()
         effective = (
             Path(view.root) / ".tool-environment" / "effective-requirements.txt"
         ).read_text(encoding="utf-8")
@@ -706,12 +734,13 @@ def test_mcp_is_importable_in_the_worker_venv(tmp_path: Path) -> None:
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
 
     async def scenario() -> None:
-        environment = await _ToolEnvironment.reconcile(view)
-        assert environment.available, environment.error
-        assert environment.python is not None
+        backend = _LocalBackendWorkspace(tmp_path, {}, view)
+        status = await backend.reconcile_tool_runtime()
+        assert status.available, status.error
+        python = _runtime_python(backend)
         result = subprocess.run(
             [
-                str(environment.python),
+                str(python),
                 "-c",
                 "import mcp; import mcp_types",
             ],
@@ -745,22 +774,22 @@ def test_dependency_sync_failure_is_fail_soft_for_catalog_operations(
         raise RuntimeError("package manager failed")
 
     monkeypatch.setattr(
-        tool_environment_module,
+        tool_runtime_module,
         "_sync_requirements",
         fail_sync,
     )
 
     async def scenario() -> None:
-        environment = await _ToolEnvironment.reconcile(view)
-        catalog = await _ToolCatalog.reconcile(view, _filesystem(tmp_path, view))
-        assert environment.available is False
-        assert "package manager failed" in environment.error
+        backend = _LocalBackendWorkspace(tmp_path, {}, view)
+        status = await backend.reconcile_tool_runtime()
+        catalog = await _ToolCatalog.reconcile(view, backend.filesystem)
+        assert status.available is False
+        assert "package manager failed" in status.error
 
         kernel = EnvironmentKernel(
             tmp_path,
-            backend=_LocalBackendWorkspace(tmp_path, {}, view),
+            backend=backend,
             tool_catalog=catalog,
-            tool_environment=environment,
         )
         try:
             listed = _output(await _exec(kernel, "tools list"))
@@ -1000,14 +1029,14 @@ async def _kernel(
 ) -> EnvironmentKernel:
     _prepare_workspace(workspace)
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
-    catalog = await _ToolCatalog.reconcile(view, _filesystem(workspace, view))
-    environment = await _ToolEnvironment.reconcile(view)
-    assert environment.available, environment.error
+    backend = _LocalBackendWorkspace(workspace, {}, view)
+    catalog = await _ToolCatalog.reconcile(view, backend.filesystem)
+    status = await backend.reconcile_tool_runtime()
+    assert status.available, status.error
     return EnvironmentKernel(
         workspace,
-        backend=_LocalBackendWorkspace(workspace, {}, view),
+        backend=backend,
         tool_catalog=catalog,
-        tool_environment=environment,
         policy=policy,
         parallel_commands=parallel_commands,
         parallel_limit=parallel_limit,

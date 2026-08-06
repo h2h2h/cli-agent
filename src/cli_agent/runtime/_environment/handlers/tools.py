@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
-import os
-from importlib.resources import files
-
-from cli_agent.runtime._backend.local import _ProcessExecution
+from cli_agent.runtime._backend import (
+    _BackendWorkspace,
+    _ToolBinding,
+    _ToolExecutionRequest,
+)
 from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime._capability.tools.environment import _ToolEnvironment
 from cli_agent.runtime._capability.tools.grammar import parse_tool_command
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
@@ -20,15 +18,22 @@ from cli_agent.runtime._environment.handlers.executions import _text_execution
 
 
 class _ToolHandler:
-    """Prepare list, info, and run operations from trusted Tool facts."""
+    """Prepare list, info, and run operations from trusted Tool facts.
+
+    The Handler only converts trusted Tool facts into a backend-neutral
+    ``_ToolExecutionRequest``; the Backend owns the worker Python, the worker
+    path, the effective Tools directory, and the child environment. The
+    Handler never reads Host Python paths, package resources, or the Host
+    process environment.
+    """
 
     def __init__(
         self,
         catalog: _ToolCatalog | None,
-        environment: _ToolEnvironment | None,
+        backend: _BackendWorkspace | None,
     ) -> None:
         self._catalog = catalog
-        self._environment = environment
+        self._backend = backend
 
     def parallel_safe(self, command: ShellParseResult) -> bool:
         """Return the scheduling fact for one parsed Tools command."""
@@ -80,61 +85,20 @@ class _ToolHandler:
                 (facts.validation_error or "Invalid Tool invocation") + "\n",
                 success=False,
             )
-        environment = self._environment
-        if (
-            environment is None
-            or not environment.available
-            or environment.python is None
-        ):
-            error = (
-                "Tool environment is unavailable"
-                if environment is None
-                else environment.error or "Tool environment is unavailable"
-            )
+        backend = self._backend
+        if backend is None:
             return _text_execution(
-                error + "\n",
+                "Tool environment is unavailable\n",
                 success=False,
             )
-
-        payload = json.dumps(
-            {
-                "code": facts.code,
-                "workspace": context.workspace,
-                "cwd": context.cwd,
-                "tools_directory": os.path.join(
-                    context.workspace,
-                    ".workspace",
-                    "tools",
-                ),
-                "tool_paths": {
-                    entry.name: entry.path for entry in catalog.valid_entries
-                },
-            },
-            ensure_ascii=False,
-        ).encode("utf-8")
-        python = environment.python
-        worker = files("cli_agent.runtime._capability.tools").joinpath("worker.py")
-        child_env = dict(os.environ) | context.environment
-        child_env["VIRTUAL_ENV"] = str(environment.root / ".venv")
-        child_env["PYTHONNOUSERSITE"] = "1"
-        child_env["PYTHONDONTWRITEBYTECODE"] = "1"
-        bin_directory = str(python.parent)
-        child_env["PATH"] = (
-            bin_directory
-            if not child_env.get("PATH")
-            else bin_directory + os.pathsep + child_env["PATH"]
-        )
-
-        async def spawn_worker() -> asyncio.subprocess.Process:
-            return await asyncio.create_subprocess_exec(
-                str(python),
-                str(worker),
+        return backend.prepare_tool(
+            _ToolExecutionRequest(
+                code=facts.code,
                 cwd=context.cwd,
-                env=child_env,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=os.name == "posix",
+                environment=context.environment,
+                bindings=tuple(
+                    _ToolBinding(name=entry.name, path=entry.path)
+                    for entry in catalog.valid_entries
+                ),
             )
-
-        return _ProcessExecution(spawn_worker, input_data=payload)
+        )
