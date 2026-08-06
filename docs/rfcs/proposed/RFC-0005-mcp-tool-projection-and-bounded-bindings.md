@@ -31,9 +31,12 @@ Tool 投影进 Workspace 层；模型通过既有 `tools run` 语法组合调用
 保留旧产物（纯生成物语义）。
 
 调用路径分两段落地：M13 采用存根自连（AEP 风格，每次调用新建连接），先交付
-可发现、可组合的可用工具；M14 引入 Runtime 独占的 Workspace MCP Binding 与
-worker 到 Runtime 的 IPC 回通道，替换存根内部实现，落地共享 client、并发预算、
-`MCP_BUSY` 与 close 清理。存根表面不变，因此 A→B 是内部 swap，不返工。
+可发现、可组合的可用工具；M14 引入 Workspace MCP Binding，替换存根内部实现。
+**Host Runtime IPC placement 已被 RFC-0012 supersede**：M14 的 binding 物化在
+Backend Tool Runtime 内、由 Backend worker 直接调用（`mcp_binding` 模块），
+不再建立 worker 到 Host Runtime 进程的 IPC 回通道。存根表面不变，因此
+A→B 是内部 swap，不返工。共享 client、并发预算、`MCP_BUSY` 与 close 清理
+等有界绑定目标仍适用。
 
 本设计不新增模型可见 Syscall（仍为 `exec`、`output`、`kill`）。`_mcp/` 作为
 Capability View 的托管配置目录挂载（lower/upper 合并、copy-up、whiteout），
@@ -67,9 +70,9 @@ Capability View 的托管配置目录挂载（lower/upper 合并、copy-up、whi
 | MCP 描述 | `_mcp/<server>/config.json`：用户对某 MCP Server 的传输与启动描述；`_mcp` 是 Capability View 的托管配置目录，支持 Repertoire 挂载与 Workspace 覆盖/白名单；不出现在工具/技能 index。 |
 | MCP 投影 | Runtime open 时从描述发现 Tool 元数据后生成的真实 Python 存根文件 `.workspace/tools/mcp_<server>.py`，按普通 Workspace Tool 呈现。 |
 | MCP 命名约定 | 生成存根一律以 `mcp_<server>.py` 命名；用户约定不使用 `mcp_` 前缀书写手写 Tool。它是清理（删除 `tools/mcp_*.py`）与来源识别的唯一依据。 |
-| Workspace MCP Binding | Runtime 独占的 live MCP client 集合：每 server 一个共享 `ClientSession`、并发预算、自启进程句柄；同 Runtime 的 Session 共享，不同 Workspace 永不共享。 |
+| Workspace MCP Binding | 物化在 Backend Tool Runtime 内的 invocation binding 模块（`mcp_binding.py`）：由 Backend 从可信配置生成，包含连接细节与 env 变量名，不包含凭据值；存根只调用它的 `call_tool`。原拟议的 Host Runtime IPC 回通道已被 RFC-0012 取代。 |
 | MCP Concurrency Budget | 每 server 有界的 in-flight 请求数 + 排队等待数；满队立即返回 `MCP_BUSY`。 |
-| MCP IPC 回通道 | worker 进程与 Runtime 主进程之间的通道：存根 `_call_mcp` 把工具调用写成请求经通道交给 binding，读回结构化结果。 |
+| MCP IPC 回通道 | （已被 RFC-0012 supersede）原拟议的 worker 进程与 Runtime 主进程之间的通道；现由 Backend worker 内直接调用物化 binding 取代。 |
 | Minimal MCP Client | Runtime 只使用 `list_tools` 与 `call_tool`，不暴露 sampling、elicitation、roots 等 server 反溯能力。 |
 | Runtime Diagnostic | Runtime 向 Host 发出的结构化通知，host 记录或渲染；MCP 发现重试耗尽时使用。 |
 
@@ -118,8 +121,9 @@ AEP 可用的命令表面之上补齐：Secret 引用化（本 RFC 采用 `.work
    与 MCP Tool。
 4. 配置与存根只存 env 变量名，值在运行时从 `os.environ | session_env`（含
    `.workspace/env`）解析，不写入生成文件。
-5. M14 落地 Workspace MCP Binding：Session 间共享多路复用 client、每 server
-   并发预算、满队 `MCP_BUSY`、Runtime close 清理连接与自启进程。
+5. M14 落地 Workspace MCP Binding：binding 物化在 Backend Tool Runtime 内，
+   MCP discovery 与 invocation 都位于 Backend Workspace（RFC-0012），并发预算、
+   满队 `MCP_BUSY` 与 close 清理目标保留。
 6. 删除 server 描述/改名/发现失败时，只删除 `mcp_` 前缀命名约定的生成物，永不
    删除手写文件。
 
@@ -188,23 +192,23 @@ AEP 可用的命令表面之上补齐：Secret 引用化（本 RFC 采用 `.work
 **描述**
 
 配置面只存描述与 env 变量名；M13 并行发现并生成真实 Python 存根（以
-`mcp_<server>.py` 命名、每次 open 全量重建、不留 manifest），M14 以 Runtime
-独占的 Workspace MCP Binding + IPC 回通道替换存根内部实现，落地共享、预算、
-清理。
+`mcp_<server>.py` 命名、每次 open 全量重建、不留 manifest），M14 以物化在
+Backend Tool Runtime 内的 Workspace MCP Binding 替换存根内部实现，落地共享、
+预算、清理（Host IPC placement 已按 RFC-0012 修订）。
 
 **优点**
 
 - 生成物是真实文件，`tools list/info` 复用现有 Catalog/index 骨架，几乎零改动。
 - 存根表面在 A→B 中不变，组合调用契约稳定。
 - 无 manifest、无增量判断：清理 = 删除 `mcp_*.py` 后重建，逻辑最简。
-- M13 与 M14 解耦：投影/诊断先行，binding/IPC 后置，可逐步评审。
+- M13 与 M14 解耦：投影/诊断先行，binding 后置，可逐步评审。
 - env 名注入避免凭据落盘。
 
 **缺点**
 
 - 每次 open 无条件重连所有服务器（并行缓解，最慢者决定启动时长）。
 - 需要新增 `mcp` 运行时依赖与 Tool Environment 基础依赖注入。
-- M14 需要新增 IPC 传输层、预算层与相关测试。
+- M14 需要新增 binding 生成与相关测试（Host IPC 传输层不再需要）。
 - 来源区分依赖 `mcp_` 命名约定（非受信 provenance，见「与架构的偏差」）。
 - `.workspace/env` 注入是模型可读数据，放弃保密边界（记录为偏差）。
 
@@ -219,7 +223,7 @@ AEP 可用的命令表面之上补齐：Secret 引用化（本 RFC 采用 `.work
 | 有界并发 | 好 | M14 落地 |
 | 生命周期 | 好 | M14 落地 |
 
-**工作量**: M（M13）+ L（M14）。**风险**: IPC 层复杂度与取消/失败语义；来源
+**工作量**: M（M13）+ M（M14）。**风险**: binding 与 worker 的取消/失败语义；来源
 区分依赖用户不使用 `mcp_` 前缀的约定。
 
 ### 方案 3：纯 Catalog 条目（不落盘投影）
@@ -272,8 +276,9 @@ AEP 可用的命令表面之上补齐：Secret 引用化（本 RFC 采用 `.work
 2. 调用形态：`tools run` 单表达式与组合代码段，允许本地/MCP 混合引用。
 3. Secret 形态：复用 `.workspace/env` 注入，存根/配置只存 env 变量名。
 4. 执行路径：M13 并行发现、每次 open 全量重建（清理 `mcp_*.py` 后重新生成、
-   失败即无），存根自连（AEP 风格）；M14 以 Workspace MCP Binding + IPC
-   回通道替换内部实现，存根表面不变。
+   失败即无），存根自连（AEP 风格）；M14 以物化在 Backend Tool Runtime 内的
+   binding 替换内部实现，存根表面不变（Host IPC placement 按 RFC-0012
+   supersede）。
 5. 依赖：新增官方 `mcp` 运行时依赖，并在 Tool Environment 注入 Runtime 基础
    依赖。
 6. 诊断：新增最小化 Runtime Diagnostic seam，任一 server 发现重试耗尽时使用。
@@ -301,17 +306,18 @@ Repertoire/_mcp/<server>/config.json ── 精确链接挂载 ──▶ .worksp
         │
 Runtime open ─ Repertoire Reconciliation
         │       1. 读 .workspace/_mcp 视图中的 config.json（jsonschema 校验，失败 → 诊断，跳过）
-        │       2. 并行 mcp SDK list_tools() 发现（每 server 重试 ≤3 次，耗尽 → 诊断）
+        │       2. Backend Workspace MCP Runtime 并行 list_tools() 发现（每 server 重试 ≤3 次，耗尽 → 诊断）
         │       3. 删除 .workspace/tools/mcp_*.py（清理旧产物）
-        │       4. 为每个成功发现的 server 生成 .workspace/tools/mcp_<server>.py
+        │       4. 物化 .tool-environment/mcp_binding.py（连接细节 + env 变量名）
+        │       5. 为每个成功发现的 server 生成 .workspace/tools/mcp_<server>.py
         ▼
    _ToolCatalog.reconcile  ──→  tools/index.md（普通 Workspace Tool 呈现）
         │
 模型 tools run "..." ──→ Tool Driver
-        │                    ├─ 纯本地/混合：既有 worker（M13 存根自连；M14 注入 IPC shim）
-        │                    └─ M14：binding 持唯一 ClientSession，预算 + MCP_BUSY
+        │                    ├─ 纯本地/混合：既有 worker（M13 存根自连；M14 调用物化 binding）
+        │                    └─ M14：binding 在 worker 内连接 server（预算 + MCP_BUSY 目标）
         ▼
-   Workspace MCP Binding（每 Workspace 独占；Runtime close 清理）
+   Backend Tool Runtime 内的 mcp_binding（每 Workspace 独占；RFC-0012 生命周期清理）
 ```
 
 ### 配置面 `_mcp/<server>/config.json`
@@ -381,11 +387,11 @@ def _call_mcp(tool_name, arguments):
     # → call_tool → 提取 content 的 text/data → 返回字符串
 ```
 
-M14 内部实现（IPC 回通道）：
+M14 内部实现（物化 binding，RFC-0012）：
 
 ```python
 def _call_mcp(tool_name, arguments):
-    return mcp_shim.call("github", tool_name, arguments)  # 走 worker 注入的 shim
+    return mcp_binding.call_tool("github", tool_name, arguments)  # Backend worker 内直接调用
 ```
 
 存根只存 env **名**，值运行时解析；生成文件不含任何字面量凭据。
@@ -397,37 +403,39 @@ def _call_mcp(tool_name, arguments):
   stem）；存根内部 `_call_mcp` 以配置名 `<server>` 标识路由。
 - **允许混合引用**：一个 `tools run` 代码段可同时引用本地 Tool 模块与 MCP
   存根。worker 是统一 Python 执行环境，本地模块 load 进命名空间、MCP 调用经
-  shim/通道，混合自然成立。
+  物化 binding，混合自然成立。
 - 并行安全沿用既有分析：静态引用集合非空、无动态访问、全部在 Host
   `parallel_tools` allowlist 才可并行；MCP 引用额外受 binding 并发预算约束。
 - MCP 调用失败/断连 → 普通失败 Tool Result；**不删除生成 Tool**。
 
-### Workspace MCP Binding（M14）
+### Workspace MCP Binding（M14，已按 RFC-0012 修订）
 
-- Runtime open 构建 `_WorkspaceMCPBinding`，每 server 持一个共享
-  `ClientSession`（stdio 启动子进程 / http 长连接）。
-- Session 间共享；不同 Workspace 永不共享连接、凭据、进程或可变 server 状态。
-- 每 server 一个 `MCP Concurrency Budget`：`in_flight` 上限 + 有界排队；满队
-  立即返回 `MCP_BUSY`（映射为失败 Tool Result）。建议默认 `in_flight=4`、
-  `queue=32`，Host 可配置（留待 conformance 确认）。
+- Backend Workspace 承担 Workspace `_mcp` 的 discovery 与 invocation：Local
+  Backend 的 `_WorkspaceMCPRuntime` 并行连接各 server 发现 Tool 元数据，返回
+  provider-neutral facts；Catalog 不再持有 transport stream、client 或
+  subprocess。
+- invocation binding（`mcp_binding.py`）在 MCP reconcile 时由 Backend 物化到
+  Backend Tool Runtime（`.workspace/.tool-environment/`）：包含每 server 的
+  连接细节与 env 变量名，不包含凭据值；worker 直接导入并调用
+  `call_tool(server, tool, args)`。
+- 共享 `ClientSession`、每 server 并发预算、`MCP_BUSY` 与 close 清理仍是
+  有界绑定目标；当前实现每次调用新建连接（同 M13 语义）。
 - Minimal Client：只使用 `list_tools` 与 `call_tool`。
-- Runtime close：关闭所有连接并终止自启的 MCP server 进程。
+- Runtime close 的生命周期清理由 Backend Workspace 生命周期负责（RFC-0012）。
 
-### IPC 回通道（M14）
+### IPC 回通道（M14，已被 RFC-0012 supersede）
 
-- Tool Driver 在 spawn worker 时用 `socketpair`（或 pipe 对）建立通道，经
-  `pass_fds` 传给 worker，另一端由 Driver 侧 task 服务。
-- worker 注入只读 shim（如 `cli_agent_mcp`），存根 `_call_mcp` 写
-  `{"server": ..., "tool": ..., "args": ...}` 请求并读回
-  `{"ok": true, "result": ...}` 或 `{"ok": false, "code": ..., "error": ...}`。
-- 请求进 binding 前先过预算；`kill` 传播取消到 binding 与 MCP 调用；execution
-  结束或 worker 退出关闭通道。
+原拟议的 worker → Host Runtime IPC 回通道（socketpair 传 binding 请求）不再
+落地：binding 物化在 Backend Tool Runtime 内，由 Backend worker 进程直接调用，
+与 Shell/Files 处于同一 Backend 命名空间。并发预算与 `MCP_BUSY` 若未来需要，
+可在 Backend 侧按 RFC-0012 边界重新设计，不恢复 Host Runtime IPC。
 
 ### Tool Environment 基础依赖
 
 - `_ToolEnvironment.reconcile` 的有效 requirements = 用户
   `.workspace/tools/requirements.txt` + Runtime 注入的基础依赖（`mcp`），保证
-  M13 存根在 worker venv 可导入 `mcp`。M14 后存根不再需要 `mcp`，注入可移除。
+  M13 存根在 worker venv 可导入 `mcp`。M14 后存根不再直接导入 `mcp`（改由
+  物化的 `mcp_binding` 模块导入），基础依赖注入保留给 binding。
 
 ### Runtime Diagnostic
 
@@ -453,7 +461,7 @@ def _call_mcp(tool_name, arguments):
 | 模型覆盖生成存根 | 中 | 中 | 覆盖后按实际内容生效并可见；下次 open 全量重建覆盖（纯生成物语义） |
 | 并发无界导致 server 过载 | 高 | 中 | M14 并发预算与 `MCP_BUSY` |
 | 删除描述误删手写文件 | 高 | 中 | 清理只删 `mcp_` 前缀文件；用户违反约定可能误删（已知偏差） |
-| worker 通道被滥用 | 中 | 低 | 通道只读、每 execution 一通道、只转发到对应 binding |
+| binding 被模型读改 | 中 | 低 | binding 位于 Tool Runtime 目录，不属于 capability 投影；下次 reconcile 全量重建覆盖 |
 
 结构校验与命名约定不构成安全认证；外部 server 内容不信任。
 
@@ -473,16 +481,18 @@ def _call_mcp(tool_name, arguments):
 8. 新增 `tests/test_mcp_projection.py` 等；更新 `docs/handoff.md` 与 milestone
    issue 记录；断言 syscall surface 不变。
 
-### Milestone 14：有界 Workspace 绑定
+### Milestone 14：有界 Workspace 绑定（已按 RFC-0012 修订执行位置）
 
-1. `_WorkspaceMCPBinding`：每 server 共享 `ClientSession`、子进程句柄、预算、
-   生命周期；close 清理。
-2. IPC 回通道：socketpair、帧协议、Driver 集成、worker shim、请求/响应关联、
-   超时与取消传播。
+1. `_WorkspaceMCPRuntime` 子协议与 Local Backend 实现：discovery 在 Backend
+   Workspace 内连接服务器，返回 provider-neutral facts；Catalog 不持有
+   transport/client/subprocess。
+2. invocation binding 物化到 Backend Tool Runtime：`mcp_binding.py` 由 Backend
+   生成（连接细节 + env 变量名，无凭据值），存根只调用 `call_tool`；不再建立
+   Host Runtime IPC 回通道（RFC-0012 supersede）。
 3. 预算与 `MCP_BUSY`：满队立即失败，进公共 Policy/调度 gate。
 4. 失败语义：断连 → 普通失败 Tool Result；不删除生成 Tool。
-5. 移除 M13 自连依赖（存根改走 shim；venv 基础依赖可清理）。
-6. 新增 `tests/test_mcp_binding.py` 等；更新 `docs/handoff.md`。
+5. 移除 M13 自连依赖（存根改走 binding；`mcp` 基础依赖保留给 binding）。
+6. 新增 `tests/test_mcp_backend_runtime.py` 等；更新 `docs/handoff.md`。
 
 ### 回滚策略
 
@@ -513,7 +523,8 @@ def _call_mcp(tool_name, arguments):
 并行发现、清理 `mcp_*.py` 后生成真实 Python 存根 Tool（`mcp_<server>.py`），
 `tools run` 组合调用且允许本地/MCP 混合；无 manifest、无增量判断、无
 provenance 标记，来源区分依赖 `mcp_` 前缀约定；M13 先以存根自连交付可用工具，
-M14 以 Workspace MCP Binding + IPC 回通道替换内部实现落地共享、预算与清理。
+M14 以物化在 Backend Tool Runtime 内的 binding 替换内部实现（RFC-0012 已
+supersede 原 Host Runtime IPC 回通道），共享 client、预算与清理目标保留。
 
 ### 关键讨论点
 
@@ -523,7 +534,8 @@ M14 以 Workspace MCP Binding + IPC 回通道替换内部实现落地共享、�
    Reference 契约的已记录偏差）。
 4. 来源区分：`mcp_` 文件名前缀命名约定，取代 manifest 与 provenance 派生
    （对受信 provenance 的已记录偏差）；清理 = 删 `mcp_*.py` 后全量重建。
-5. 执行路径：A（自连）→ B（IPC binding）两段式，存根表面不变。
+5. 执行路径：A（自连）→ B（Backend Tool Runtime 内物化 binding）两段式，
+   存根表面不变；Host Runtime IPC placement 已被 RFC-0012 supersede。
 6. 诊断：新增最小化 Runtime Diagnostic seam；发现并行，任一 server 耗尽独立
    上报。
 

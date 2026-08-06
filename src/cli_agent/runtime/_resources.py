@@ -75,7 +75,7 @@ async def _reconcile_runtime_resources(
     state_database = _StateDatabase.open()
     summary_cache = _SummaryCache(state_database)
     await _MCPCatalog.reconcile(
-        backend.capabilities,
+        backend,
         on_diagnostic=on_diagnostic,
     )
     tool_catalog = await _ToolCatalog.reconcile(

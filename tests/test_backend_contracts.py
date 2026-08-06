@@ -220,8 +220,13 @@ class _InMemoryCapabilityView:
 class _FakeMCPRuntime:
     """Empty Workspace MCP Runtime fake."""
 
-    async def discover(self) -> tuple[_MCPServerFacts, ...]:
+    async def discover(self, configs, on_diagnostic=None):
+        del configs, on_diagnostic
         return ()
+
+    async def materialize_binding(self, configs):
+        del configs
+        return None
 
 
 class _FakeBackendWorkspace:

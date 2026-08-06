@@ -9,6 +9,7 @@ creation is deferred to the returned ``_PreparedExecution.run()``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from cli_agent.runtime._backend.facts import (
@@ -134,8 +135,25 @@ class _BoundCapabilityView(Protocol):
 
 @runtime_checkable
 class _WorkspaceMCPRuntime(Protocol):
-    """Discover Workspace MCP servers inside one Backend Workspace."""
+    """Discover Workspace MCP servers and own their invocation binding.
 
-    async def discover(self) -> tuple[_MCPServerFacts, ...]:
-        """Return provider-neutral facts for every configured server."""
+    Discovery and invocation both live inside the Backend Workspace: the
+    Runtime returns provider-neutral server/tool facts and never exposes a
+    transport stream, client, or subprocess; the invocation binding is
+    materialized into the Backend Tool Runtime for the worker to call.
+    """
+
+    async def discover(
+        self,
+        configs: tuple[MCPServerConfig, ...],
+        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+    ) -> tuple[_MCPServerFacts, ...]:
+        """Return provider-neutral facts for every successfully connected server."""
+        ...
+
+    async def materialize_binding(
+        self,
+        configs: tuple[MCPServerConfig, ...],
+    ) -> None:
+        """Materialize the worker-side invocation binding for the given servers."""
         ...

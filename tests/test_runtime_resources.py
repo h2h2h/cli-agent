@@ -113,11 +113,11 @@ def test_reconcile_runs_steps_in_documented_order(
     class _FakeMCPCatalog:
         @staticmethod
         async def reconcile(
-            capability_view: object,
+            backend: object,
             *,
             on_diagnostic: object = None,
         ) -> None:
-            del capability_view, on_diagnostic
+            del backend, on_diagnostic
             order.append("mcp")
             return None
 

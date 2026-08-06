@@ -226,11 +226,23 @@ def test_tool_runtime_reconciles_venv_and_materialized_worker(
     asyncio.run(scenario())
 
 
-def test_unmigrated_mcp_runtime_fails_loudly(tmp_path: Path) -> None:
+def test_mcp_runtime_discovers_nothing_without_configs(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = await _open_workspace(tmp_path)
 
-        with pytest.raises(NotImplementedError, match="not implemented"):
-            await workspace.mcp.discover()
+        facts = await workspace.mcp.discover(())
+        assert facts == ()
+
+    asyncio.run(scenario())
+
+
+def test_mcp_runtime_materializes_an_empty_binding(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        workspace = await _open_workspace(tmp_path)
+
+        await workspace.mcp.materialize_binding(())
+        binding = tmp_path / ".workspace" / ".tool-environment" / "mcp_binding.py"
+        assert binding.is_file()
+        assert "_SERVERS = {" in binding.read_text(encoding="utf-8")
 
     asyncio.run(scenario())

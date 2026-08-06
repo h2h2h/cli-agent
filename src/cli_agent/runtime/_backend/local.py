@@ -3,11 +3,10 @@
 The Local Backend is the reference RFC-0012 implementation: it owns the Host
 ``Path`` used for filesystem operations, the Host ambient environment merge
 strategy, every ordinary Shell subprocess, the file-level Capability View
-materialization (symlink attach, copy-up, whiteouts, mutation lock), and the
-Tool Runtime (Workspace-private venv, materialized worker, worker
-subprocesses), while exposing only backend-neutral facts and contracts. The
-Workspace MCP Runtime arrives with a later issue; the corresponding member
-fails loudly with ``NotImplementedError`` until then.
+materialization (symlink attach, copy-up, whiteouts, mutation lock), the Tool
+Runtime (Workspace-private venv, materialized worker, worker subprocesses),
+and the Workspace MCP Runtime (server discovery and the worker-side
+invocation binding), while exposing only backend-neutral facts and contracts.
 """
 
 from __future__ import annotations
@@ -38,7 +37,6 @@ from cli_agent.runtime._backend.facts import (
     _FilesystemError,
     _FileWriteRequest,
     _FileWriteResult,
-    _MCPServerFacts,
     _Provenance,
     _ResolvedPath,
     _ShellExecutionRequest,
@@ -46,6 +44,7 @@ from cli_agent.runtime._backend.facts import (
     _ToolRuntimeStatus,
     _WorkspaceSource,
 )
+from cli_agent.runtime._backend.mcp_runtime import _LocalMCPRuntime
 from cli_agent.runtime._backend.protocol import (
     _BoundCapabilityView,
     _WorkspaceMCPRuntime,
@@ -128,7 +127,10 @@ class _LocalBackendWorkspace:
             if capability_view is not None
             else _UnimplementedCapabilityView()
         )
-        self.mcp: _WorkspaceMCPRuntime = _UnimplementedMCPRuntime()
+        self.mcp: _WorkspaceMCPRuntime = _LocalMCPRuntime(
+            self._capability_view_root,
+            self.execution_base_environment,
+        )
         self.workspace_environment = environment
         self._capability_view = capability_view
         self._tool_runtime: _LocalToolRuntime | None = None
@@ -143,6 +145,12 @@ class _LocalBackendWorkspace:
         """
 
         return {**os.environ, **self.workspace_environment}
+
+    def _capability_view_root(self) -> Path | None:
+        """Return the Bound Capability View root, if one is materialized."""
+
+        view = self._capability_view
+        return Path(view.root) if view is not None else None
 
     def prepare_shell(
         self,
@@ -197,6 +205,7 @@ class _LocalBackendWorkspace:
                 "workspace": self.root,
                 "cwd": str(cwd),
                 "tools_directory": str(runtime.tools_directory),
+                "binding_directory": str(runtime.root),
                 "tool_paths": {
                     binding.name: binding.path for binding in request.bindings
                 },
@@ -940,13 +949,6 @@ class _UnimplementedCapabilityView:
 
     async def stat(self, relative_path: str) -> _FileMetadata:
         raise NotImplementedError("Bound Capability View is not implemented yet")
-
-
-class _UnimplementedMCPRuntime:
-    """Workspace MCP Runtime placeholder bound by a later migration."""
-
-    async def discover(self) -> tuple[_MCPServerFacts, ...]:
-        raise NotImplementedError("Workspace MCP Runtime is not implemented yet")
 
 
 def _resolve_path(root: Path, path: str) -> Path:

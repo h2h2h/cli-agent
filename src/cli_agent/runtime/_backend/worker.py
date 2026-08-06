@@ -24,6 +24,7 @@ def main() -> int:
         workspace = Path(payload["workspace"])
         cwd = Path(payload["cwd"])
         tools_directory = Path(payload["tools_directory"])
+        binding_directory = Path(payload["binding_directory"])
         tool_paths = payload["tool_paths"]
         if not isinstance(code, str) or not isinstance(tool_paths, dict):
             raise TypeError("invalid Tool worker payload")
@@ -32,6 +33,7 @@ def main() -> int:
         return 1
 
     os.chdir(cwd)
+    sys.path.insert(0, str(binding_directory))
     sys.path.insert(0, str(tools_directory))
     tools = SimpleNamespace()
     for name, raw_path in sorted(tool_paths.items()):
