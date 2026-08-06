@@ -39,7 +39,7 @@ def test_runtime_open_bootstraps_and_preserves_workspace_state(
         assert workspace_environment.is_file()
         assert not workspace_environment.is_symlink()
         assert workspace_environment.read_bytes() == b""
-        default_repertoire = Path.home() / ".config" / "cli-agent" / "repertoire"
+        default_repertoire = Path.home() / ".cli-agent" / "repertoire"
         assert {path.name for path in default_repertoire.iterdir()} == {
             "library",
             "skills",

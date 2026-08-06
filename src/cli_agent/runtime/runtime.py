@@ -95,7 +95,7 @@ class AgentRuntime:
                 Session; there is no implicit model-name window registry.
             repertoire (`str | Path | None`):
                 User-maintained capability lower tree; defaults to
-                ``~/.config/cli-agent/repertoire``.
+                ``~/.cli-agent/repertoire``.
             system_instruction (`str | None`):
                 Optional Host instruction appended to the canonical per-Session
                 system message.

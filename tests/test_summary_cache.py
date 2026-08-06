@@ -202,5 +202,5 @@ def test_busy_timeout_is_bounded(tmp_path: Path) -> None:
 
 def test_default_database_path_is_user_config() -> None:
     assert _default_state_db_path() == (
-        Path.home() / ".config" / "cli-agent" / "state.sqlite3"
+        Path.home() / ".cli-agent" / "state.sqlite3"
     )

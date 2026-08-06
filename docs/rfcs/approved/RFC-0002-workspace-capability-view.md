@@ -25,7 +25,7 @@ symbolic links, while approved modifying Shell commands copy lower-backed
 targets into the Workspace before execution.
 
 The default Repertoire is
-`~/.config/cli-agent/repertoire`. A Host may select another path when opening
+`~/.cli-agent/repertoire`. A Host may select another path when opening
 the Runtime. Removing a lower-only file creates a persistent whiteout; removing
 a Workspace override reveals the lower file again.
 
@@ -258,7 +258,7 @@ Conditions:
 ### Architecture
 
 ```text
-~/.config/cli-agent/repertoire/       <workspace>/.workspace/
+~/.cli-agent/repertoire/       <workspace>/.workspace/
 ├── tools/                       ---> ├── tools/
 ├── skills/       file links     ---> ├── skills/
 └── library/                     ---> ├── library/
@@ -280,7 +280,7 @@ exec -> parse -> Policy -> optional Host approval
 ```python
 AgentRuntime.open(
     workspace=workspace,
-    repertoire=None,  # default: ~/.config/cli-agent/repertoire
+    repertoire=None,  # default: ~/.cli-agent/repertoire
     provider=provider,
 )
 ```
@@ -379,7 +379,7 @@ interception, and Tool/index behavior remain assigned to later work.
 ### Decision Summary
 
 Use `.workspace` as the Capability View, default the Repertoire to
-`~/.config/cli-agent/repertoire`, attach lower content with file-level symbolic
+`~/.cli-agent/repertoire`, attach lower content with file-level symbolic
 links, copy up approved recognized writes, and use the agreed three-way `rm`
 semantics.
 

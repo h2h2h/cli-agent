@@ -6,7 +6,7 @@
 
 Library 摘要是外部模型调用的结果。如果每次 Runtime open 都重新生成，未变化
 文件和多个 Workspace 中的相同内容会重复产生延迟和调用成本。RFC-0011 选择在
-`~/.config/cli-agent/state.sqlite3` 中缓存成功摘要，同时把该文件定义为
+`~/.cli-agent/state.sqlite3` 中缓存成功摘要，同时把该文件定义为
 cli-agent 的应用状态数据库，而不是绑定 Library 的专用数据库，以便后续通过
 独立表扩展 Session History 等能力。
 
@@ -23,7 +23,7 @@ schema。
 ## 变更
 
 - 建立私有应用状态数据库 adapter，默认打开
-  `~/.config/cli-agent/state.sqlite3`，并允许测试注入隔离路径。
+  `~/.cli-agent/state.sqlite3`，并允许测试注入隔离路径。
 - 首次创建应用目录和数据库时分别使用 `0700` 与 `0600`；不静默修改已有目录
   权限。
 - 使用 `PRAGMA user_version` 管理显式 migration，并创建：
@@ -56,5 +56,5 @@ schema。
 - [ ] 模型名称、provider adapter 和 prompt 不构成 cache API 或 schema 的一部分。
 - [ ] SQLite 不保存正文、parser 输出、API key、pending job 或失败结果。
 - [ ] 数据库 migration 可重复执行，事务不包围模型或文件解析工作。
-- [ ] 测试不读取或修改用户真实的 `~/.config/cli-agent/state.sqlite3`。
+- [ ] 测试不读取或修改用户真实的 `~/.cli-agent/state.sqlite3`。
 

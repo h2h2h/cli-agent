@@ -384,7 +384,7 @@ def test_allows_default_repertoire_beneath_workspace_ancestor(
 ) -> None:
     workspace = tmp_path / "home"
     workspace.mkdir()
-    repertoire = workspace / ".config" / "cli-agent" / "repertoire"
+    repertoire = workspace / ".cli-agent" / "repertoire"
 
     view = _CapabilityView.open(workspace, repertoire)
 

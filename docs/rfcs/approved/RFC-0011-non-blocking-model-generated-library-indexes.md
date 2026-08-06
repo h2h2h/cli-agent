@@ -25,7 +25,7 @@ related_rfcs:
 模型摘要，移除固定行数分块，并在首期只支持 UTF-8 编码的 Markdown 和纯文本
 文件。
 
-成功生成的摘要统一缓存在 `~/.config/cli-agent/state.sqlite3` 的 Library 专用
+成功生成的摘要统一缓存在 `~/.cli-agent/state.sqlite3` 的 Library 专用
 表中。该数据库是 cli-agent 的应用状态数据库，后续可通过独立表扩展
 Session History 等持久化能力。摘要生成既不阻塞 Runtime 启动，也不阻塞正常
 Agent 对话。Runtime 启动时立即根据缓存渲染
@@ -419,7 +419,7 @@ lock 和一个后台 worker task。
 Runtime open 的顺序为：
 
 1. 打开 Capability View。
-2. 打开或迁移 `~/.config/cli-agent/state.sqlite3`。
+2. 打开或迁移 `~/.cli-agent/state.sqlite3`。
 3. 发现 source 并计算文件 fingerprint。
 4. 解析成功摘要的 cache hit。
 5. 根据达到终态的直接子项计算可生成的目录 fingerprint。
@@ -555,7 +555,7 @@ fingerprint 空间。模型或提示词变化不会使已有摘要失效；如�
 数据库位置为：
 
 ```text
-~/.config/cli-agent/state.sqlite3
+~/.cli-agent/state.sqlite3
 ```
 
 数据库名称不绑定 Library，使后续 Session History 等应用状态可以通过独立表和
@@ -671,7 +671,7 @@ System Message 继续不嵌入完整 Library 索引，只增加有界指引：
 | SQLite 锁竞争 | 低 | 中 | 短事务、busy timeout、事务外模型调用 |
 | 跨进程重复模型调用 | 低 | 中 | 唯一缓存键和 upsert；首期接受偶发重复调用 |
 
-`state.sqlite3` 位于 Repertoire 旁边的 `~/.config/cli-agent`，是 cli-agent 的
+`state.sqlite3` 位于 Repertoire 旁边的 `~/.cli-agent`，是 cli-agent 的
 本地应用状态数据库。备份和支持文档必须说明：Library 表可能包含私有 Workspace
 文件的摘要。当前只有 Library 派生缓存时，删除数据库的代价只是重新生成；未来
 引入 Session History 等非派生状态后，不能再把删除整个数据库描述为无损操作。

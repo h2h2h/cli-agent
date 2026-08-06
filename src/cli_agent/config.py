@@ -149,7 +149,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--repertoire",
         default=None,
-        help=("Repertoire directory (default: ~/.config/cli-agent/repertoire)."),
+        help=("Repertoire directory (default: ~/.cli-agent/repertoire)."),
     )
     return parser
 

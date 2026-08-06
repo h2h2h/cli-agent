@@ -364,7 +364,7 @@ class _CapabilityView:
 
 def _prepare_repertoire(repertoire: str | Path | None) -> Path:
     root = (
-        Path.home() / ".config" / "cli-agent" / "repertoire"
+        Path.home() / ".cli-agent" / "repertoire"
         if repertoire is None
         else Path(repertoire).expanduser()
     ).resolve()

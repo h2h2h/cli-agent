@@ -46,7 +46,7 @@ direnv exec ./path/to/workspace \
 ```
 
 The default capability Repertoire is
-`~/.config/cli-agent/repertoire`. Select another user-maintained lower tree
+`~/.cli-agent/repertoire`. Select another user-maintained lower tree
 when needed:
 
 ```bash
@@ -112,7 +112,7 @@ modification detector.
 Runtime open creates or validates the default or selected Repertoire:
 
 ```text
-~/.config/cli-agent/repertoire/
+~/.cli-agent/repertoire/
 ├── tools/
 ├── skills/
 └── library/

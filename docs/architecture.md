@@ -245,7 +245,7 @@ Workspace upper ──┘                  │
 
 ### 应用状态数据库与摘要缓存
 
-`~/.config/cli-agent/state.sqlite3` 是 cli-agent 的本地应用状态数据库
+`~/.cli-agent/state.sqlite3` 是 cli-agent 的本地应用状态数据库
 （`_state_db.py`，`PRAGMA user_version` 显式 migration，短事务 +
 `busy_timeout`）。Library 首期只使用 `library_summary_cache` 表，缓存键是
 包含对象类型域分隔的 fingerprint；只有成功摘要落库，原文、parser 正文、

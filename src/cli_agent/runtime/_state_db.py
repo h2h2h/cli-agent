@@ -1,6 +1,6 @@
 """Runtime-owned application state database adapter.
 
-The database lives at ``~/.config/cli-agent/state.sqlite3`` and is not bound
+The database lives at ``~/.cli-agent/state.sqlite3`` and is not bound
 to one capability: future application state, such as Session History, can add
 tables through the same explicit migration boundary. Library summaries are
 stored in the ``library_summary_cache`` table by the ``_SummaryCache``
@@ -57,7 +57,7 @@ class _StateDatabase:
         Args:
             path (`str | Path | None`):
                 Test-injectable database path; defaults to
-                ``~/.config/cli-agent/state.sqlite3``.
+                ``~/.cli-agent/state.sqlite3``.
 
         Returns:
             A migrated database adapter owning one shared connection.
@@ -137,7 +137,7 @@ def _prepare_state_path(path: Path) -> None:
 def _default_state_db_path() -> Path:
     """Resolve the default per-user application state database path."""
 
-    return Path.home() / ".config" / "cli-agent" / "state.sqlite3"
+    return Path.home() / ".cli-agent" / "state.sqlite3"
 
 
 def _split_statements(script: str) -> tuple[str, ...]:
