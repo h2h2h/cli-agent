@@ -1,3 +1,7 @@
+"""Runtime resource aggregate reconciliation, rollback, and close tests."""
+
+from __future__ import annotations
+
 import asyncio
 import inspect
 from collections.abc import Mapping
@@ -98,6 +102,14 @@ def test_reconcile_runs_steps_in_documented_order(
         async def reconcile_tool_runtime() -> object:
             order.append("tool_runtime")
             return object()
+
+        @staticmethod
+        async def flush() -> None:
+            return None
+
+        @staticmethod
+        async def close() -> None:
+            return None
 
     class _FakeLocalBackend:
         @staticmethod
@@ -331,3 +343,281 @@ def test_environment_kernel_does_not_accept_resource_aggregate() -> None:
     assert "resources" not in parameters
     assert "capability_view" not in parameters
     assert "backend" in parameters
+
+
+class _TrackingWorkspace:
+    """Fake Backend Workspace recording open/close lifecycle events."""
+
+    def __init__(
+        self, order: list[str], *, tool_runtime_failure: Exception | None = None
+    ) -> None:
+        self.order = order
+        self.workspace_environment = {"TOKEN": "secret"}
+        self.capabilities = object()
+        self.filesystem = object()
+        self._tool_runtime_failure = tool_runtime_failure
+
+    async def reconcile_tool_runtime(self) -> object:
+        self.order.append("tool_runtime")
+        if self._tool_runtime_failure is not None:
+            raise self._tool_runtime_failure
+        return object()
+
+    async def flush(self) -> None:
+        self.order.append("flush")
+
+    async def close(self) -> None:
+        self.order.append("backend.close")
+
+
+class _TrackingLocalBackend:
+    """Fake Backend recording open and Tool Runtime events on a shared list."""
+
+    order: list[str] = []
+    tool_runtime_failure: Exception | None = None
+
+    async def open_workspace(
+        self,
+        source: object,
+        capability_source: object,
+        capability_state: object,
+    ) -> _TrackingWorkspace:
+        del source, capability_source, capability_state
+        self.order.append("backend_open")
+        return _TrackingWorkspace(
+            self.order,
+            tool_runtime_failure=self.tool_runtime_failure,
+        )
+
+
+class _TrackingStateDatabase:
+    order: list[str] = []
+
+    def __init__(self, order: list[str]) -> None:
+        self.order = order
+
+    @classmethod
+    def open(cls) -> _TrackingStateDatabase:
+        cls.order.append("db.open")
+        return cls(cls.order)
+
+    def close(self) -> None:
+        self.order.append("db.close")
+
+
+class _NoopSummaryCache:
+    def __init__(self, database: object) -> None:
+        del database
+
+
+class _NoopMCPCatalog:
+    @staticmethod
+    async def reconcile(
+        backend: object,
+        *,
+        on_diagnostic: object = None,
+    ) -> None:
+        del backend, on_diagnostic
+        return None
+
+
+class _NoopToolCatalog:
+    @staticmethod
+    async def reconcile(
+        capability_view: object,
+        filesystem: object,
+        on_diagnostic: object = None,
+    ) -> object:
+        del capability_view, filesystem, on_diagnostic
+        return object()
+
+
+class _NoopSkillCatalog:
+    @staticmethod
+    async def reconcile(
+        capability_view: object,
+        filesystem: object,
+    ) -> object:
+        del capability_view, filesystem
+        return object()
+
+
+class _NoopLibraryCatalog:
+    @staticmethod
+    async def reconcile(
+        capability_view: object,
+        filesystem: object,
+        summary_cache: object,
+    ) -> object:
+        del capability_view, filesystem, summary_cache
+        return object()
+
+
+def _install_noop_reconcile_fakes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    order: list[str] = []
+    _TrackingLocalBackend.order = order
+    _TrackingLocalBackend.tool_runtime_failure = None
+    _TrackingStateDatabase.order = order
+    monkeypatch.setattr(resources_module, "_LocalBackend", _TrackingLocalBackend)
+    monkeypatch.setattr(resources_module, "_StateDatabase", _TrackingStateDatabase)
+    monkeypatch.setattr(resources_module, "_SummaryCache", _NoopSummaryCache)
+    monkeypatch.setattr(resources_module, "_MCPCatalog", _NoopMCPCatalog)
+    monkeypatch.setattr(resources_module, "_ToolCatalog", _NoopToolCatalog)
+    monkeypatch.setattr(resources_module, "_SkillCatalog", _NoopSkillCatalog)
+    monkeypatch.setattr(resources_module, "_LibraryCatalog", _NoopLibraryCatalog)
+    return order
+
+
+def test_reconcile_failure_closes_opened_resources_in_reverse_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingMCPCatalog:
+        @staticmethod
+        async def reconcile(
+            backend: object,
+            *,
+            on_diagnostic: object = None,
+        ) -> None:
+            del backend, on_diagnostic
+            raise RuntimeError("mcp discovery exploded")
+
+    order = _install_noop_reconcile_fakes(monkeypatch)
+    monkeypatch.setattr(resources_module, "_MCPCatalog", FailingMCPCatalog)
+
+    with pytest.raises(RuntimeError, match="mcp discovery exploded"):
+        asyncio.run(
+            _reconcile_runtime_resources(
+                workspace=tmp_path,
+                repertoire=None,
+                on_diagnostic=None,
+            )
+        )
+
+    assert order == ["backend_open", "db.open", "db.close", "backend.close"]
+
+
+def test_reconcile_failure_at_tool_runtime_closes_opened_resources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order = _install_noop_reconcile_fakes(monkeypatch)
+    _TrackingLocalBackend.tool_runtime_failure = RuntimeError("tool sync exploded")
+
+    with pytest.raises(RuntimeError, match="tool sync exploded"):
+        asyncio.run(
+            _reconcile_runtime_resources(
+                workspace=tmp_path,
+                repertoire=None,
+                on_diagnostic=None,
+            )
+        )
+
+    assert order == [
+        "backend_open",
+        "db.open",
+        "tool_runtime",
+        "db.close",
+        "backend.close",
+    ]
+
+
+def test_backend_open_failure_propagates_without_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    class FailingLocalBackend:
+        async def open_workspace(
+            self,
+            source: object,
+            capability_source: object,
+            capability_state: object,
+        ) -> object:
+            del source, capability_source, capability_state
+            nonlocal calls
+            calls += 1
+            raise ValueError("backend constraint failed")
+
+    order = _install_noop_reconcile_fakes(monkeypatch)
+    monkeypatch.setattr(resources_module, "_LocalBackend", FailingLocalBackend)
+
+    with pytest.raises(ValueError, match="backend constraint failed"):
+        asyncio.run(
+            _reconcile_runtime_resources(
+                workspace=tmp_path,
+                repertoire=None,
+                on_diagnostic=None,
+            )
+        )
+
+    assert calls == 1
+    assert order == []
+
+
+def test_aggregate_close_follows_reverse_dependency_order(tmp_path: Path) -> None:
+    order: list[str] = []
+
+    class FakeLibraryCatalog:
+        @staticmethod
+        async def close() -> None:
+            order.append("library.close")
+
+    class FakeBackend:
+        @staticmethod
+        async def flush() -> None:
+            order.append("flush")
+
+        @staticmethod
+        async def close() -> None:
+            order.append("backend.close")
+
+    resources = _RuntimeResources(
+        workspace=tmp_path,
+        backend=FakeBackend(),  # type: ignore[arg-type]
+        base_env={},
+        capability_view=object(),
+        tool_catalog=object(),
+        skill_catalog=object(),
+        library_catalog=FakeLibraryCatalog(),  # type: ignore[arg-type]
+    )
+
+    asyncio.run(resources.close())
+
+    assert order == ["library.close", "flush", "backend.close"]
+
+
+def test_aggregate_close_attempts_every_step_and_surfaces_failure(
+    tmp_path: Path,
+) -> None:
+    class FakeLibraryCatalog:
+        @staticmethod
+        async def close() -> None:
+            return None
+
+    class FailingBackend:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def flush(self) -> None:
+            raise RuntimeError("flush exploded")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    backend = FailingBackend()
+    resources = _RuntimeResources(
+        workspace=tmp_path,
+        backend=backend,  # type: ignore[arg-type]
+        base_env={},
+        capability_view=object(),
+        tool_catalog=object(),
+        skill_catalog=object(),
+        library_catalog=FakeLibraryCatalog(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="flush exploded"):
+        asyncio.run(resources.close())
+
+    assert backend.closed

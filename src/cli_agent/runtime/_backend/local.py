@@ -70,6 +70,10 @@ from cli_agent.runtime._environment.handlers.executions import _text_execution
 _ProcessSpawner = Callable[[], Awaitable[asyncio.subprocess.Process]]
 
 
+def _noop() -> None:
+    """Provide an always-open lifecycle gate for standalone filesystem tests."""
+
+
 class _LocalBackend:
     """Open one Host-filesystem Local Backend Workspace."""
 
@@ -121,7 +125,12 @@ class _LocalBackendWorkspace:
     ) -> None:
         self.root = str(root)
         self._root = root
-        self.filesystem = _LocalWorkspaceFilesystem(root, capability_view)
+        self._closed = False
+        self.filesystem = _LocalWorkspaceFilesystem(
+            root,
+            capability_view,
+            ensure_open=self._ensure_open,
+        )
         self.capabilities: _BoundCapabilityView = (
             capability_view
             if capability_view is not None
@@ -130,11 +139,11 @@ class _LocalBackendWorkspace:
         self.mcp: _WorkspaceMCPRuntime = _LocalMCPRuntime(
             self._capability_view_root,
             self.execution_base_environment,
+            self._ensure_open,
         )
         self.workspace_environment = environment
         self._capability_view = capability_view
         self._tool_runtime: _LocalToolRuntime | None = None
-        self._closed = False
 
     def execution_base_environment(self) -> Mapping[str, str]:
         """Return the Local execution base environment for child processes.
@@ -144,13 +153,21 @@ class _LocalBackendWorkspace:
         Handlers must not read ``os.environ`` themselves.
         """
 
+        self._ensure_open()
         return {**os.environ, **self.workspace_environment}
 
     def _capability_view_root(self) -> Path | None:
         """Return the Bound Capability View root, if one is materialized."""
 
+        self._ensure_open()
         view = self._capability_view
         return Path(view.root) if view is not None else None
+
+    def _ensure_open(self) -> None:
+        """Reject every operation after this Backend Workspace closes."""
+
+        if self._closed:
+            raise RuntimeError("Backend Workspace is closed")
 
     def prepare_shell(
         self,
@@ -158,6 +175,7 @@ class _LocalBackendWorkspace:
     ) -> _PreparedExecution:
         """Prepare one Shell execution without starting a subprocess."""
 
+        self._ensure_open()
         return _LocalShellExecution(
             command=request.command,
             cwd=_resolve_path(self._root, request.cwd),
@@ -181,6 +199,7 @@ class _LocalBackendWorkspace:
         the Host Python.
         """
 
+        self._ensure_open()
         runtime = self._tool_runtime
         if runtime is None:
             return _text_execution(
@@ -237,6 +256,7 @@ class _LocalBackendWorkspace:
         unavailable status instead of raising.
         """
 
+        self._ensure_open()
         view = self._capability_view
         if view is None:
             runtime = _LocalToolRuntime(
@@ -254,10 +274,17 @@ class _LocalBackendWorkspace:
     async def flush(self) -> None:
         """Local Workspace changes are immediately durable; nothing to flush."""
 
+        self._ensure_open()
+
     async def close(self) -> None:
         """Close this Workspace idempotently; no open resources yet."""
 
+        if self._closed:
+            return
         self._closed = True
+        view = self._capability_view
+        if view is not None:
+            view.close()
 
 
 class _LocalWorkspaceFilesystem:
@@ -273,13 +300,16 @@ class _LocalWorkspaceFilesystem:
         self,
         root: Path,
         capability_view: _LocalCapabilityView | None = None,
+        ensure_open: Callable[[], None] | None = None,
     ) -> None:
         self._root = root
         self._capability_view = capability_view
+        self._ensure_open = ensure_open or _noop
 
     def resolve(self, path: str, cwd: str) -> _ResolvedPath:
         """Resolve one Local Backend path against a Session cwd without I/O."""
 
+        self._ensure_open()
         target = _resolve_path(Path(cwd), path)
         return _ResolvedPath(
             path=str(target),
@@ -287,6 +317,7 @@ class _LocalWorkspaceFilesystem:
         )
 
     async def stat(self, path: str) -> _FileMetadata:
+        self._ensure_open()
         target = self._resolve(path)
         try:
             return _metadata(os.stat(target))
@@ -294,6 +325,7 @@ class _LocalWorkspaceFilesystem:
             raise _filesystem_error(path, exc) from exc
 
     async def list(self, path: str) -> tuple[_DirectoryEntry, ...]:
+        self._ensure_open()
         target = self._resolve(path)
         try:
             with os.scandir(target) as entries:
@@ -309,6 +341,7 @@ class _LocalWorkspaceFilesystem:
         return tuple(sorted(directory, key=lambda entry: entry.name))
 
     async def read(self, path: str) -> bytes:
+        self._ensure_open()
         target = self._resolve(path)
         try:
             return target.read_bytes()
@@ -316,6 +349,7 @@ class _LocalWorkspaceFilesystem:
             raise _filesystem_error(path, exc) from exc
 
     async def write(self, request: _FileWriteRequest) -> _FileWriteResult:
+        self._ensure_open()
         target = self._prepare_target(request.path)
         try:
             if target.is_dir() and not target.is_symlink():
@@ -331,6 +365,7 @@ class _LocalWorkspaceFilesystem:
         return _FileWriteResult(path=request.path, bytes_written=len(request.content))
 
     async def edit(self, request: _FileEditRequest) -> _FileEditResult:
+        self._ensure_open()
         target = self._prepare_target(request.path)
         try:
             content = target.read_bytes()
@@ -361,6 +396,7 @@ class _LocalWorkspaceFilesystem:
         return _FileEditResult(path=request.path, blocks_replaced=len(request.edits))
 
     async def remove(self, path: str, *, recursive: bool = False) -> None:
+        self._ensure_open()
         target = self._resolve(path)
         try:
             if target.is_dir() and not target.is_symlink():
@@ -536,6 +572,7 @@ class _LocalCapabilityView:
         self._repertoire = repertoire
         self._whiteouts = state_root / ".capability-view" / "whiteouts"
         self._mutation_lock = asyncio.Lock()
+        self._closed = False
 
     @classmethod
     def materialize(
@@ -569,6 +606,7 @@ class _LocalCapabilityView:
     async def inspect(self, relative_path: str) -> _CapabilityInspection:
         """Return trusted provenance and shadow facts for one view path."""
 
+        self._ensure_open()
         relative = _managed_capability_path(relative_path)
         view_path = self._resolve_managed(relative_path)
         lower_path = self._repertoire / relative
@@ -613,6 +651,7 @@ class _LocalCapabilityView:
     async def list(self, relative_path: str) -> tuple[_DirectoryEntry, ...]:
         """Return sorted effective entries for one managed directory."""
 
+        self._ensure_open()
         relative = _managed_capability_path(relative_path)
         directory = self._resolve_managed(relative_path)
         try:
@@ -637,6 +676,7 @@ class _LocalCapabilityView:
     async def read(self, relative_path: str) -> bytes:
         """Read one managed file from the effective view."""
 
+        self._ensure_open()
         target = self._resolve_managed(relative_path)
         try:
             return target.read_bytes()
@@ -646,6 +686,7 @@ class _LocalCapabilityView:
     async def stat(self, relative_path: str) -> _FileMetadata:
         """Return effective metadata for one managed path."""
 
+        self._ensure_open()
         target = self._resolve_managed(relative_path)
         try:
             return _metadata(os.stat(target))
@@ -664,6 +705,7 @@ class _LocalCapabilityView:
                 directory or is an invalid lower link.
         """
 
+        self._ensure_open()
         if not self._is_in_view(path):
             return
         self._reject_symlink_intermediates(path)
@@ -683,6 +725,7 @@ class _LocalCapabilityView:
     ) -> AsyncIterator[bool]:
         """Copy up output-redirected targets before one Shell command runs."""
 
+        self._ensure_open()
         if not _may_mutate(command):
             yield not cancelled()
             return
@@ -694,6 +737,15 @@ class _LocalCapabilityView:
             for path in self._write_paths(command, cwd):
                 self._copy_up(path)
             yield True
+
+    def close(self) -> None:
+        """Close this materialized View idempotently."""
+
+        self._closed = True
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("Backend Workspace is closed")
 
     def _resolve_managed(self, relative_path: str) -> Path:
         relative = _managed_capability_path(relative_path)
@@ -1070,7 +1122,7 @@ def _signal_process(
 ) -> None:
     if process.returncode is not None:
         return
-    with suppress(ProcessLookupError):
+    with suppress(ProcessLookupError, PermissionError):
         if os.name == "posix":
             os.killpg(
                 process.pid,

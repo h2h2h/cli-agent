@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -32,6 +33,8 @@ class _Session:
     kernel: EnvironmentKernel
     loop: AgentLoop
     lock: asyncio.Lock
+    closing: bool = False
+    active_task: asyncio.Task[Any] | None = None
 
 
 class AgentRuntime:
@@ -148,17 +151,22 @@ class AgentRuntime:
             repertoire=repertoire,
             on_diagnostic=on_diagnostic,
         )
-        runtime = cls(
-            provider=provider,
-            resources=resources,
-            policy=policy,
-            user_interaction=user_interaction,
-            parallel_commands=parallel_commands,
-            instruction=instruction,
-            on_diagnostic=on_diagnostic,
-            context_policy=context_policy,
-        )
-        resources.library_catalog.start(provider, on_diagnostic)
+        try:
+            runtime = cls(
+                provider=provider,
+                resources=resources,
+                policy=policy,
+                user_interaction=user_interaction,
+                parallel_commands=parallel_commands,
+                instruction=instruction,
+                on_diagnostic=on_diagnostic,
+                context_policy=context_policy,
+            )
+            resources.library_catalog.start(provider, on_diagnostic)
+        except BaseException:
+            with suppress(Exception):
+                await resources.close()
+            raise
         return runtime
 
     @property
@@ -168,16 +176,39 @@ class AgentRuntime:
         return self._closed
 
     async def close(self) -> None:
-        """Close all Runtime-owned resources idempotently."""
+        """Close all Runtime-owned resources idempotently.
+
+        New turns are rejected first, every Session Kernel (and its queued and
+        running Executions) is closed, then the Workspace-lifetime resources
+        close in reverse dependency order: Library worker, Backend Workspace
+        flush, Backend Workspace close. Every step is attempted even when an
+        earlier close fails, so no resource leaks; the first failure is
+        surfaced to the Host through a safe diagnostic and the original
+        exception. The Runtime stays closed and a later close remains a no-op.
+        """
 
         if self._closed:
             return
         self._closed = True
         sessions = tuple(self._sessions.values())
         self._sessions.clear()
+        errors: list[Exception] = []
         for session in sessions:
-            await session.kernel.close()
-        await self._resources.library_catalog.close()
+            try:
+                await self._close_session_state(session)
+            except Exception as exc:
+                errors.append(exc)
+        try:
+            await self._resources.close()
+        except Exception as exc:
+            errors.append(exc)
+        if errors:
+            self._emit_diagnostic(
+                "runtime.close_failed",
+                "Runtime close reported a failure",
+                detail={"exception": repr(errors[0])},
+            )
+            raise errors[0]
 
     async def run_turn(
         self,
@@ -235,15 +266,28 @@ class AgentRuntime:
                 await kernel.close()
 
         async with session.lock:
-            async for event in session.loop.run(message):
-                yield event
+            self._ensure_open()
+            if session.closing:
+                raise RuntimeClosedError("Agent Session is closed")
+            active_task = asyncio.current_task()
+            session.active_task = active_task
+            try:
+                async for event in session.loop.run(message):
+                    if self._closed or session.closing:
+                        return
+                    yield event
+                    if self._closed or session.closing:
+                        return
+            finally:
+                if session.active_task is active_task:
+                    session.active_task = None
 
     async def close_session(self, session_id: str) -> None:
         """Close and forget one Agent Session idempotently."""
 
         session = self._sessions.pop(session_id, None)
         if session is not None:
-            await session.kernel.close()
+            await self._close_session_state(session)
 
     async def __aenter__(self) -> AgentRuntime:
         self._ensure_open()
@@ -274,6 +318,35 @@ class AgentRuntime:
             parallel_commands=self._parallel_commands,
             on_diagnostic=self._on_diagnostic,
         )
+
+    async def _close_session_state(self, session: _Session) -> None:
+        """Cancel one active turn, stop its Kernel, and await its unwind."""
+
+        session.closing = True
+        active_task = session.active_task
+        current_task = asyncio.current_task()
+        if (
+            active_task is not None
+            and active_task is not current_task
+            and not active_task.done()
+        ):
+            active_task.cancel()
+
+        error: Exception | None = None
+        try:
+            await session.kernel.close()
+        except Exception as exc:
+            error = exc
+
+        if active_task is not None and active_task is not current_task:
+            with suppress(asyncio.CancelledError, Exception):
+                await active_task
+        if active_task is not current_task:
+            async with session.lock:
+                pass
+
+        if error is not None:
+            raise error
 
     def _emit_diagnostic(
         self,

@@ -678,7 +678,8 @@ def test_runtime_close_only_closes_session_owned_state(
         assert [
             kernel.close_count for kernel in _TrackingEnvironmentKernel.instances
         ] == [1, 1]
-        assert not hasattr(resources, "close")
+        assert resources.backend._closed
+        assert hasattr(resources, "close")
         assert resources.workspace == tmp_path.resolve()
         assert resources.base_env == {}
         assert resources.capability_view is runtime._resources.capability_view
