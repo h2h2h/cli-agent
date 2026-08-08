@@ -40,9 +40,11 @@ class _LocalMCPRuntime:
         self,
         view_root: Callable[[], Path | None],
         base_environment: Callable[[], Mapping[str, str]],
+        ensure_open: Callable[[], None],
     ) -> None:
         self._view_root = view_root
         self._base_environment = base_environment
+        self._ensure_open = ensure_open
 
     async def discover(
         self,
@@ -56,6 +58,7 @@ class _LocalMCPRuntime:
         and produces no facts for that server.
         """
 
+        self._ensure_open()
         environment = self._base_environment()
         results = await asyncio.gather(
             *(_discover(config, environment, on_diagnostic) for config in configs)
@@ -77,6 +80,7 @@ class _LocalMCPRuntime:
             ValueError: If the Tool environment path is not a real directory.
         """
 
+        self._ensure_open()
         view_root = self._view_root()
         if view_root is None:
             raise RuntimeError("Workspace MCP binding requires a Capability View")

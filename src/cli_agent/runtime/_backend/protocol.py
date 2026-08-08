@@ -23,12 +23,15 @@ from cli_agent.runtime._backend.facts import (
     _FileWriteRequest,
     _FileWriteResult,
     _MCPServerFacts,
+    _ResolvedPath,
     _ShellExecutionRequest,
     _ToolExecutionRequest,
     _ToolRuntimeStatus,
     _WorkspaceSource,
 )
+from cli_agent.runtime._capability.mcp.facts import MCPServerConfig
 from cli_agent.runtime._environment.handlers.base import _PreparedExecution
+from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 
 @runtime_checkable
@@ -84,6 +87,10 @@ class _BackendWorkspace(Protocol):
 @runtime_checkable
 class _WorkspaceFilesystem(Protocol):
     """Async Workspace filesystem shared by commands, Tools, and Catalogs."""
+
+    def resolve(self, path: str, cwd: str) -> _ResolvedPath:
+        """Resolve one path using Backend-native semantics without I/O."""
+        ...
 
     async def stat(self, path: str) -> _FileMetadata:
         """Return backend-neutral facts for one Workspace path."""

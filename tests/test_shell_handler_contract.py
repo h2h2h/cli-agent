@@ -46,8 +46,8 @@ def test_shell_handler_emits_backend_neutral_request(tmp_path: Path) -> None:
     handler = _ShellHandler(backend)
     command = parse_shell_ast("echo hi")
     context = _CommandContext(
-        workspace=tmp_path,
-        cwd=tmp_path,
+        workspace=str(tmp_path),
+        cwd=str(tmp_path),
         environment={"KEY": "value"},
     )
 
@@ -63,7 +63,11 @@ def test_shell_handler_emits_backend_neutral_request(tmp_path: Path) -> None:
 
 def test_shell_handler_requires_a_backend_workspace(tmp_path: Path) -> None:
     command = parse_shell_ast("echo hi")
-    context = _CommandContext(workspace=tmp_path, cwd=tmp_path, environment={})
+    context = _CommandContext(
+        workspace=str(tmp_path),
+        cwd=str(tmp_path),
+        environment={},
+    )
 
     try:
         _ShellHandler().prepare(command, context)

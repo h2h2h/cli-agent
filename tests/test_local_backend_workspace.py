@@ -207,6 +207,27 @@ def test_flush_is_noop_and_close_is_idempotent(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_close_forbids_workspace_and_borrowed_resource_use(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        workspace = await _open_workspace(tmp_path)
+        (tmp_path / "visible.txt").write_text("content", encoding="utf-8")
+
+        await workspace.close()
+
+        with pytest.raises(RuntimeError, match="Backend Workspace is closed"):
+            workspace.filesystem.resolve("visible.txt", workspace.root)
+        with pytest.raises(RuntimeError, match="Backend Workspace is closed"):
+            await workspace.filesystem.read("visible.txt")
+        with pytest.raises(RuntimeError, match="Backend Workspace is closed"):
+            await workspace.capabilities.list("tools")
+        with pytest.raises(RuntimeError, match="Backend Workspace is closed"):
+            await workspace.mcp.discover(())
+        with pytest.raises(RuntimeError, match="Backend Workspace is closed"):
+            await workspace.reconcile_tool_runtime()
+
+    asyncio.run(scenario())
+
+
 def test_tool_runtime_reconciles_venv_and_materialized_worker(
     tmp_path: Path,
 ) -> None:

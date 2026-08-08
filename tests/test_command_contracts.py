@@ -132,8 +132,8 @@ def test_prepare_does_not_mutate_session_before_execution(tmp_path: Path) -> Non
     async def scenario() -> None:
         environment: dict[str, str] = {}
         context = _CommandContext(
-            workspace=tmp_path,
-            cwd=tmp_path,
+            workspace=str(tmp_path),
+            cwd=str(tmp_path),
             environment=environment,
         )
         command = parse_shell_ast("export KEY=value")

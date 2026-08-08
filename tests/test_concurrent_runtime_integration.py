@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 from pathlib import Path
 
+import pytest
 from interaction_fakes import _ScriptedInteraction
 from policy_fakes import _AskExecutablePolicy
 
@@ -301,9 +302,9 @@ def test_public_runtime_proves_concurrent_session_scheduling(
             assert not a_queued.exists() and not a_overflow.exists()
             assert kernel_b._executions[running_b_id].status == "running"
 
-            provider_a.finish_allowed.set()
-            events_a = await asyncio.wait_for(turn_a, timeout=0.5)
-            assert isinstance(events_a[-1], ModelCompletion)
+            assert turn_a.cancelled()
+            with pytest.raises(asyncio.CancelledError):
+                await turn_a
 
             b_release.touch()
             await _wait_for_path(b_queued)
