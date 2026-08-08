@@ -22,7 +22,11 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._agent_loop import AgentLoop
+from cli_agent.runtime._agent_loop import (
+    PRINT_HISTORY_ENV,
+    AgentLoop,
+    _render_history,
+)
 from cli_agent.runtime._environment import EnvironmentKernel
 
 SYSTEM_MESSAGE = SystemMessage.text("Test Runtime instruction")
@@ -445,3 +449,103 @@ async def _collect_events(
     user_message: UserMessage,
 ) -> tuple[ModelEvent, ...]:
     return tuple([event async for event in loop.run(user_message)])
+
+
+def _two_step_loop(kernel: EnvironmentKernel | _RecordingKernel) -> AgentLoop:
+    call = ToolCall(call_id="call_1", name="exec", arguments={"command": "true"})
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                ToolCallReady(call=call),
+                ModelCompletion(
+                    message=AssistantMessage(content=(call,)),
+                    finish_reason="tool_calls",
+                ),
+            ),
+            (
+                ModelCompletion(
+                    message=AssistantMessage.text("Done."),
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+    return AgentLoop(
+        provider,
+        kernel,  # type: ignore[arg-type]
+        system_message=SYSTEM_MESSAGE,
+        context_policy=CONTEXT_POLICY,
+        session_id="test-session",
+    )
+
+
+def test_history_print_is_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv(PRINT_HISTORY_ENV, raising=False)
+    loop = _two_step_loop(_RecordingKernel())
+
+    asyncio.run(_collect_events(loop, UserMessage.text("Inspect")))
+
+    assert "HISTORY (" not in capsys.readouterr().err
+
+
+def test_history_print_requires_exact_value_one(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for value in ("true", "yes", "on", "2", ""):
+        monkeypatch.setenv(PRINT_HISTORY_ENV, value)
+        loop = _two_step_loop(_RecordingKernel())
+
+        asyncio.run(_collect_events(loop, UserMessage.text("Inspect")))
+
+        assert "HISTORY (" not in capsys.readouterr().err
+
+
+def test_history_print_dumps_readable_history_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv(PRINT_HISTORY_ENV, "1")
+    loop = _two_step_loop(_RecordingKernel())
+
+    asyncio.run(_collect_events(loop, UserMessage.text("Inspect")))
+
+    err = capsys.readouterr().err
+    assert err.count("HISTORY (") == 2
+    assert "[1] SYSTEM" in err
+    assert "[2] USER" in err
+    assert "-> exec [call_1]" in err
+    assert "<- call_1" in err
+
+
+def test_render_history_formats_all_message_kinds() -> None:
+    rendered = _render_history(
+        (
+            SystemMessage.text("instruction"),
+            UserMessage.text("hi"),
+            AssistantMessage(
+                content=(
+                    TextBlock(text="ok"),
+                    ToolCall(
+                        call_id="c1",
+                        name="exec",
+                        arguments={"command": "ls"},
+                    ),
+                )
+            ),
+            ToolResultMessage(content=(ToolResult(call_id="c1", output={"ok": True}),)),
+            AssistantMessage.text("done"),
+        )
+    )
+
+    assert rendered.startswith("=" * 60)
+    assert "HISTORY (5 messages)" in rendered
+    assert "[3] ASSISTANT" in rendered
+    assert "-> exec [c1]" in rendered
+    assert "[4] TOOL RESULT" in rendered
+    assert "<- c1" in rendered
+    assert "[5] ASSISTANT" in rendered
+    assert rendered.endswith("=" * 60)

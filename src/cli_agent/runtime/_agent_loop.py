@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import re
+import sys
 from collections.abc import AsyncIterator, Callable, Mapping
 
 from cli_agent.runtime._context import ContextPolicy
@@ -12,16 +16,52 @@ from cli_agent.runtime._context_manager import (
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
+    AssistantMessage,
     ModelCompletion,
     ModelContextOverflowError,
     ModelEvent,
     ModelMessage,
     ModelProvider,
     SystemMessage,
+    TextBlock,
     ToolCall,
     ToolResultMessage,
     UserMessage,
 )
+
+PRINT_HISTORY_ENV = "CLI_AGENT_PRINT_HISTORY"
+
+
+def _render_history(history: tuple[ModelMessage, ...]) -> str:
+    """Render the conversation history as one human-readable block."""
+
+    lines = ["=" * 60, f"HISTORY ({len(history)} messages)", "-" * 60]
+    for index, message in enumerate(history):
+        role = re.sub(
+            r"(?<!^)(?=[A-Z])", " ", type(message).__name__.removesuffix("Message")
+        ).upper()
+        lines.append(f"[{index + 1}] {role}")
+        if isinstance(message, (SystemMessage, UserMessage)):
+            for block in message.content:
+                lines.append(f"    {block.text}")
+        elif isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    lines.append(f"    {block.text}")
+                else:
+                    lines.append(f"    -> {block.name} [{block.call_id}]")
+                    lines.append(f"       {json.dumps(block.arguments, sort_keys=True)}")
+        elif isinstance(message, ToolResultMessage):
+            for result in message.content:
+                body = (
+                    result.output
+                    if result.error is None
+                    else {"error": result.error}
+                )
+                lines.append(f"    <- {result.call_id}")
+                lines.append(f"       {json.dumps(body, sort_keys=True)}")
+    lines.append("=" * 60)
+    return "\n".join(lines)
 
 
 class AgentLoop:
@@ -112,11 +152,25 @@ class AgentLoop:
             self._context.observe(prepared.revision, completion.usage)
             self._context.append(completion.message)
             if not tool_calls:
+                self._print_history()
                 yield completion
                 return
 
             results = await self._kernel.dispatch_batch(tool_calls)
             self._context.append(ToolResultMessage(content=results))
+            self._print_history()
+
+    def _print_history(self) -> None:
+        """Print the current conversation history in a readable form.
+
+        Enabled only when ``CLI_AGENT_PRINT_HISTORY`` is set to exactly ``"1"``.
+        The dump goes to stderr so it never pollutes the stdout protocol
+        stream that carries model text output.
+        """
+
+        if os.environ.get(PRINT_HISTORY_ENV, "") != "1":
+            return
+        print(_render_history(self.history), file=sys.stderr)
 
     def _emit_diagnostic(
         self,

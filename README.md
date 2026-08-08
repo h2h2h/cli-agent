@@ -327,3 +327,8 @@ Compaction progress is visible through `RuntimeDiagnostic` kinds such as
 `context.snipped`, `context.pruned`, `context.summarized`,
 `context.oversized_result`, and `context.compaction_failed`, without leaking
 message bodies, command output, or Secrets.
+
+To observe the conversation history after every Agent Loop iteration, set
+`CLI_AGENT_PRINT_HISTORY=1`. Each loop step prints a readable
+`HISTORY (N messages)` block to stderr, so the stdout protocol stream stays
+clean; it is off by default (any value other than exactly `1` disables it).
