@@ -148,6 +148,20 @@ lower link, and a command that directly addresses the external Repertoire path
 bypasses the view. Use an external sandbox when strict lower immutability is
 required.
 
+## Execution Backend and isolation
+
+Shell, Files, Tools, and the Capability Catalogs run against one Runtime-owned
+Backend Workspace (RFC-0012). Command Handlers emit backend-neutral execution
+requests; the Local Backend is the only component that creates Host
+subprocesses, and it interprets all Workspace paths itself.
+
+The Local Backend runs every command and Tool worker with the Host user's
+permissions on the Host filesystem. It provides **no** OS-level filesystem,
+network, process, secret, or resource containment. The Capability View's
+cooperative copy-up is the only mutation control; use an external sandbox for
+strict isolation. Future Sandbox or Remote providers implement the same
+Backend contracts without changing the model-visible syscalls.
+
 ## Tool capability commands
 
 Runtime open scans top-level Python files in `.workspace/tools` and generates

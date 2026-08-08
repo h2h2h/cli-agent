@@ -1,11 +1,89 @@
 # cli-agent Architecture
 
-Current implementation status: the model-generated Library index milestone is
-implemented. `_LibraryCatalog` owns a fingerprint-keyed SQLite summary cache
-and a non-blocking serial summary worker; every visible Library directory has
-a generated `index.md` projection with explicit `ready`/`pending`/`stale`/
-`failed`/`unsupported` states, and source changes are reconciled before every
-ordinary model request.
+Current implementation status: RFC-0012 (Backend Workspace and Capability
+View decoupling) is fully implemented. One Runtime-owned `_BackendWorkspace`
+owns the execution and filesystem namespace shared by Shell, Files, Tools,
+Capability Catalogs, the Library worker, and the Workspace MCP Runtime;
+Command Handlers only produce backend-neutral execution requests, and the
+Local Backend is the only place that creates Host subprocesses. The diagram
+below the "Backend Workspace" section describes the pre-RFC-0012 structure
+and is retained for history only.
+
+## Backend Workspace and Capability View decoupling (RFC-0012)
+
+### Ownership and lifecycle
+
+`AgentRuntime` owns exactly one `_BackendWorkspace` (opened by
+`_Backend.open_workspace`); every Session Kernel borrows it and keeps only
+its own cwd, environment, Scheduler, and Execution Handles. Runtime open
+follows the fixed RFC order:
+
+```text
+validate Host configuration
+  -> open Capability Source / State
+  -> Backend.open_workspace (Bound Capability View materialized)
+  -> reconcile Workspace MCP projections
+  -> reconcile Tool Catalog
+  -> reconcile Backend Tool Runtime
+  -> reconcile Skill Catalog
+  -> reconcile Library Catalog
+  -> construct AgentRuntime
+  -> start Library background worker
+```
+
+Any open failure rolls back every already-opened resource in reverse order
+(`_OpenResources`), and no failure ever falls back to a permission-wider
+Backend. Runtime close follows the reverse dependency order:
+
+```text
+reject new turns
+  -> close every EnvironmentKernel (cancels queued/running Executions)
+  -> stop the Library worker
+  -> flush Backend Workspace (failures are visible to the Host)
+  -> close Backend Workspace
+  -> close the application state database
+```
+
+### Contracts
+
+- `_BackendWorkspace` exposes `root` (a Backend path string, never a Host
+  `Path`), `filesystem`, `capabilities`, `mcp`, and the synchronous
+  `prepare_shell` / `prepare_tool` factories; `reconcile_tool_runtime`,
+  `flush`, and `close` own the Tool Runtime and Workspace lifecycle.
+- `_WorkspaceFilesystem` is the async filesystem contract shared by
+  Handlers, Catalogs, the Library worker, and Tool Runtime projections;
+  writes honor Bound Capability View semantics.
+- `_BoundCapabilityView` answers managed-relative-path provenance, shadow,
+  whiteout, and validation facts plus `list`/`read`/`stat`; Local
+  materialization uses symlink attach and copy-up, but the contract is
+  symlink-free (the deterministic Sandbox proof implements it in memory).
+- `_ToolRuntimeStatus` distinguishes mandatory open failures (which fail
+  closed) from Tool Runtime dependency failures (which only disable
+  `tools run`, never fall back to Host Python).
+- `_WorkspaceMCPRuntime` performs server discovery inside the Backend and
+  materializes the worker-side invocation binding (`mcp_binding.py`) into
+  the Backend Tool Runtime; stubs never self-connect or reference env names.
+
+### Consumers
+
+Command Handlers (Shell, Files, Tools, cd) and every Catalog consume only
+these contracts: the Shell Handler emits `_ShellExecutionRequest`, the Tool
+Handler emits `_ToolExecutionRequest` with logical Tool bindings, the Files
+Handler drives the Workspace Filesystem, and `cd` uses Backend-mediated
+`filesystem.resolve`. `_ExecutionState`, the Execution Snapshot, the
+Scheduler, and the Supervisor contain no Backend discriminator, no
+`BackendSession`, and no parallel Workspace owner.
+
+### LocalBackend scope and isolation statement
+
+The Local Backend is the reference RFC-0012 implementation and runs every
+process with the Host user's permissions on the Host filesystem: it does
+**not** provide OS-level filesystem, network, process, secret, or resource
+containment. The deterministic Sandbox proof (a pure in-memory `/sandbox`
+namespace implementing the same contracts) demonstrates that Shell writes
+are readable by Files, Tools, and every Catalog, and that Files/Tool writes
+are visible to later Shell commands, without any Host mirror; a future
+Sandbox or Remote provider reuses the same acceptance suite.
 
 ```mermaid
 flowchart TB
@@ -212,6 +290,12 @@ flowchart TB
     class SESSION_NODE,RES boundary
     class KERNEL,PROTO,POLICY,INVALID,DENIED,ROUTER,SCHED,SUPV,EXEC,CMDS,HAND_BASE,SHELL_HANDLER,TOOL_HANDLER,PROC environment
 ```
+
+> The diagram above predates RFC-0012: `view.py`, `environment.py`, and the
+> Tool worker now live inside the Backend, Handlers no longer hold Host
+> `Path` or `_CapabilityView` mechanics, and `tools/index.md` projections are
+> written through the Workspace Filesystem. It is retained for history; the
+> "Backend Workspace and Capability View decoupling" section is current.
 
 ## Library model-generated indexes
 
