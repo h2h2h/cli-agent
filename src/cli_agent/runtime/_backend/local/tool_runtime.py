@@ -120,7 +120,7 @@ class _LocalToolRuntime:
 
             worker = root / _WORKER_FILENAME
             template = (
-                files("cli_agent.runtime._backend")
+                files("cli_agent.runtime._backend.local")
                 .joinpath(_WORKER_FILENAME)
                 .read_bytes()
             )

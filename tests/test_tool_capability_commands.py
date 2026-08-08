@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from policy_fakes import _AllowAllPolicy, _DenyExecutablePolicy
 
-import cli_agent.runtime._backend.tool_runtime as tool_runtime_module
+import cli_agent.runtime._backend.local.tool_runtime as tool_runtime_module
 from cli_agent.runtime import (
     PolicyAction,
     RuntimeDiagnostic,

@@ -13,11 +13,11 @@ from cli_agent.runtime import (
     ContextPolicy,
     ScriptedModelProvider,
 )
-from cli_agent.runtime._backend import mcp_runtime as mcp_runtime_module
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
     _LocalCapabilityView,
 )
+from cli_agent.runtime._backend.local import mcp_runtime as mcp_runtime_module
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic

@@ -93,13 +93,15 @@ def test_local_backend_is_the_sole_ordinary_shell_subprocess_owner() -> None:
     import cli_agent.runtime._backend.local as local_module
 
     runtime_source = Path(importlib.import_module("cli_agent.runtime").__file__).parent
+    local_root = Path(local_module.__file__).parent
     owners = tuple(
         path
         for path in runtime_source.rglob("*.py")
         if "create_subprocess_shell" in path.read_text(encoding="utf-8")
     )
 
-    assert owners == (Path(local_module.__file__),)
+    assert owners
+    assert all(local_root in path.parents for path in owners)
 
 
 def _module_source(module_name: str) -> str:

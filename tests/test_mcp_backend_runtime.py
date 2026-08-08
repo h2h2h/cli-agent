@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-from cli_agent.runtime._backend import mcp_runtime as mcp_runtime_module
 from cli_agent.runtime._backend.facts import (
     _MCPServerFacts,
     _MCPToolFacts,
@@ -24,6 +23,7 @@ from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
     _LocalCapabilityView,
 )
+from cli_agent.runtime._backend.local import mcp_runtime as mcp_runtime_module
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.mcp.facts import parse_server_config
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
@@ -294,11 +294,12 @@ def test_mcp_catalog_and_runtime_never_create_workspace_mcp_subprocesses() -> No
     assert "stdio_client" not in resources_source
     assert "ClientSession" not in resources_source
 
-    local_backend = Path(
-        importlib.import_module("cli_agent.runtime._backend.local").__file__
-    ).read_text(encoding="utf-8")
-    assert "create_subprocess_shell" in local_backend
-    assert "create_subprocess_exec" in local_backend
+    local_backend_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in _package_modules("cli_agent.runtime._backend.local")
+    )
+    assert "create_subprocess_shell" in local_backend_sources
+    assert "create_subprocess_exec" in local_backend_sources
 
 
 def test_runtime_open_uses_the_backend_mcp_runtime(tmp_path: Path) -> None:
