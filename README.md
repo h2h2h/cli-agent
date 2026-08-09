@@ -1,4 +1,14 @@
+<div align="center">
+
+<img src="assets/cli-agent-logo.png" width="720" alt="cli-agent"/>
+
 # cli-agent
+
+**English** · [中文](README_zh.md)
+
+</div>
+
+---
 
 `cli-agent` is a general-purpose Agent that completes tasks through CLI
 operations. It binds to a Workspace directory, inspects the state, runs

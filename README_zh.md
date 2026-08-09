@@ -1,4 +1,14 @@
+<div align="center">
+
+<img src="assets/cli-agent-logo.png" width="720" alt="cli-agent"/>
+
 # cli-agent
+
+[English](README.md) · **中文**
+
+</div>
+
+---
 
 `cli-agent` 是一个通过 CLI 操作完成任务的通用 Agent。它绑定到一个
 Workspace 目录，检查状态、运行命令和工具，并不断迭代直到任务完成 ——
