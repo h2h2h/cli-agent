@@ -151,7 +151,7 @@ required.
 ## Execution Backend and isolation
 
 Shell, Files, Tools, and the Capability Catalogs run against one Runtime-owned
-Backend Workspace (RFC-0012). Command Handlers emit backend-neutral execution
+Backend Workspace. Command Handlers emit backend-neutral execution
 requests; the Local Backend is the only component that creates Host
 subprocesses, and it interprets all Workspace paths itself.
 
