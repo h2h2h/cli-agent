@@ -6,6 +6,7 @@ dependencies = [
     "httpx",
     "jsonschema>=4.21",
     "mcp",
+    "prompt-toolkit>=3.0.47,<4",
     "python-dotenv>=1.2.2",
     "strictyaml>=1.7.3",
     "tree-sitter>=0.23",
