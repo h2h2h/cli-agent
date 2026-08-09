@@ -16,3 +16,5 @@ __pycache__/
 /tmp/
 /.zed/
 /.claude/
+/AGENTS.md
+/docs/

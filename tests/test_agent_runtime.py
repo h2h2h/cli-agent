@@ -477,7 +477,7 @@ def test_assembles_workspace_and_optional_host_instruction(
         assert ".workspace/tools" in text
         assert ".workspace/skills" in text
         assert ".workspace/library" in text
-        assert "`exec`, `output`, and `kill`" in text
+        assert "Use `output` and `kill` only to manage Executions started by `exec`" in text
         assert "not an operating-system security boundary" in text
         assert text.endswith("Host instruction\nPrefer focused, reversible changes.")
         provider.assert_exhausted()

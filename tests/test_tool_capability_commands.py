@@ -179,7 +179,8 @@ def test_system_message_embeds_only_compact_tools_catalog(
     assert "| broken | invalid" in body
     assert "tools info <name>" in body
     assert "def add(a, b)" not in body
-    assert "repertoire" not in body
+    tools_section = body.split("**Available Python Tools**\n", maxsplit=1)[1]
+    assert "repertoire" not in tools_section.lower()
     assert "Shadows Repertoire" not in body
 
 
