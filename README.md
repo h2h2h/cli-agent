@@ -2,8 +2,6 @@
 
 <img src="assets/cli-agent-logo.png" width="720" alt="cli-agent"/>
 
-# cli-agent
-
 **English** · [中文](README_zh.md)
 
 </div>
@@ -59,6 +57,38 @@ cli-agent is layered from the Host down to the Backend:
 ## Installation
 
 Requires Python ≥ 3.11 and [uv](https://docs.astral.sh/uv/).
+
+### Global install — use `cli-agent` from any directory
+
+```bash
+cd cli-agent
+./scripts/install.sh            # editable install + one-time config
+# or manually:
+uv tool install --editable .    # --editable: track this checkout, no reinstall needed
+```
+
+First run creates `~/.cli-agent/.env` (mode 600) from
+`cli-agent.env.example`; fill in the Provider settings once:
+
+```bash
+# ~/.cli-agent/.env
+CLI_AGENT_MODEL="your-model"
+CLI_AGENT_BASE_URL="https://api.example.com/v1"
+CLI_AGENT_API_KEY="sk-..."
+```
+
+Now launch from anywhere:
+
+```bash
+cd ~/some/unrelated/project
+cli-agent "Inspect this project"
+```
+
+Precedence: real environment variables (direnv/`.envrc`, a shell `export`)
+always win over `~/.cli-agent/.env`. Uninstall with
+`uv tool uninstall cli-agent`; `pipx install .` works the same way.
+
+### Local development (this repository)
 
 ```bash
 uv sync

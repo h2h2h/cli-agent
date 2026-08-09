@@ -114,6 +114,61 @@ def test_parses_interactive_session_without_task(tmp_path: Path) -> None:
     )
 
 
+def test_loads_user_environment_from_home_dotenv(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    config_dir = home / ".cli-agent"
+    config_dir.mkdir(parents=True)
+    config_dir.joinpath(".env").write_text(
+        "".join(
+            f"export {name}={value}\n"
+            for name, value in _environment().items()
+        )
+    )
+    monkeypatch.setenv("HOME", str(home))
+    for name in _environment():
+        monkeypatch.delenv(name, raising=False)
+
+    config = parse_cli_config(
+        ["Inspect", "--workspace", str(tmp_path)],
+    )
+
+    assert config == CliConfig(
+        task="Inspect",
+        workspace=tmp_path.resolve(),
+        base_url="https://models.example/v1",
+        model="test-model",
+        api_key="secret",
+        context_window_tokens=128_000,
+        output_reserve_tokens=4_000,
+        safety_margin_tokens=DEFAULT_CONTEXT_SAFETY_MARGIN,
+    )
+
+
+def test_process_environment_wins_over_user_dotenv(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    config_dir = home / ".cli-agent"
+    config_dir.mkdir(parents=True)
+    config_dir.joinpath(".env").write_text(
+        f'export {MODEL_ENV}="from-dotenv"\n'
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv(MODEL_ENV, raising=False)
+    _set_environment(monkeypatch, model="from-process")
+
+    config = parse_cli_config(
+        ["Inspect", "--workspace", str(tmp_path)],
+    )
+
+    assert config.model == "from-process"
+    assert config.api_key == "secret"
+
+
 def test_rejects_explicit_empty_task(tmp_path: Path) -> None:
     with pytest.raises(CliConfigurationError, match="task must not be empty"):
         parse_cli_config(
@@ -429,6 +484,35 @@ def test_declares_direnv_configuration_convention() -> None:
     assert f"export {CONTEXT_WINDOW_ENV}=" in template
     assert f"export {OUTPUT_RESERVE_ENV}=" in template
     assert ".envrc" in ignored
+
+
+def test_declares_global_install_script() -> None:
+    project_root = Path(__file__).parents[1]
+    installer = project_root.joinpath("scripts", "install.sh")
+
+    assert installer.is_file()
+    assert installer.stat().st_mode & 0o111
+    text = installer.read_text()
+    assert "uv tool install --editable ." in text
+    assert "uv tool uninstall cli-agent" in text
+    assert "uv tool update-shell" in text
+    assert ".cli-agent" in text
+    assert "cli-agent.env.example" in text
+    assert "chmod 600" in text
+    assert "UV_TOOL_BIN_DIR" in text
+    assert "Restart your terminal" in text
+
+
+def test_declares_global_dotenv_template() -> None:
+    project_root = Path(__file__).parents[1]
+    template = project_root.joinpath("cli-agent.env.example").read_text()
+
+    assert f"{MODEL_ENV}=" in template
+    assert f"{BASE_URL_ENV}=" in template
+    assert f"{API_KEY_ENV}=" in template
+    assert f"{CONTEXT_WINDOW_ENV}=" in template
+    assert f"{OUTPUT_RESERVE_ENV}=" in template
+    assert "PATH_add" not in template
 
 
 def test_main_uses_validated_config_to_build_provider(

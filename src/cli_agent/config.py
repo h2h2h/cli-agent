@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
+from dotenv import load_dotenv
 
 from cli_agent.runtime import ContextPolicy, OpenAICompatibleModelProvider
 
@@ -21,6 +22,9 @@ OUTPUT_RESERVE_ENV = "CLI_AGENT_OUTPUT_RESERVE"
 CONTEXT_SAFETY_MARGIN_ENV = "CLI_AGENT_CONTEXT_SAFETY_MARGIN"
 DEFAULT_OUTPUT_RESERVE = 16_384
 DEFAULT_CONTEXT_SAFETY_MARGIN = 4_096
+
+USER_CONFIG_DIR = ".cli-agent"
+USER_ENV_FILE = ".env"
 
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "deepseek-v4-flash": 1_000_000,
@@ -51,10 +55,21 @@ def parse_cli_config(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> CliConfig:
-    """Parse and validate cli-agent arguments and environment."""
+    """Parse and validate cli-agent arguments and environment.
+
+    When no explicit environment is injected, the per-user configuration file
+    ``~/.cli-agent/.env`` is loaded first (without overriding existing
+    variables), so a globally installed ``cli-agent`` works from any directory.
+    Explicit process environment — e.g. direnv/``.envrc`` or a shell export
+    — always wins over that file.
+    """
 
     args = _argument_parser().parse_args(argv)
-    environment = os.environ if environ is None else environ
+    if environ is None:
+        _load_user_environment()
+        environment = os.environ
+    else:
+        environment = environ
 
     task = args.task.strip() if args.task is not None else None
     if task == "":
@@ -154,6 +169,17 @@ def _argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _load_user_environment() -> None:
+    """Load ``~/.cli-agent/.env`` into the process environment.
+
+    ``override=False`` keeps every already-set variable, so shell exports and
+    direnv/``.envrc`` take precedence over the per-user configuration file.
+    A missing file is a no-op, keeping repo-local development unchanged.
+    """
+
+    load_dotenv(Path.home() / USER_CONFIG_DIR / USER_ENV_FILE, override=False)
+
+
 def _required_environment(
     environment: Mapping[str, str],
     name: str,
@@ -162,7 +188,8 @@ def _required_environment(
     if value is None or not value.strip():
         raise CliConfigurationError(
             f"environment variable {name} is not set; "
-            "export it from .envrc and run direnv allow"
+            "set it in ~/.cli-agent/.env (global install) or export it "
+            "from .envrc and run direnv allow"
         )
     return value.strip()
 

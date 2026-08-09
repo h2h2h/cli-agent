@@ -2,8 +2,6 @@
 
 <img src="assets/cli-agent-logo.png" width="720" alt="cli-agent"/>
 
-# cli-agent
-
 [English](README.md) · **中文**
 
 </div>
@@ -55,6 +53,38 @@ cli-agent 从 Host 到 Backend 分层设计：
 ## 安装
 
 需要 Python ≥ 3.11 和 [uv](https://docs.astral.sh/uv/)。
+
+### 全局安装 —— 在任何目录下使用 `cli-agent`
+
+```bash
+cd cli-agent
+./scripts/install.sh            # 可编辑安装 + 一次性配置
+# 或手动执行：
+uv tool install --editable .    # --editable：跟随本仓库，无需重复安装
+```
+
+首次运行会从 `cli-agent.env.example` 生成 `~/.cli-agent/.env`（权限 600）；
+只需配置一次 Provider：
+
+```bash
+# ~/.cli-agent/.env
+CLI_AGENT_MODEL="your-model"
+CLI_AGENT_BASE_URL="https://api.example.com/v1"
+CLI_AGENT_API_KEY="sk-..."
+```
+
+然后就可以从任意目录启动：
+
+```bash
+cd ~/some/unrelated/project
+cli-agent "检查这个项目"
+```
+
+优先级：真实环境变量（direnv/`.envrc`、shell `export`）始终优先于
+`~/.cli-agent/.env`。卸载：`uv tool uninstall cli-agent`；
+`pipx install .` 效果相同。
+
+### 本地开发（本仓库）
 
 ```bash
 uv sync
