@@ -1,0 +1,84 @@
+# cli-agent
+
+`cli-agent` 是一个通过 CLI 操作完成任务的通用 Agent。它绑定到一个
+Workspace 目录，检查状态、运行命令和工具，并不断迭代直到任务完成 ——
+既支持交互式会话，也支持一次性任务。
+
+**一切皆命令。** 模型只暴露三个 Tool —— `exec` 执行命令，`output` 重新读取
+某个 Execution 的保留输出，`kill` 终止它。其余所有操作都通过一套保留命令
+语法来表达：文件修改用 `files write` / `files edit`，工具调用用
+`tools list` / `tools info` / `tools run`，会话状态用 `cd` 和 `export`。
+所有能力（tools / skills / library / MCP）都从统一的目录式 Capability View
+中发现 —— Repertoire 为下层、Workspace 为上层，支持 shadowing 与 copy-up
+—— 并且不会新增模型 schema，因此无论安装多少能力，三个 Tool 的模型面
+始终保持稳定。
+
+## 特色
+
+| 特性 | 说明 |
+|---|---|
+| **四级上下文压缩** | 长会话始终保持在模型上下文窗口内：过期的 Tool Result 依次被 snipped、pruned，旧轮次被 summarize；Active Turn 与用户指令永不被截断。 |
+| **多后端支持** | 与 Provider 无关的模型接口（OpenAI 兼容端点、scripted providers），以及统一 Backend 契约下的可插拔执行后端。 |
+| **权限解耦** | `ExecutionPolicy` 是 Host 注入的可选插件，决定 `ALLOW` / `DENY` / `ASK`；用户交互是独立的 Host 通道。所有失败都 fail closed。 |
+| **一切皆命令** | 模型面只有三个 Tool（`exec` / `output` / `kill`）；文件、工具和会话状态都是命令，所有能力都从统一的目录式目录中发现。 |
+| **并行调度** | 连续的 parallel-safe 命令在并发批次中运行。 |
+| **Workspace 作用域环境** | 持久的 `.workspace/env` 快照，加上会话内 export，会话之间互不泄漏。 |
+
+## 架构
+
+![cli-agent 架构](assets/cli-agent-architecture.png)
+
+cli-agent 从 Host 到 Backend 分层设计：
+
+- **Host / CLI** —— `cli.py`、`config.py` 和 `runner.py` 负责校验配置并呈现
+  事件；`UserInteraction` 是 Host 拥有的提问通道。
+- **AgentRuntime** —— 一个 Workspace 作用域的 Runtime 拥有多个 Session。
+  每个 Session 绑定一个 `ModelProvider` 和 `AgentLoop`；`ContextManager`
+  在每次模型请求前运行四级压缩流水线。
+- **EnvironmentKernel** —— 将**控制面**（什么可以运行：Host 注入的
+  `ExecutionPolicy` → `ALLOW` / `DENY` / `ASK` → Router → Shell AST →
+  `ExecutionState`）与**执行面**（如何运行：后端无关的请求 → 可插拔
+  Backend → 经由 Capability View 的 Workspace 文件系统）分离。
+- **Capabilities** —— 基于目录的 Catalogs 统一暴露 Tools、Skills、Library
+  和 MCP 绑定；它们不会新增模型 schema。
+
+## 安装
+
+需要 Python ≥ 3.11 和 [uv](https://docs.astral.sh/uv/)。
+
+```bash
+uv sync
+cp .envrc.example .envrc
+# 编辑 .envrc：设置 CLI_AGENT_MODEL、CLI_AGENT_BASE_URL、CLI_AGENT_API_KEY。
+direnv allow
+```
+
+[direnv](https://direnv.net/) 负责加载 Provider 配置并激活 uv 管理的虚拟环境。
+任何 OpenAI 兼容端点都可以使用；如果你的模型不在内置注册表中，请设置
+`CLI_AGENT_CONTEXT_WINDOW`。
+
+## 使用方法
+
+启动交互式会话 —— 每个非空输入都是同一对话中的新一轮；用 `:q`、EOF 或
+`Ctrl+C` 退出：
+
+```bash
+cli-agent
+```
+
+一次性运行一个任务：
+
+```bash
+cli-agent "检查 Workspace"
+```
+
+显式指定 Workspace 和能力 Repertoire：
+
+```bash
+cli-agent \
+  --workspace ./path/to/workspace \
+  --repertoire ./path/to/repertoire
+```
+
+- `--workspace` —— Agent 工作的目录（默认：当前目录）。
+- `--repertoire` —— 用户维护的能力下层树（默认：`~/.cli-agent/repertoire`）。
