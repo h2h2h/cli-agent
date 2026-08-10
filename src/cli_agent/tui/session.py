@@ -13,7 +13,7 @@ from prompt_toolkit.input import create_input
 from prompt_toolkit.output import create_output
 from prompt_toolkit.shortcuts import CompleteStyle
 
-from cli_agent.slash_commands import specs
+from cli_agent.slash_commands import CommandSpec
 
 from .completer import _SlashCommandCompleter
 from .editor import _build_key_bindings
@@ -31,6 +31,7 @@ class TuiSession:
         *,
         stdin: TextIO | None = None,
         stderr: TextIO | None = None,
+        specs: tuple[CommandSpec, ...],
     ) -> None:
         input_stream = sys.stdin if stdin is None else stdin
         output_stream = sys.stderr if stderr is None else stderr

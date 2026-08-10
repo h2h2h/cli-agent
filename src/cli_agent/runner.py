@@ -23,6 +23,7 @@ from cli_agent.runtime import (
     UserMessage,
     UserQuestion,
 )
+from cli_agent.slash_commands import CommandAction, resolve, specs
 from cli_agent.tui import TuiSession
 
 
@@ -80,6 +81,8 @@ async def run_agent(
                         tui_session=tui_session,
                     )
                     if task is None:
+                        return 0
+                    if tui_session is not None and resolve(task) is CommandAction.EXIT:
                         return 0
 
                     completed, needs_newline = await _run_turn(
@@ -147,7 +150,7 @@ def _create_tui_session(
 ) -> TuiSession | None:
     if config.task is not None or not stdin.isatty() or not stderr.isatty():
         return None
-    return TuiSession(stdin=stdin, stderr=stderr)
+    return TuiSession(stdin=stdin, stderr=stderr, specs=specs)
 
 
 async def _read_interactive_task(

@@ -431,8 +431,8 @@ def test_interactive_terminal_prompts_until_quit(
     class FakeTuiSession:
         instances: list["FakeTuiSession"] = []
 
-        def __init__(self, *, stdin, stderr) -> None:
-            del stdin, stderr
+        def __init__(self, *, stdin, stderr, specs) -> None:
+            del stdin, stderr, specs
             self.read_prompts: list[str] = []
             self.closed = False
             self._responses = iter(("", ":q"))
@@ -477,6 +477,193 @@ def test_interactive_terminal_prompts_until_quit(
     provider.assert_exhausted()
 
 
+def test_tty_slash_exit_ends_session_without_agent_turn(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class TerminalInput(StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    class FakeTuiSession:
+        instances: list["FakeTuiSession"] = []
+
+        def __init__(self, *, stdin, stderr, specs) -> None:
+            del stdin, stderr, specs
+            self.closed = False
+            self.instances.append(self)
+
+        async def read_text(self, prompt: str) -> str | None:
+            del prompt
+            return "/exit"
+
+        async def confirm(self, prompt: str) -> bool:
+            del prompt
+            raise AssertionError("confirmation was not expected")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(runner_module, "TuiSession", FakeTuiSession)
+    provider = ScriptedModelProvider(script=())
+    sessions = _install_session_capture(monkeypatch)
+    stdout = StringIO()
+    stderr = _TerminalOutput()
+
+    exit_code = asyncio.run(
+        run_agent(
+            _config(tmp_path, task=None),
+            provider,
+            stdin=TerminalInput(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == (
+        f"\033[2;36m[session] {sessions[0]}\033[0m\n"
+    )
+    assert FakeTuiSession.instances[0].closed is True
+    assert provider.requests == ()
+    provider.assert_exhausted()
+
+
+@pytest.mark.parametrize(
+    "task",
+    ("/exit now", "/unknown", "foo /exit"),
+)
+def test_tty_unknown_slash_input_runs_agent_turn_unmodified(
+    tmp_path: Path,
+    monkeypatch,
+    task: str,
+) -> None:
+    class TerminalInput(StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    class FakeTuiSession:
+        instances: list["FakeTuiSession"] = []
+
+        def __init__(self, *, stdin, stderr, specs) -> None:
+            del stdin, stderr, specs
+            self.closed = False
+            self._responses = iter((task, ":q"))
+            self.instances.append(self)
+
+        async def read_text(self, prompt: str) -> str:
+            del prompt
+            return next(self._responses)
+
+        async def confirm(self, prompt: str) -> bool:
+            del prompt
+            raise AssertionError("confirmation was not expected")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(runner_module, "TuiSession", FakeTuiSession)
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                TextDelta(text="Done."),
+                ModelCompletion(
+                    message=AssistantMessage.text("Done."),
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+    sessions = _install_session_capture(monkeypatch)
+    stdout = StringIO()
+    stderr = _TerminalOutput()
+
+    exit_code = asyncio.run(
+        run_agent(
+            _config(tmp_path, task=None),
+            provider,
+            stdin=TerminalInput(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "Done.\n"
+    assert len(provider.requests) == 1
+    assert provider.requests[0].messages[-1] == UserMessage.text(task)
+    provider.assert_exhausted()
+    assert FakeTuiSession.instances[0].closed is True
+    assert sessions == [sessions[0]]
+
+
+def test_one_shot_task_value_slash_exit_runs_as_regular_task(
+    tmp_path: Path,
+) -> None:
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                TextDelta(text="Done."),
+                ModelCompletion(
+                    message=AssistantMessage.text("Done."),
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = asyncio.run(
+        run_agent(
+            _config(tmp_path, task="/exit"),
+            provider,
+            stdin=StringIO(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "Done."
+    assert len(provider.requests) == 1
+    assert provider.requests[0].messages[-1] == UserMessage.text("/exit")
+    provider.assert_exhausted()
+
+
+def test_non_tty_slash_exit_runs_as_regular_task(tmp_path: Path) -> None:
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                TextDelta(text="Done."),
+                ModelCompletion(
+                    message=AssistantMessage.text("Done."),
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = asyncio.run(
+        run_agent(
+            _config(tmp_path, task=None),
+            provider,
+            stdin=StringIO("/exit\n:q\n"),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "Done.\n"
+    assert len(provider.requests) == 1
+    assert provider.requests[0].messages[-1] == UserMessage.text("/exit")
+    provider.assert_exhausted()
+
+
 def test_tty_session_reuses_one_input_session_for_task_and_confirmation(
     tmp_path: Path,
     monkeypatch,
@@ -491,8 +678,8 @@ def test_tty_session_reuses_one_input_session_for_task_and_confirmation(
     class FakeTuiSession:
         instances: list["FakeTuiSession"] = []
 
-        def __init__(self, *, stdin, stderr) -> None:
-            del stdin, stderr
+        def __init__(self, *, stdin, stderr, specs) -> None:
+            del stdin, stderr, specs
             self.read_prompts: list[str] = []
             self.confirm_prompts: list[str] = []
             self.closed = False

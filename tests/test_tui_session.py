@@ -33,7 +33,11 @@ def pipe_session(monkeypatch):
             "create_output",
             lambda stderr: DummyOutput(),
         )
-        session = TuiSession(stdin=StringIO(), stderr=StringIO())
+        session = TuiSession(
+            stdin=StringIO(),
+            stderr=StringIO(),
+            specs=specs,
+        )
         yield session, input_stream
         asyncio.run(session.close())
 
