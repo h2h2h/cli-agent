@@ -1,10 +1,11 @@
 """Runtime-owned application state database adapter.
 
 The database lives at ``~/.cli-agent/state.sqlite3`` and is not bound
-to one capability: future application state, such as Session History, can add
-tables through the same explicit migration boundary. Library summaries are
-stored in the ``library_summary_cache`` table by the ``_SummaryCache``
-adapter, never through generic SQL exposed here.
+to one capability: future application state can add tables through the same
+explicit migration boundary. Library summaries are stored in the
+``library_summary_cache`` table by the ``_SummaryCache`` adapter, and session
+traces in the ``sessions`` and ``session_messages`` tables by the
+``_SessionHistory`` adapter, never through generic SQL exposed here.
 """
 
 from __future__ import annotations
@@ -30,6 +31,22 @@ _MIGRATIONS: tuple[str, ...] = (
         summary TEXT NOT NULL,
         created_at TEXT NOT NULL,
         last_used_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE sessions (
+        session_id   TEXT PRIMARY KEY,
+        workspace    TEXT NOT NULL,
+        system_prompt TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        closed_at    TEXT
+    );
+
+    CREATE TABLE session_messages (
+        session_id  TEXT NOT NULL REFERENCES sessions(session_id),
+        seq         INTEGER NOT NULL,
+        role        TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool_result')),
+        payload     TEXT NOT NULL,
+        created_at  TEXT NOT NULL,
+        PRIMARY KEY (session_id, seq)
     )""",
 )
 

@@ -22,7 +22,7 @@ def test_migration_creates_table_and_reopens_idempotently(tmp_path: Path) -> Non
 
     connection = sqlite3.connect(path)
     (version,) = connection.execute("PRAGMA user_version").fetchone()
-    assert version == 1
+    assert version == 2
     names = {
         row[0]
         for row in connection.execute(
