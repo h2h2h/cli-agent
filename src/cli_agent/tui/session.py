@@ -7,13 +7,20 @@ import sys
 from typing import TextIO
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import DummyCompleter
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.input import create_input
 from prompt_toolkit.output import create_output
+from prompt_toolkit.shortcuts import CompleteStyle
 
+from cli_agent.slash_commands import specs
+
+from .completer import _SlashCommandCompleter
 from .editor import _build_key_bindings
 
 __all__ = ["TuiSession"]
+
+_MENU_RESERVED_LINES = 4
 
 
 class TuiSession:
@@ -30,6 +37,7 @@ class TuiSession:
 
         self._input = create_input(input_stream)
         self._output = create_output(output_stream)
+        self._completer = _SlashCommandCompleter(specs)
         self._prompt = PromptSession(
             input=self._input,
             output=self._output,
@@ -44,12 +52,12 @@ class TuiSession:
     async def read_text(self, prompt: str) -> str | None:
         """Read one submitted text value, returning ``None`` on EOF."""
 
-        return await self._read(prompt)
+        return await self._read(prompt, complete=True)
 
     async def confirm(self, prompt: str) -> bool:
         """Read a confirmation and allow only an explicit yes answer."""
 
-        response = await self._read(prompt)
+        response = await self._read(prompt, complete=False)
         return response is not None and response.strip().casefold() in {
             "y",
             "yes",
@@ -70,7 +78,7 @@ class TuiSession:
         async with self._lock:
             self._input.close()
 
-    async def _read(self, prompt: str) -> str | None:
+    async def _read(self, prompt: str, *, complete: bool) -> str | None:
         async with self._lock:
             if self._closed:
                 raise RuntimeError("TuiSession is closed")
@@ -80,6 +88,10 @@ class TuiSession:
                 return await self._prompt.prompt_async(
                     prompt,
                     handle_sigint=False,
+                    completer=self._completer if complete else DummyCompleter(),
+                    complete_while_typing=complete,
+                    complete_style=CompleteStyle.COLUMN,
+                    reserve_space_for_menu=_MENU_RESERVED_LINES,
                 )
             except EOFError:
                 return None
