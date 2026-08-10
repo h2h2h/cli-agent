@@ -23,9 +23,7 @@ from cli_agent.runtime._environment.handlers.files import _FileHandler
 
 
 def test_files_write_creates_file_and_reports_byte_count(tmp_path: Path) -> None:
-    outcome, output = _write(
-        tmp_path, "files write hello.txt <<'EOF'\nline1\nline2\nEOF"
-    )
+    outcome, output = _write(tmp_path, "files write hello.txt", stdin="line1\nline2\n")
 
     target = tmp_path / "hello.txt"
     assert outcome == _ExecutionOutcome.exited()
@@ -37,7 +35,8 @@ def test_files_write_creates_file_and_reports_byte_count(tmp_path: Path) -> None
 def test_files_write_creates_parent_directories(tmp_path: Path) -> None:
     outcome, _ = _write(
         tmp_path,
-        "files write nested/deep/file.txt <<'EOF'\ncontent\nEOF",
+        "files write nested/deep/file.txt",
+        stdin="content\n",
     )
 
     target = tmp_path / "nested" / "deep" / "file.txt"
@@ -50,7 +49,7 @@ def test_files_write_overwrites_content_and_preserves_mode(tmp_path: Path) -> No
     target.write_text("old\n", encoding="utf-8")
     os.chmod(target, 0o750)
 
-    outcome, output = _write(tmp_path, "files write keep.py <<'EOF'\nnew\nEOF")
+    outcome, output = _write(tmp_path, "files write keep.py", stdin="new\n")
 
     assert outcome == _ExecutionOutcome.exited()
     assert target.read_text(encoding="utf-8") == "new\n"
@@ -59,15 +58,15 @@ def test_files_write_overwrites_content_and_preserves_mode(tmp_path: Path) -> No
 
 
 def test_files_write_new_file_uses_default_mode(tmp_path: Path) -> None:
-    outcome, _ = _write(tmp_path, "files write fresh.py <<'EOF'\nx\nEOF")
+    outcome, _ = _write(tmp_path, "files write fresh.py", stdin="x\n")
 
     target = tmp_path / "fresh.py"
     assert outcome == _ExecutionOutcome.exited()
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
 
-def test_files_write_empty_content_reports_zero_bytes(tmp_path: Path) -> None:
-    outcome, output = _write(tmp_path, "files write empty.txt <<'EOF'\nEOF")
+def test_files_write_empty_stdin_creates_empty_file(tmp_path: Path) -> None:
+    outcome, output = _write(tmp_path, "files write empty.txt", stdin="")
 
     target = tmp_path / "empty.txt"
     assert outcome == _ExecutionOutcome.exited()
@@ -75,43 +74,47 @@ def test_files_write_empty_content_reports_zero_bytes(tmp_path: Path) -> None:
     assert output.text("stdout") == f"wrote 0 bytes to {target}\n"
 
 
-def test_files_write_preserves_heredoc_content_exactly(tmp_path: Path) -> None:
-    content = '$HOME  `ls`  "quoted"\nstd::function\'s callables\n  keep   spaces  '
+def test_files_write_preserves_stdin_content_exactly(tmp_path: Path) -> None:
+    content = (
+        'EOF\nEDI\n$HOME  `ls`  "quoted"\n'
+        "std::function's callables\n  keep   spaces  "
+    )
     outcome, output = _write(
         tmp_path,
-        f"files write exact.txt <<'EOF'\n{content}\nEOF",
+        "files write exact.txt",
+        stdin=content,
     )
 
     target = tmp_path / "exact.txt"
-    written = content + "\n"
     assert outcome == _ExecutionOutcome.exited()
-    assert target.read_text(encoding="utf-8") == written
-    assert output.text("stdout") == f"wrote {len(written.encode())} bytes to {target}\n"
+    assert target.read_text(encoding="utf-8") == content
+    assert output.text("stdout") == f"wrote {len(content.encode())} bytes to {target}\n"
 
 
-@pytest.mark.parametrize(
-    "raw",
-    (
-        "files write notes.txt <<EOF\nline\nEOF",
-        "files write notes.txt <<'EOF'\nline\nEOF",
-        'files write notes.txt <<"EOF"\nline\nEOF',
-    ),
-)
-def test_files_write_accepts_all_delimiter_spellings(
-    tmp_path: Path,
-    raw: str,
-) -> None:
-    outcome, _ = _write(tmp_path, raw)
+def test_files_write_preserves_unicode_and_trailing_newline(tmp_path: Path) -> None:
+    content = "héllo 世界\n最后一行\n"
+    outcome, output = _write(tmp_path, "files write unicode.txt", stdin=content)
 
+    target = tmp_path / "unicode.txt"
     assert outcome == _ExecutionOutcome.exited()
-    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "line\n"
+    assert target.read_bytes() == content.encode("utf-8")
+    assert output.text("stdout") == f"wrote {len(content.encode())} bytes to {target}\n"
+
+
+def test_files_write_without_stdin_fails_clearly(tmp_path: Path) -> None:
+    outcome, output = _write(tmp_path, "files write missing.txt")
+
+    assert outcome.status == "failed"
+    assert "requires payload in exec.stdin" in output.text("stderr")
+    assert output.text("stdout") == ""
+    assert not (tmp_path / "missing.txt").exists()
 
 
 def test_files_write_rejects_directory_target(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.mkdir()
 
-    outcome, output = _write(tmp_path, "files write target <<'EOF'\nx\nEOF")
+    outcome, output = _write(tmp_path, "files write target", stdin="x\n")
 
     assert outcome.status == "failed"
     assert "failed to write" in output.text("stderr")
@@ -119,7 +122,7 @@ def test_files_write_rejects_directory_target(tmp_path: Path) -> None:
 
 
 def test_files_write_rejects_nul_in_path(tmp_path: Path) -> None:
-    outcome, output = _write(tmp_path, "files write bad\x00path <<'EOF'\nx\nEOF")
+    outcome, output = _write(tmp_path, "files write bad\x00path", stdin="x\n")
 
     assert outcome.status == "failed"
     assert "null" in output.text("stderr")
@@ -134,7 +137,8 @@ def test_files_write_to_unwritable_directory_fails(tmp_path: Path) -> None:
     try:
         outcome, output = _write(
             tmp_path,
-            "files write locked/data.txt <<'EOF'\nx\nEOF",
+            "files write locked/data.txt",
+            stdin="x\n",
         )
 
         assert outcome.status == "failed"
@@ -147,11 +151,12 @@ def test_files_write_to_unwritable_directory_fails(tmp_path: Path) -> None:
 def test_files_write_usage_errors_fail_without_shell(tmp_path: Path) -> None:
     commands = (
         "files write",
-        "files nonsense hello",
-        "files write f",
+        "files write f extra",
+        "files write f <<'EOF'\nline\nEOF",
+        "files write f > out.txt",
     )
     for command in commands:
-        outcome, output = _write(tmp_path, command)
+        outcome, output = _write(tmp_path, command, stdin="x\n")
         assert outcome.status == "failed"
         assert output.text("stderr") != ""
         assert output.text("stdout") == ""
@@ -171,7 +176,8 @@ def test_files_write_copies_up_in_view_lower_link(tmp_path: Path) -> None:
 
     outcome, _ = _write(
         workspace,
-        "files write .workspace/tools/calc.py <<'EOF'\nNEW = 2\nEOF",
+        "files write .workspace/tools/calc.py",
+        stdin="NEW = 2\n",
         view=view,
     )
 
@@ -186,12 +192,13 @@ def _write(
     cwd: Path,
     command: str,
     *,
+    stdin: str | None = None,
     view: _LocalCapabilityView | None = None,
 ) -> tuple[_ExecutionOutcome, _RecordedOutput]:
     output = _RecordedOutput()
     backend = _LocalBackendWorkspace(cwd, {}, view)
     execution = _FileHandler(backend.filesystem).prepare(
-        _ExecutionRequest(command=parse_shell_ast(command)),
+        _ExecutionRequest(command=parse_shell_ast(command), stdin=stdin),
         _CommandContext(workspace=str(cwd), cwd=str(cwd), environment={}),
     )
     outcome = asyncio.run(execution.run(output))

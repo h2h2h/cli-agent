@@ -282,11 +282,8 @@ def test_runtime_files_write_is_stale_at_next_request_then_converges(
                 call_id="call_1",
                 name="exec",
                 arguments={
-                    "command": (
-                        "files write .workspace/library/notes/guide.md <<'EOF'\n"
-                        "two\n"
-                        "EOF"
-                    )
+                    "command": "files write .workspace/library/notes/guide.md",
+                    "stdin": "two\n",
                 },
             ),
         ),

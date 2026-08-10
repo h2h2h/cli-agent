@@ -120,12 +120,17 @@ def test_guidance_promotes_files_commands_for_mutations(tmp_path: Path) -> None:
         "Never mutate files with Shell utilities, output redirection, "
         "or Python scripts that write files" in guidance
     )
-    assert "files write <path> <<'EOF'" in guidance
-    assert "files edit <path> <<'EDI'" in guidance
+    assert "`files write <path>`" in guidance
+    assert "`files edit <path>`" in guidance
+    assert "`stdin`" in guidance
+    assert "command: files edit <path>" in guidance
     assert '{"edits": [' in guidance
     assert "oldText" in guidance
     assert "newText" in guidance
     assert "non-overlapping regions" in guidance
+    assert "Do not use heredocs for `files write` or `files edit`" in guidance
+    assert "<<'EOF'" not in guidance
+    assert "<<'EDI'" not in guidance
     for banned in ("`tee`", "`sed -i`", "`cat >`", "`echo >`", "Python scripts"):
         assert banned in guidance
     assert "prepare Capability View paths automatically" in guidance
@@ -141,8 +146,8 @@ def test_guidance_splits_file_observation_from_mutation(tmp_path: Path) -> None:
     assert "`rg --files`" in reads
     assert "`cat file`" in reads
     assert "files write <path>" not in reads
-    assert "files write <path> <<'EOF'" in mutations
-    assert "files edit <path> <<'EDI'" in mutations
+    assert "files write <path>" in mutations
+    assert "files edit <path>" in mutations
     assert "Keep observation and mutation separate" in guidance
 
 

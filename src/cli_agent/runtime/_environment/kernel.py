@@ -109,6 +109,7 @@ class EnvironmentKernel:
             prepare=file_handler.prepare,
             parallel_safe=False,
             isolated=True,
+            consumes_stdin=True,
         )
         if registry is None:
             commands = list(_builtin_custom_commands(backend.filesystem))

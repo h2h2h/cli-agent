@@ -194,7 +194,8 @@ def test_files_command_resolves_to_custom_route_and_is_serial(
             written = _output(
                 await _exec(
                     kernel,
-                    "files write .workspace/tools/calc.py <<'EOF'\nNEW = 2\nEOF",
+                    "files write .workspace/tools/calc.py",
+                    stdin="NEW = 2\n",
                 )
             )
             assert written["status"] == "exited"
@@ -291,13 +292,17 @@ async def _exec(
     kernel: EnvironmentKernel,
     command: str,
     *,
+    stdin: str | None = None,
     wait_ms: int = 8_000,
 ) -> ToolResult:
+    arguments: dict[str, object] = {"command": command, "wait_ms": wait_ms}
+    if stdin is not None:
+        arguments["stdin"] = stdin
     return await kernel.dispatch(
         ToolCall(
             call_id=f"exec_{id(command)}",
             name="exec",
-            arguments={"command": command, "wait_ms": wait_ms},
+            arguments=arguments,
         )
     )
 

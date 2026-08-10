@@ -742,7 +742,8 @@ def test_full_runtime_runs_on_the_sandbox_backend(
             written = _output(
                 await _exec(
                     kernel,
-                    "files write shared/from-files.txt <<'EOF'\nfiles text\nEOF",
+                    "files write shared/from-files.txt",
+                    stdin="files text\n",
                 )
             )
             assert written["status"] == "exited"
@@ -933,13 +934,17 @@ async def _exec(
     kernel: EnvironmentKernel,
     command: str,
     *,
+    stdin: str | None = None,
     wait_ms: int = 8_000,
 ) -> ToolResult:
+    arguments: dict[str, object] = {"command": command, "wait_ms": wait_ms}
+    if stdin is not None:
+        arguments["stdin"] = stdin
     return await kernel.dispatch(
         ToolCall(
             call_id=f"exec_{id(command)}",
             name="exec",
-            arguments={"command": command, "wait_ms": wait_ms},
+            arguments=arguments,
         )
     )
 

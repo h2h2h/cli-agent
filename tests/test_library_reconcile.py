@@ -115,8 +115,9 @@ async def _write_library_file(
     execution = handler.prepare(
         _ExecutionRequest(
             command=parse_shell_ast(
-                f"files write .workspace/library/{logical} <<'EOF'\n{content}\nEOF"
+                f"files write .workspace/library/{logical}"
             ),
+            stdin=content,
         ),
         _CommandContext(
             workspace=str(workspace),
@@ -328,11 +329,8 @@ def test_files_edit_marks_dirty_and_transitions_to_stale(tmp_path: Path) -> None
         )
         execution = handler.prepare(
             _ExecutionRequest(
-                command=parse_shell_ast(
-                    "files edit .workspace/library/notes.md <<'EDI'\n"
-                    '{"edits": [{"oldText": "one\\n", "newText": "one two\\n"}]}\n'
-                    "EDI"
-                ),
+                command=parse_shell_ast("files edit .workspace/library/notes.md"),
+                stdin='{"edits": [{"oldText": "one\\n", "newText": "one two\\n"}]}',
             ),
             _CommandContext(
                 workspace=str(tmp_path),
@@ -373,9 +371,8 @@ def test_failed_files_write_never_marks_dirty(tmp_path: Path) -> None:
         )
         execution = handler.prepare(
             _ExecutionRequest(
-                command=parse_shell_ast(
-                    "files write blocker.txt/nested.md <<'EOF'\ncontent\nEOF"
-                ),
+                command=parse_shell_ast("files write blocker.txt/nested.md"),
+                stdin="content\n",
             ),
             _CommandContext(
                 workspace=str(tmp_path),

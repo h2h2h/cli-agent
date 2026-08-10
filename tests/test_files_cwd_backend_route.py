@@ -117,7 +117,8 @@ def test_files_write_builds_one_resolved_request(tmp_path: Path) -> None:
 
     execution = handler.prepare(
         _ExecutionRequest(
-            command=parse_shell_ast("files write notes/a.txt <<'EOF'\nline\nEOF"),
+            command=parse_shell_ast("files write notes/a.txt"),
+            stdin="line\n",
         ),
         context,
     )
@@ -143,11 +144,8 @@ def test_files_edit_builds_one_resolved_request(tmp_path: Path) -> None:
 
     execution = handler.prepare(
         _ExecutionRequest(
-            command=parse_shell_ast(
-                "files edit notes/a.txt <<'EDI'\n"
-                '{"edits": [{"oldText": "a", "newText": "b"}]}\n'
-                "EDI"
-            ),
+            command=parse_shell_ast("files edit notes/a.txt"),
+            stdin='{"edits": [{"oldText": "a", "newText": "b"}]}',
         ),
         context,
     )
@@ -174,7 +172,8 @@ def test_files_request_resolves_relative_to_backend_cwd(tmp_path: Path) -> None:
 
     execution = handler.prepare(
         _ExecutionRequest(
-            command=parse_shell_ast("files write item.txt <<'EOF'\nx\nEOF"),
+            command=parse_shell_ast("files write item.txt"),
+            stdin="x\n",
         ),
         context,
     )
@@ -286,7 +285,8 @@ def test_kernel_uses_backend_root_for_files_and_default_cd(tmp_path: Path) -> No
         try:
             written = await _exec(
                 kernel,
-                "files write note.txt <<'EOF'\ncontent\nEOF",
+                "files write note.txt",
+                stdin="content\n",
             )
             changed = await _exec(kernel, "cd")
         finally:
@@ -318,7 +318,8 @@ def test_filesystem_execution_cancel_before_run_has_no_side_effects(
     )
     execution = handler.prepare(
         _ExecutionRequest(
-            command=parse_shell_ast("files write a.txt <<'EOF'\nx\nEOF"),
+            command=parse_shell_ast("files write a.txt"),
+            stdin="x\n",
         ),
         context,
     )
@@ -343,7 +344,8 @@ def test_cd_and_files_see_shell_created_paths(tmp_path: Path) -> None:
             pwd = await _exec(kernel, "pwd")
             written = await _exec(
                 kernel,
-                "files write item.txt <<'EOF'\nreplaced\nEOF",
+                "files write item.txt",
+                stdin="replaced\n",
             )
             cat = await _exec(kernel, "cat item.txt")
         finally:
@@ -385,13 +387,17 @@ async def _exec(
     kernel: EnvironmentKernel,
     command: str,
     *,
+    stdin: str | None = None,
     wait_ms: int = 8_000,
 ) -> ToolResult:
+    arguments: dict[str, object] = {"command": command, "wait_ms": wait_ms}
+    if stdin is not None:
+        arguments["stdin"] = stdin
     return await kernel.dispatch(
         ToolCall(
             call_id=f"exec_{id(command)}",
             name="exec",
-            arguments={"command": command, "wait_ms": wait_ms},
+            arguments=arguments,
         )
     )
 

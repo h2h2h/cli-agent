@@ -45,30 +45,24 @@ def assemble_system_message(
 The Runtime currently provides these custom command forms:
 - `cd <dir>` changes the Session working directory.
 - `export KEY=VALUE` changes the Session environment. Store persistent values in `.workspace/env`.
-- `files write <path> <<'EOF' ... EOF` creates or completely replaces a file.
-- `files edit <path> <<'EDI' ... EDI` applies exact-text replacements to an existing file.
+- `files write <path>` creates or completely replaces a file; the complete contents come from the `exec` `stdin` argument.
+- `files edit <path>` applies exact-text replacements to an existing file; the edits JSON comes from the `exec` `stdin` argument.
 - `tools list` lists the available Python Tools.
 - `tools info <name>` inspects one Python Tool.
 - `tools run "<python code>"` or `tools run <<'PY' ... PY` executes Python Tool code.
 
-Run every Runtime custom command as the entire command of a standalone `exec` call. Do not combine one with a pipe, `&&`, `||`, `;`, a subshell, a prefix assignment, an extra redirect, or another command. Write `files` paths statically; quote a path when it contains spaces. Every other command runs through the ordinary Shell fallback.
+Run every Runtime custom command as the entire command of a standalone `exec` call. Do not combine one with a pipe, `&&`, `||`, `;`, a subshell, a prefix assignment, an extra redirect, or another command. Provide each Runtime command payload through the `exec` `stdin` argument, never through Shell framing. Write `files` paths statically; quote a path when it contains spaces. Every other command runs through the ordinary Shell fallback.
 
 **File mutations**
-- Always use `files write` or `files edit` to create or modify files. Never mutate files with Shell utilities, output redirection, or Python scripts that write files; prohibited forms include `tee`, `sed -i`, `cat >`, and `echo >`. The exact heredocs below are payloads for the `files` custom command and are allowed.
-- Create a file or replace its complete content with exactly this shape:
+- Always use `files write` or `files edit` to create or modify files. Never mutate files with Shell utilities, output redirection, or Python scripts that write files; prohibited forms include `tee`, `sed -i`, `cat >`, and `echo >`.
+- Create a file or replace its complete content with exactly one `exec` call: put `files write <path>` in `command` and the complete file contents in `stdin`. `stdin` may be empty to create an empty file; the contents are written byte-for-byte without Shell interpretation.
+- Modify an existing file with exactly one `exec` call: put `files edit <path>` in `command` and the edits JSON in `stdin`:
 
-      files write <path> <<'EOF'
-      <complete content>
-      EOF
-
-- Modify an existing file with exactly this shape:
-
-      files edit <path> <<'EDI'
-      {{"edits": [{{"oldText": "<exact existing text>", "newText": "<replacement text>"}}]}}
-      EDI
+      command: files edit <path>
+      stdin: {{"edits": [{{"oldText": "<exact existing text>", "newText": "<replacement text>"}}]}}
 
 - Each `oldText` must be non-empty and match exactly once, including whitespace and newlines. `newText` may be empty to delete the matched text. One `edits` array may replace several non-overlapping regions.
-- Put nothing else in the `exec` command before or after the required form. If a `files` command fails, correct its syntax or exact-text match and retry; never fall back to a prohibited Shell write. The `files` commands prepare Capability View paths automatically.
+- Do not use heredocs for `files write` or `files edit`, and do not append Shell commands before or after them; `command` carries only the standalone Runtime command and `stdin` carries its payload. If a `files` command fails, correct its syntax or exact-text match and retry; never fall back to a prohibited Shell write. The `files` commands prepare Capability View paths automatically.
 
 **Python Tools**
 - Use `tools list` to discover Python Tools and `tools info <name>` to read a Tool's full documentation before first use when its interface is not already known.

@@ -2,7 +2,9 @@
 
 The ``files`` command family is a single-module Runtime command: grammar
 facts and pure parsing live here, while the handler only builds Workspace
-Filesystem requests and formats results.
+Filesystem requests and formats results. Payloads never enter the Shell
+parser: ``files write`` and ``files edit`` read their content from the
+``exec`` ``stdin`` argument.
 """
 
 from __future__ import annotations
@@ -25,7 +27,6 @@ from cli_agent.runtime._capability.command_parser import (
     HereDocRedirect,
     ShellParseResult,
     ShellRedirect,
-    ShellWord,
     SimpleCommand,
 )
 from cli_agent.runtime._environment.handlers.base import (
@@ -40,8 +41,8 @@ from cli_agent.runtime._environment.handlers.executions import _text_execution
 _MarkDirty = Callable[[str], None]
 
 _USAGE = (
-    "Usage: files write <path> <<'EOF' ... EOF; "
-    "files edit <path> <<'EDI' {...} EDI or '<json>'"
+    "Usage: files write <path>; files edit <path>; "
+    "content or edits JSON is provided in exec stdin"
 )
 
 
@@ -53,8 +54,6 @@ class FileCommand:
     valid: bool
     validation_error: str | None = None
     path: str | None = None
-    content: str | None = None
-    edits: tuple[_FileEdit, ...] = ()
 
 
 def parse_files_command(command: ShellParseResult) -> FileCommand | None:
@@ -67,6 +66,8 @@ def parse_files_command(command: ShellParseResult) -> FileCommand | None:
     Returns:
         ``None`` when the command head is not ``files``; otherwise one
         ``FileCommand`` with either mutation facts or a usage diagnostic.
+        The payload is deliberately absent from the facts: it arrives
+        through the ``exec`` ``stdin`` argument.
     """
 
     if command.command_head != "files":
@@ -83,104 +84,70 @@ def _files_facts(command: SimpleCommand) -> FileCommand:
     subcommand = command.argv[0]
     if subcommand.value not in {"write", "edit"}:
         return _invalid(f"unknown files subcommand: {subcommand.text}")
-    if len(command.argv) < 2:
-        return _invalid(f"files {subcommand.value} requires a path")
+    operation = subcommand.value
+    if len(command.argv) != 2:
+        if len(command.argv) > 2 and command.argv[2].quote is not None:
+            return _invalid(
+                f"files {operation} payload must be provided in exec stdin; "
+                "quoted JSON arguments are no longer supported"
+            )
+        return _invalid(f"files {operation} accepts exactly one path")
     path = command.argv[1]
     if path.value is None:
         return _invalid(
-            f"files {subcommand.value} path must be statically known: {path.text}"
+            f"files {operation} path must be statically known: {path.text}"
         )
-    if subcommand.value == "write":
-        return _write_facts(path.value, command.argv[2:], command.redirects)
-    return _edit_facts(path.value, command.argv[2:], command.redirects)
+    redirect_error = _redirect_error(operation, command.redirects)
+    if redirect_error is not None:
+        return _invalid(redirect_error)
+    return FileCommand(operation=operation, valid=True, path=path.value)
 
 
-def _write_facts(
-    path: str,
-    argv_rest: tuple[ShellWord, ...],
-    redirects: tuple[ShellRedirect, ...],
-) -> FileCommand:
-    if argv_rest:
-        return _invalid("files write accepts exactly one path")
-    heredoc = _single_heredoc(redirects)
-    if heredoc is None:
-        return _invalid("files write requires exactly one <<'EOF' heredoc payload")
-    if heredoc.operator != "<<" or heredoc.delimiter.value != "EOF":
-        return _invalid(
-            f"files write heredoc must use an exact <<'EOF' delimiter "
-            f"(got {heredoc.operator}{heredoc.delimiter.text})"
+def _redirect_error(operation: str, redirects: tuple[ShellRedirect, ...]) -> str | None:
+    """Return the stable payload-source diagnostic for attached redirects."""
+
+    if not redirects:
+        return None
+    if any(isinstance(redirect, HereDocRedirect) for redirect in redirects):
+        return (
+            f"files {operation} payload must be provided in exec stdin; "
+            "heredocs are no longer supported"
         )
-    return FileCommand(
-        operation="write",
-        valid=True,
-        path=path,
-        content=heredoc.body.text,
-    )
+    return f"files {operation} does not accept redirects"
 
 
-def _edit_facts(
-    path: str,
-    argv_rest: tuple[ShellWord, ...],
-    redirects: tuple[ShellRedirect, ...],
-) -> FileCommand:
-    if len(argv_rest) > 1:
-        return _invalid("files edit accepts at most one quoted JSON payload")
-    if argv_rest:
-        if redirects:
-            return _invalid(
-                "files edit accepts either a quoted payload or a heredoc, not both"
-            )
-        payload = argv_rest[0]
-        if payload.quote is None:
-            return _invalid(f"files edit payload must be quoted JSON: {payload.text}")
-        return _edit_payload_facts(path, payload.quoted_content or "")
-    heredoc = _single_heredoc(redirects)
-    if heredoc is None:
-        return _invalid(
-            "files edit requires one <<'EDI' heredoc or a quoted '<json>' payload"
-        )
-    if heredoc.operator != "<<" or heredoc.delimiter.value != "EDI":
-        return _invalid(
-            f"files edit heredoc must use an exact <<'EDI' delimiter "
-            f"(got {heredoc.operator}{heredoc.delimiter.text})"
-        )
-    return _edit_payload_facts(path, heredoc.body.text)
+def parse_edit_payload(payload: str) -> tuple[_FileEdit, ...]:
+    """Parse one ``files edit`` payload, raising ``ValueError`` on failure.
 
+    Every rejection carries a stable message a model can correct in the
+    next call. ``newText`` must exist and be a string but may be empty to
+    delete the matched text.
+    """
 
-def _edit_payload_facts(path: str, payload: str) -> FileCommand:
     try:
         document = json.loads(payload)
     except json.JSONDecodeError as exc:
-        return _invalid(f"files edit payload is not valid JSON: {exc.msg}")
+        raise ValueError(f"files edit stdin is not valid JSON: {exc.msg}") from None
     if not isinstance(document, dict) or not isinstance(document.get("edits"), list):
-        return _invalid("files edit payload must be a JSON object with an edits array")
+        raise ValueError(
+            "files edit stdin must be a JSON object with an edits array"
+        )
     if not document["edits"]:
-        return _invalid("files edit edits array must not be empty")
+        raise ValueError("files edit edits array must not be empty")
     parsed: list[_FileEdit] = []
     for index, item in enumerate(document["edits"], start=1):
         if not isinstance(item, dict):
-            return _invalid(f"files edit edits[{index}] must be a JSON object")
+            raise ValueError(f"files edit edits[{index}] must be a JSON object")
         old_text = item.get("oldText")
         new_text = item.get("newText")
         if not isinstance(old_text, str) or not old_text:
-            return _invalid(f"files edit edits[{index}] requires a non-empty oldText")
-        if not isinstance(new_text, str) or not new_text:
-            return _invalid(f"files edit edits[{index}] requires a non-empty newText")
+            raise ValueError(
+                f"files edit edits[{index}] requires a non-empty oldText"
+            )
+        if not isinstance(new_text, str):
+            raise ValueError(f"files edit edits[{index}] requires a string newText")
         parsed.append(_FileEdit(old_text=old_text, new_text=new_text))
-    return FileCommand(operation="edit", valid=True, path=path, edits=tuple(parsed))
-
-
-def _single_heredoc(
-    redirects: tuple[ShellRedirect, ...],
-) -> HereDocRedirect | None:
-    """Return the single heredoc redirect, or None for any other shape."""
-
-    if len(redirects) != 1:
-        return None
-    redirect = redirects[0]
-    if not isinstance(redirect, HereDocRedirect):
-        return None
-    return redirect
+    return tuple(parsed)
 
 
 def _invalid(reason: str) -> FileCommand:
@@ -219,27 +186,38 @@ class _FileHandler:
                 "Workspace filesystem is unavailable\n",
                 success=False,
             )
-        if facts.operation == "write" and facts.path is not None:
+        if facts.operation not in {"write", "edit"} or facts.path is None:
+            return _text_execution("Invalid files command\n", success=False)
+        stdin = request.stdin
+        if stdin is None:
+            return _text_execution(
+                f"`files {facts.operation}` requires "
+                "payload in exec.stdin\n",
+                success=False,
+            )
+        if facts.operation == "write":
             return _FilesystemExecution(
                 _write_operation(
                     filesystem,
                     facts.path,
-                    facts.content or "",
+                    stdin,
                     context.cwd,
                     self._mark_dirty,
                 )
             )
-        if facts.operation == "edit" and facts.path is not None:
-            return _FilesystemExecution(
-                _edit_operation(
-                    filesystem,
-                    facts.path,
-                    facts.edits,
-                    context.cwd,
-                    self._mark_dirty,
-                )
+        try:
+            edits = parse_edit_payload(stdin)
+        except ValueError as exc:
+            return _text_execution(f"{exc}\n", success=False)
+        return _FilesystemExecution(
+            _edit_operation(
+                filesystem,
+                facts.path,
+                edits,
+                context.cwd,
+                self._mark_dirty,
             )
-        return _text_execution("Invalid files command\n", success=False)
+        )
 
 
 def _write_operation(

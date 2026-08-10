@@ -245,7 +245,7 @@ def test_runtime_command_without_stdin_consumer_fails_clearly(
     async def scenario() -> None:
         kernel = EnvironmentKernel(tmp_path)
         try:
-            for command in ("cd", "export A=1", "files write a.txt"):
+            for command in ("cd", "export A=1"):
                 result = await kernel.dispatch(
                     ToolCall(
                         call_id=f"stdin_{command.split()[0]}",

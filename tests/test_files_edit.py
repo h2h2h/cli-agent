@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -81,9 +82,8 @@ def test_files_edit_replaces_a_single_block(tmp_path: Path) -> None:
 
     outcome, output = _run(
         tmp_path,
-        "files edit main.txt <<'EDI'\n"
-        '{"edits": [{"oldText": "world", "newText": "there"}]}\n'
-        "EDI",
+        "files edit main.txt",
+        payload={"edits": [{"oldText": "world", "newText": "there"}]},
     )
 
     assert outcome == _ExecutionOutcome.exited()
@@ -98,10 +98,13 @@ def test_files_edit_replaces_multiple_blocks_in_one_call(tmp_path: Path) -> None
 
     outcome, output = _run(
         tmp_path,
-        "files edit main.txt <<'EDI'\n"
-        '{"edits": [{"oldText": "alpha", "newText": "1"}, '
-        '{"oldText": "gamma", "newText": "3"}]}\n'
-        "EDI",
+        "files edit main.txt",
+        payload={
+            "edits": [
+                {"oldText": "alpha", "newText": "1"},
+                {"oldText": "gamma", "newText": "3"},
+            ]
+        },
     )
 
     assert outcome == _ExecutionOutcome.exited()
@@ -109,17 +112,19 @@ def test_files_edit_replaces_multiple_blocks_in_one_call(tmp_path: Path) -> None
     assert output.text("stdout") == f"replaced 2 block(s) in {target}\n"
 
 
-def test_files_edit_accepts_quoted_payload_form(tmp_path: Path) -> None:
+def test_files_edit_empty_new_text_deletes_matched_block(tmp_path: Path) -> None:
     target = tmp_path / "main.txt"
-    target.write_text("abc\n", encoding="utf-8")
+    target.write_text("keep\nremove me\nkeep\n", encoding="utf-8")
 
-    outcome, _ = _run(
+    outcome, output = _run(
         tmp_path,
-        'files edit main.txt \'{"edits": [{"oldText": "a", "newText": "x"}]}\'',
+        "files edit main.txt",
+        payload={"edits": [{"oldText": "remove me\n", "newText": ""}]},
     )
 
     assert outcome == _ExecutionOutcome.exited()
-    assert target.read_text(encoding="utf-8") == "xbc\n"
+    assert target.read_text(encoding="utf-8") == "keep\nkeep\n"
+    assert output.text("stdout") == f"replaced 1 block(s) in {target}\n"
 
 
 def test_files_edit_preserves_crlf_line_endings(tmp_path: Path) -> None:
@@ -128,9 +133,8 @@ def test_files_edit_preserves_crlf_line_endings(tmp_path: Path) -> None:
 
     outcome, _ = _run(
         tmp_path,
-        "files edit windows.txt <<'EDI'\n"
-        '{"edits": [{"oldText": "line2", "newText": "line3"}]}\n'
-        "EDI",
+        "files edit windows.txt",
+        payload={"edits": [{"oldText": "line2", "newText": "line3"}]},
     )
 
     assert outcome == _ExecutionOutcome.exited()
@@ -143,9 +147,8 @@ def test_files_edit_preserves_utf8_bom(tmp_path: Path) -> None:
 
     outcome, _ = _run(
         tmp_path,
-        "files edit bom.txt <<'EDI'\n"
-        '{"edits": [{"oldText": "content", "newText": "changed"}]}\n'
-        "EDI",
+        "files edit bom.txt",
+        payload={"edits": [{"oldText": "content", "newText": "changed"}]},
     )
 
     assert outcome == _ExecutionOutcome.exited()
@@ -157,26 +160,31 @@ def test_files_edit_preserves_utf8_bom(tmp_path: Path) -> None:
     (
         (
             "hello",
-            '{"edits": [{"oldText": "goodbye", "newText": "x"}]}',
+            {"edits": [{"oldText": "goodbye", "newText": "x"}]},
             "Could not find",
         ),
         (
             "abab",
-            '{"edits": [{"oldText": "ab", "newText": "x"}]}',
+            {"edits": [{"oldText": "ab", "newText": "x"}]},
             "Found 2 occurrences",
         ),
         (
             "abcdef",
-            '{"edits": [{"oldText": "ab", "newText": "x"}, {"oldText": "bc", "newText": "y"}]}',
+            {
+                "edits": [
+                    {"oldText": "ab", "newText": "x"},
+                    {"oldText": "bc", "newText": "y"},
+                ]
+            },
             "overlap",
         ),
-        ("x", '{"edits": [{"oldText": "x", "newText": "x"}]}', "No changes made"),
+        ("x", {"edits": [{"oldText": "x", "newText": "x"}]}, "No changes made"),
     ),
 )
 def test_files_edit_rejections_leave_file_untouched(
     tmp_path: Path,
     initial: str,
-    payload: str,
+    payload: dict[str, object],
     message: str,
 ) -> None:
     target = tmp_path / "main.txt"
@@ -184,7 +192,8 @@ def test_files_edit_rejections_leave_file_untouched(
 
     outcome, output = _run(
         tmp_path,
-        f"files edit main.txt <<'EDI'\n{payload}\nEDI",
+        "files edit main.txt",
+        payload=payload,
     )
 
     assert outcome.status == "failed"
@@ -199,9 +208,8 @@ def test_files_edit_rejects_invalid_utf8_file(tmp_path: Path) -> None:
 
     outcome, output = _run(
         tmp_path,
-        "files edit binary.bin <<'EDI'\n"
-        '{"edits": [{"oldText": "x", "newText": "y"}]}\n'
-        "EDI",
+        "files edit binary.bin",
+        payload={"edits": [{"oldText": "x", "newText": "y"}]},
     )
 
     assert outcome.status == "failed"
@@ -212,29 +220,45 @@ def test_files_edit_rejects_invalid_utf8_file(tmp_path: Path) -> None:
 def test_files_edit_rejects_missing_file(tmp_path: Path) -> None:
     outcome, output = _run(
         tmp_path,
-        "files edit absent.txt <<'EDI'\n"
-        '{"edits": [{"oldText": "x", "newText": "y"}]}\n'
-        "EDI",
+        "files edit absent.txt",
+        payload={"edits": [{"oldText": "x", "newText": "y"}]},
     )
 
     assert outcome.status == "failed"
     assert "No such file" in output.text("stderr")
 
 
+def test_files_edit_without_stdin_fails_clearly(tmp_path: Path) -> None:
+    outcome, output = _run(tmp_path, "files edit absent.txt")
+
+    assert outcome.status == "failed"
+    assert "requires payload in exec.stdin" in output.text("stderr")
+    assert output.text("stdout") == ""
+
+
 @pytest.mark.parametrize(
-    "payload",
+    "stdin",
     (
         "not json",
+        "[]",
+        '{"edits": "empty"}',
         '{"edits": []}',
+        '{"edits": [{}]}',
+        '{"edits": [{"oldText": "", "newText": "b"}]}',
+        '{"edits": [{"oldText": "a"}]}',
+        '{"edits": [{"oldText": "a", "newText": 7}]}',
+        '{"edits": ["x"]}',
+        '{"edits": [{"oldText": "a", "newText": "b"}, {}]}',
     ),
 )
-def test_files_edit_invalid_payload_is_a_usage_error(
+def test_files_edit_invalid_stdin_payload_is_a_usage_error(
     tmp_path: Path,
-    payload: str,
+    stdin: str,
 ) -> None:
     outcome, output = _run(
         tmp_path,
-        f"files edit main.txt <<'EDI'\n{payload}\nEDI",
+        "files edit main.txt",
+        stdin=stdin,
     )
 
     assert outcome.status == "failed"
@@ -255,9 +279,8 @@ def test_files_edit_copies_up_in_view_lower_link(tmp_path: Path) -> None:
 
     outcome, _ = _run(
         workspace,
-        "files edit .workspace/tools/calc.py <<'EDI'\n"
-        '{"edits": [{"oldText": "VALUE = 1", "newText": "VALUE = 2"}]}\n'
-        "EDI",
+        "files edit .workspace/tools/calc.py",
+        payload={"edits": [{"oldText": "VALUE = 1", "newText": "VALUE = 2"}]},
         view=view,
     )
 
@@ -272,12 +295,16 @@ def _run(
     cwd: Path,
     command: str,
     *,
+    payload: dict[str, object] | None = None,
+    stdin: str | None = None,
     view: _LocalCapabilityView | None = None,
 ) -> tuple[_ExecutionOutcome, _RecordedOutput]:
+    if payload is not None:
+        stdin = json.dumps(payload)
     output = _RecordedOutput()
     backend = _LocalBackendWorkspace(cwd, {}, view)
     execution = _FileHandler(backend.filesystem).prepare(
-        _ExecutionRequest(command=parse_shell_ast(command)),
+        _ExecutionRequest(command=parse_shell_ast(command), stdin=stdin),
         _CommandContext(workspace=str(cwd), cwd=str(cwd), environment={}),
     )
     outcome = asyncio.run(execution.run(output))

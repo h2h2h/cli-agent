@@ -32,7 +32,11 @@ def test_files_write_execution_snapshot_is_fully_observable(
         kernel = EnvironmentKernel(tmp_path)
         try:
             snapshot = _output(
-                await _exec(kernel, "files write hello.txt <<'EOF'\nline1\nline2\nEOF")
+                await _exec(
+                    kernel,
+                    "files write hello.txt",
+                    stdin="line1\nline2\n",
+                )
             )
 
             assert snapshot["status"] == "exited"
@@ -60,9 +64,8 @@ def test_files_edit_change_is_visible_in_git_diff(tmp_path: Path) -> None:
             edited = _output(
                 await _exec(
                     kernel,
-                    "files edit notes.txt <<'EDI'\n"
-                    '{"edits": [{"oldText": "line1", "newText": "line2"}]}\n'
-                    "EDI",
+                    "files edit notes.txt",
+                    stdin='{"edits": [{"oldText": "line1", "newText": "line2"}]}',
                 )
             )
             assert edited["status"] == "exited"
@@ -101,7 +104,8 @@ def test_files_write_in_view_under_policy_never_pierces_repertoire(
             written = _output(
                 await _exec(
                     kernel,
-                    "files write .workspace/tools/calc.py <<'EOF'\nNEW = 2\nEOF",
+                    "files write .workspace/tools/calc.py",
+                    stdin="NEW = 2\n",
                 )
             )
             assert written["status"] == "exited"
@@ -121,7 +125,8 @@ def test_files_write_cancelled_before_run_creates_nothing(tmp_path: Path) -> Non
     async def scenario() -> None:
         execution = _FileHandler().prepare(
             _ExecutionRequest(
-                command=parse_shell_ast("files write partial.txt <<'EOF'\ncontent\nEOF"),
+                command=parse_shell_ast("files write partial.txt"),
+                stdin="content\n",
             ),
             _CommandContext(
                 workspace=str(tmp_path),
@@ -150,9 +155,8 @@ def test_files_edit_rejection_leaves_file_untouched_through_kernel(
             result = _output(
                 await _exec(
                     kernel,
-                    "files edit notes.txt <<'EDI'\n"
-                    '{"edits": [{"oldText": "ab", "newText": "x"}]}\n'
-                    "EDI",
+                    "files edit notes.txt",
+                    stdin='{"edits": [{"oldText": "ab", "newText": "x"}]}',
                 )
             )
             assert result["status"] == "failed"
@@ -163,6 +167,39 @@ def test_files_edit_rejection_leaves_file_untouched_through_kernel(
     asyncio.run(scenario())
 
     assert target.read_text(encoding="utf-8") == "abab\n"
+
+
+def test_files_write_without_stdin_fails_through_kernel(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        kernel = EnvironmentKernel(tmp_path)
+        try:
+            result = _output(await _exec(kernel, "files write missing.txt"))
+            assert result["status"] == "failed"
+            assert "requires payload in exec.stdin" in _stream_text(result, "stderr")
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+    assert not (tmp_path / "missing.txt").exists()
+
+
+def test_files_write_content_may_contain_heredoc_markers(tmp_path: Path) -> None:
+    content = "hello\nEOF\nworld\nEDI\n"
+
+    async def scenario() -> None:
+        kernel = EnvironmentKernel(tmp_path)
+        try:
+            written = _output(
+                await _exec(kernel, "files write data.txt", stdin=content)
+            )
+            assert written["status"] == "exited"
+        finally:
+            await kernel.close()
+
+    asyncio.run(scenario())
+
+    assert (tmp_path / "data.txt").read_text(encoding="utf-8") == content
 
 
 def test_files_command_waits_behind_serial_barrier(tmp_path: Path) -> None:
@@ -188,7 +225,8 @@ def test_files_command_waits_behind_serial_barrier(tmp_path: Path) -> None:
             queued = _output(
                 await _exec(
                     kernel,
-                    "files write behind.txt <<'EOF'\nx\nEOF",
+                    "files write behind.txt",
+                    stdin="x\n",
                     wait_ms=0,
                 )
             )
@@ -241,13 +279,17 @@ async def _exec(
     kernel: EnvironmentKernel,
     command: str,
     *,
+    stdin: str | None = None,
     wait_ms: int = 8_000,
 ) -> ToolResult:
+    arguments: dict[str, object] = {"command": command, "wait_ms": wait_ms}
+    if stdin is not None:
+        arguments["stdin"] = stdin
     return await kernel.dispatch(
         ToolCall(
             call_id=f"exec_{id(command)}",
             name="exec",
-            arguments={"command": command, "wait_ms": wait_ms},
+            arguments=arguments,
         )
     )
 
