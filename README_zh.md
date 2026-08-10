@@ -106,8 +106,6 @@ direnv allow
 cli-agent
 ```
 
-TTY 输入框使用 Enter 提交、Ctrl+J 换行。管道和重定向输入仍使用逐行模式。
-
 一次性运行一个任务：
 
 ```bash
