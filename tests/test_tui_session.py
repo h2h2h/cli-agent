@@ -12,6 +12,8 @@ from prompt_toolkit.output import DummyOutput
 import cli_agent.tui.session as session_module
 from cli_agent.tui import TuiSession
 
+_CTRL_J = "\n"
+
 
 @pytest.fixture
 def pipe_session(monkeypatch):
@@ -38,11 +40,11 @@ def test_public_api_exports_only_tui_session() -> None:
     assert tui.TuiSession is TuiSession
 
 
-def test_enter_and_shift_enter_edit_multiline_text(pipe_session) -> None:
+def test_enter_and_ctrl_j_edit_multiline_text(pipe_session) -> None:
     session, input_stream = pipe_session
 
     async def scenario() -> str | None:
-        input_stream.send_text("first\x1b[27;2;13~second\r")
+        input_stream.send_text(f"first{_CTRL_J}second\r")
         return await session.read_text("task> ")
 
     assert asyncio.run(scenario()) == "first\nsecond"

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from policy_fakes import _AskExecutablePolicy
 
+import cli_agent.runner as runner_module
 from cli_agent.config import CliConfig
 from cli_agent.presentation import render_diagnostic, render_event
 from cli_agent.runner import run_agent
@@ -402,11 +403,36 @@ def test_reference_cli_resolves_ask_interaction_once(
     provider.assert_exhausted()
 
 
-def test_interactive_terminal_prompts_until_quit(tmp_path: Path) -> None:
+def test_interactive_terminal_prompts_until_quit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     class TerminalInput(StringIO):
         def isatty(self) -> bool:
             return True
 
+    class FakeTuiSession:
+        instances: list["FakeTuiSession"] = []
+
+        def __init__(self, *, stdin, stderr) -> None:
+            del stdin, stderr
+            self.read_prompts: list[str] = []
+            self.closed = False
+            self._responses = iter(("", ":q"))
+            self.instances.append(self)
+
+        async def read_text(self, prompt: str) -> str:
+            self.read_prompts.append(prompt)
+            return next(self._responses)
+
+        async def confirm(self, prompt: str) -> bool:
+            del prompt
+            raise AssertionError("confirmation was not expected")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(runner_module, "TuiSession", FakeTuiSession)
     provider = ScriptedModelProvider(script=())
     stdout = StringIO()
     stderr = _TerminalOutput()
@@ -423,10 +449,104 @@ def test_interactive_terminal_prompts_until_quit(tmp_path: Path) -> None:
 
     assert exit_code == 0
     assert stdout.getvalue() == ""
-    assert stderr.getvalue() == (
-        "\033[1;36mcli-agent> \033[0m\033[1;36mcli-agent> \033[0m"
-    )
+    assert stderr.getvalue() == ""
+    tui_session = FakeTuiSession.instances[0]
+    assert tui_session.read_prompts == ["cli-agent> ", "cli-agent> "]
+    assert tui_session.closed is True
     assert provider.requests == ()
+    provider.assert_exhausted()
+
+
+def test_tty_session_reuses_one_input_session_for_task_and_confirmation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class TtyInput(StringIO):
+        def isatty(self) -> bool:
+            return True
+
+        def readline(self, *args: object, **kwargs: object) -> str:
+            raise AssertionError("TTY input must be owned by TuiSession")
+
+    class FakeTuiSession:
+        instances: list["FakeTuiSession"] = []
+
+        def __init__(self, *, stdin, stderr) -> None:
+            del stdin, stderr
+            self.read_prompts: list[str] = []
+            self.confirm_prompts: list[str] = []
+            self.closed = False
+            self._responses = iter(("Run task", ":q"))
+            self.instances.append(self)
+
+        async def read_text(self, prompt: str) -> str:
+            self.read_prompts.append(prompt)
+            return next(self._responses)
+
+        async def confirm(self, prompt: str) -> bool:
+            self.confirm_prompts.append(prompt)
+            return True
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(runner_module, "TuiSession", FakeTuiSession)
+
+    proof = tmp_path / "approval-proof.txt"
+    proof.write_text("preserved", encoding="utf-8")
+    command = "rm approval-proof.txt"
+    call = ToolCall(
+        call_id="review_rm_tty",
+        name="exec",
+        arguments={"command": command},
+    )
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                ToolCallReady(call=call),
+                ModelCompletion(
+                    message=AssistantMessage(content=(call,)),
+                    finish_reason="tool_calls",
+                ),
+            ),
+            (
+                TextDelta(text="Reviewed."),
+                ModelCompletion(
+                    message=AssistantMessage.text("Reviewed."),
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+    stdout = StringIO()
+    stderr = _TerminalOutput()
+
+    exit_code = asyncio.run(
+        run_agent(
+            _config(tmp_path, task=None),
+            provider,
+            execution_policy=_AskExecutablePolicy(
+                frozenset({"rm"}),
+                rule_id="test.ask-rm-tty",
+                reason="direct invocation of 'rm' requires Host approval",
+            ),
+            stdin=TtyInput(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+    assert exit_code == 0
+    assert proof.exists() is False
+    assert stdout.getvalue() == "Reviewed.\n"
+    assert "cli-agent> " not in stderr.getvalue()
+    assert "[interaction] direct invocation of 'rm' requires Host approval\n" in (
+        stderr.getvalue()
+    )
+    tui_session = FakeTuiSession.instances[0]
+    assert tui_session.read_prompts == ["cli-agent> ", "cli-agent> "]
+    assert tui_session.confirm_prompts == ["Allow once? [y/N] "]
+    assert tui_session.closed is True
     provider.assert_exhausted()
 
 

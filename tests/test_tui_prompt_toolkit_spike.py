@@ -26,7 +26,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput, create_output
 
-SHIFT_ENTER = "\x1b[27;2;13~"
+CTRL_J = "\n"
 _PROMPT = "spike> "
 _PROMPT_MARKER = b"spike>"
 _PTY_TIMEOUT = 5.0
@@ -35,13 +35,13 @@ _PTY_TIMEOUT = 5.0
 def _key_bindings(*, raise_on_exclamation: bool = False) -> KeyBindings:
     bindings = KeyBindings()
 
+    @bindings.add(Keys.ControlJ)
+    def _insert_newline(event) -> None:
+        event.current_buffer.insert_text("\n")
+
     @bindings.add(Keys.ControlM)
-    def _accept_or_insert_newline(event) -> None:
-        key_press = event.key_sequence[-1]
-        if key_press.data == SHIFT_ENTER:
-            event.current_buffer.insert_text("\n")
-        else:
-            event.current_buffer.validate_and_handle()
+    def _accept_input(event) -> None:
+        event.current_buffer.validate_and_handle()
 
     @bindings.add(Keys.ControlC)
     def _clear_or_interrupt(event) -> None:
@@ -116,8 +116,8 @@ def test_prompt_async_does_not_block_the_event_loop() -> None:
     assert ticks == 3
 
 
-def test_shift_enter_is_distinguishable_from_enter() -> None:
-    result = asyncio.run(_prompt_from_pipe(f"first{SHIFT_ENTER}second\r"))
+def test_ctrl_j_is_distinguishable_from_enter() -> None:
+    result = asyncio.run(_prompt_from_pipe(f"first{CTRL_J}second\r"))
 
     assert result == "first\nsecond"
 
@@ -162,7 +162,7 @@ def test_ctrl_d_on_empty_input_raises_eof() -> None:
     ("input_data", "expected_result", "expected_error"),
     (
         (b"task\r", "task", None),
-        (f"first{SHIFT_ENTER}second\r".encode(), "first\nsecond", None),
+        (f"first{CTRL_J}second\r".encode(), "first\nsecond", None),
         (b"\x04", None, "EOFError"),
         (b"\x03", None, "KeyboardInterrupt"),
         (b"!", None, "RuntimeError"),

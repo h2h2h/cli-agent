@@ -110,6 +110,9 @@ conversation; exit with `:q`, EOF, or `Ctrl+C`:
 cli-agent
 ```
 
+The TTY input box uses Enter to submit and Ctrl+J to insert a newline. Piped
+and redirected input keeps line-based mode.
+
 Run a task in one turn:
 
 ```bash
