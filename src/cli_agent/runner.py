@@ -7,7 +7,12 @@ from typing import TextIO
 from uuid import uuid4
 
 from cli_agent.config import CliConfig, build_context_policy
-from cli_agent.presentation import render_diagnostic, render_event, render_prompt
+from cli_agent.presentation import (
+    render_diagnostic,
+    render_event,
+    render_prompt,
+    render_session_id,
+)
 from cli_agent.runtime import (
     AgentRuntime,
     ExecutionPolicy,
@@ -95,6 +100,7 @@ async def run_agent(
     finally:
         if tui_session is not None:
             await tui_session.close()
+        render_session_id(session_id, stderr=stderr)
 
 
 async def _run_turn(

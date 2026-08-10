@@ -21,6 +21,13 @@ def render_prompt(*, stderr: TextIO) -> None:
     stderr.flush()
 
 
+def render_session_id(session_id: str, *, stderr: TextIO) -> None:
+    """Render the current Session identifier when the CLI exits."""
+
+    text = f"[session] {session_id}"
+    print(_styled(text, "\033[2;36m", stream=stderr), file=stderr, flush=True)
+
+
 def render_diagnostic(
     diagnostic: RuntimeDiagnostic,
     *,

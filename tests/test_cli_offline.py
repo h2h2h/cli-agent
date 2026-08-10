@@ -1,5 +1,6 @@
 import ast
 import json
+import re
 import shlex
 import socket
 import sys
@@ -152,6 +153,7 @@ def test_proves_cli_agent_offline_through_real_provider_adapter(
         return build_provider(config, transport=transport)
 
     lifecycle: list[str] = []
+    session_ids: list[str] = []
     original_close_session = AgentRuntime.close_session
     original_close = AgentRuntime.close
 
@@ -160,6 +162,7 @@ def test_proves_cli_agent_offline_through_real_provider_adapter(
         session_id: str,
     ) -> None:
         lifecycle.append("session")
+        session_ids.append(session_id)
         await original_close_session(runtime, session_id)
 
     async def tracking_close(runtime: AgentRuntime) -> None:
@@ -189,6 +192,7 @@ def test_proves_cli_agent_offline_through_real_provider_adapter(
     assert captured.err == (
         f"[tool] exec: {command}\n"
         "[completion] reason=stop usage=input:35,output:7,total:42\n"
+        f"[session] {session_ids[0]}\n"
     )
     assert "offline-placeholder-key" not in captured.out
     assert "offline-placeholder-key" not in captured.err
@@ -306,7 +310,13 @@ def test_proves_interactive_history_offline_through_real_provider_adapter(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.out == "First response\nSecond response\n"
-    assert captured.err == ("[completion] reason=stop\n[completion] reason=stop\n")
+    assert captured.err.startswith(
+        "[completion] reason=stop\n[completion] reason=stop\n"
+    )
+    session_line = captured.err.removeprefix(
+        "[completion] reason=stop\n[completion] reason=stop\n"
+    )
+    assert re.fullmatch(r"\[session\] [0-9a-f]{32}\n", session_line)
     assert len(requests) == 2
 
     first_payload, second_payload = (

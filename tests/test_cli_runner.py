@@ -74,6 +74,7 @@ def test_runs_and_presents_one_agent_turn(
     stdout = StringIO()
     stderr = StringIO()
     lifecycle: list[str] = []
+    session_ids: list[str] = []
     original_close_session = AgentRuntime.close_session
     original_close = AgentRuntime.close
 
@@ -82,6 +83,7 @@ def test_runs_and_presents_one_agent_turn(
         session_id: str,
     ) -> None:
         lifecycle.append("session")
+        session_ids.append(session_id)
         await original_close_session(runtime, session_id)
 
     async def tracking_close(runtime: AgentRuntime) -> None:
@@ -106,6 +108,7 @@ def test_runs_and_presents_one_agent_turn(
     assert stderr.getvalue() == (
         f"[tool] exec: {call.arguments['command']}\n"
         "[completion] reason=stop usage=input:12,output:3,total:15\n"
+        f"[session] {session_ids[0]}\n"
     )
     assert lifecycle == ["session", "runtime"]
 
@@ -228,10 +231,12 @@ def test_interactive_input_does_not_block_library_summaries(tmp_path: Path) -> N
 
 def test_returns_failure_when_model_stream_has_no_completion(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     provider = ScriptedModelProvider(
         script=((TextDelta(text="Partial response"),),),
     )
+    sessions = _install_session_capture(monkeypatch)
     stdout = StringIO()
     stderr = StringIO()
 
@@ -247,7 +252,10 @@ def test_returns_failure_when_model_stream_has_no_completion(
 
     assert exit_code == 1
     assert stdout.getvalue() == "Partial response"
-    assert stderr.getvalue() == ("cli-agent: model stream ended without a completion\n")
+    assert stderr.getvalue() == (
+        "cli-agent: model stream ended without a completion\n"
+        f"[session] {sessions[0]}\n"
+    )
     provider.assert_exhausted()
 
 
@@ -280,6 +288,7 @@ def test_runs_multiple_interactive_turns_in_one_session(
     stdout = StringIO()
     stderr = StringIO()
     lifecycle: list[str] = []
+    session_ids: list[str] = []
     original_close_session = AgentRuntime.close_session
     original_close = AgentRuntime.close
 
@@ -288,6 +297,7 @@ def test_runs_multiple_interactive_turns_in_one_session(
         session_id: str,
     ) -> None:
         lifecycle.append("session")
+        session_ids.append(session_id)
         await original_close_session(runtime, session_id)
 
     async def tracking_close(runtime: AgentRuntime) -> None:
@@ -309,7 +319,11 @@ def test_runs_multiple_interactive_turns_in_one_session(
 
     assert exit_code == 0
     assert stdout.getvalue() == "First response\nSecond response\n"
-    assert stderr.getvalue() == ("[completion] reason=stop\n[completion] reason=stop\n")
+    assert stderr.getvalue() == (
+        "[completion] reason=stop\n"
+        "[completion] reason=stop\n"
+        f"[session] {session_ids[0]}\n"
+    )
     assert lifecycle == ["session", "runtime"]
 
     first_request, second_request = provider.requests
@@ -334,6 +348,7 @@ def test_runs_multiple_interactive_turns_in_one_session(
 )
 def test_reference_cli_resolves_ask_interaction_once(
     tmp_path: Path,
+    monkeypatch,
     interaction_input: str,
     expected_exists: bool,
     expected_error: str | None,
@@ -364,6 +379,7 @@ def test_reference_cli_resolves_ask_interaction_once(
         )
     )
     stderr = StringIO()
+    sessions = _install_session_capture(monkeypatch)
 
     exit_code = asyncio.run(
         run_agent(
@@ -388,6 +404,7 @@ def test_reference_cli_resolves_ask_interaction_once(
         f"command: {command}\n"
         "Allow once? [y/N] \n"
         "[completion] reason=stop\n"
+        f"[session] {sessions[0]}\n"
     )
     result_message = provider.requests[1].messages[-1]
     assert isinstance(result_message, ToolResultMessage)
@@ -434,6 +451,7 @@ def test_interactive_terminal_prompts_until_quit(
 
     monkeypatch.setattr(runner_module, "TuiSession", FakeTuiSession)
     provider = ScriptedModelProvider(script=())
+    sessions = _install_session_capture(monkeypatch)
     stdout = StringIO()
     stderr = _TerminalOutput()
 
@@ -449,7 +467,9 @@ def test_interactive_terminal_prompts_until_quit(
 
     assert exit_code == 0
     assert stdout.getvalue() == ""
-    assert stderr.getvalue() == ""
+    assert stderr.getvalue() == (
+        f"\033[2;36m[session] {sessions[0]}\033[0m\n"
+    )
     tui_session = FakeTuiSession.instances[0]
     assert tui_session.read_prompts == ["cli-agent> ", "cli-agent> "]
     assert tui_session.closed is True
@@ -713,6 +733,21 @@ def test_renderer_presents_context_diagnostics_without_detail() -> None:
 class _TerminalOutput(StringIO):
     def isatty(self) -> bool:
         return True
+
+
+def _install_session_capture(monkeypatch) -> list[str]:
+    sessions: list[str] = []
+    original_close_session = AgentRuntime.close_session
+
+    async def tracking_close_session(
+        runtime: AgentRuntime,
+        session_id: str,
+    ) -> None:
+        sessions.append(session_id)
+        await original_close_session(runtime, session_id)
+
+    monkeypatch.setattr(AgentRuntime, "close_session", tracking_close_session)
+    return sessions
 
 
 def _config(
