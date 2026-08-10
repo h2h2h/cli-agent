@@ -19,6 +19,7 @@ from cli_agent.runtime._resources import (
     _reconcile_runtime_resources,
     _RuntimeResources,
 )
+from cli_agent.runtime._session_history import serialize_system_prompt
 from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import ModelEvent, ModelProvider, UserMessage
@@ -243,6 +244,11 @@ class AgentRuntime:
                 tool_catalog=self._resources.tool_catalog,
                 skill_catalog=self._resources.skill_catalog,
             )
+            self._resources.session_history.begin_session(
+                session_id,
+                str(self._resources.workspace),
+                serialize_system_prompt(system),
+            )
             kernel = self._new_kernel(session_id)
             try:
                 loop = AgentLoop(
@@ -252,6 +258,11 @@ class AgentRuntime:
                     context_policy=self._context_policy,
                     session_id=session_id,
                     on_diagnostic=self._on_diagnostic,
+                    on_append=(
+                        lambda message: self._resources.session_history.append(
+                            session_id, message
+                        )
+                    ),
                 )
             except BaseException:
                 await kernel.close()
@@ -285,6 +296,7 @@ class AgentRuntime:
     async def close_session(self, session_id: str) -> None:
         """Close and forget one Agent Session idempotently."""
 
+        self._resources.session_history.close_session(session_id)
         session = self._sessions.pop(session_id, None)
         if session is not None:
             await self._close_session_state(session)

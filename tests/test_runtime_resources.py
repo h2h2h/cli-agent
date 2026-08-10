@@ -165,6 +165,16 @@ def test_reconcile_runs_steps_in_documented_order(
             del database
             order.append("summary_cache")
 
+    class _FakeSessionHistory:
+        def __init__(
+            self,
+            database: object,
+            *,
+            on_diagnostic: object = None,
+        ) -> None:
+            del database, on_diagnostic
+            order.append("session_history")
+
     class _FakeLibraryCatalog:
         @staticmethod
         async def reconcile(
@@ -198,6 +208,7 @@ def test_reconcile_runs_steps_in_documented_order(
     monkeypatch.setattr(resources_module, "_LocalBackend", _FakeLocalBackend)
     monkeypatch.setattr(resources_module, "_StateDatabase", _FakeStateDatabase)
     monkeypatch.setattr(resources_module, "_SummaryCache", _FakeSummaryCache)
+    monkeypatch.setattr(resources_module, "_SessionHistory", _FakeSessionHistory)
     monkeypatch.setattr(resources_module, "_MCPCatalog", _FakeMCPCatalog)
     monkeypatch.setattr(resources_module, "_ToolCatalog", _FakeToolCatalog)
     monkeypatch.setattr(resources_module, "_SkillCatalog", _FakeSkillCatalog)
@@ -216,6 +227,7 @@ def test_reconcile_runs_steps_in_documented_order(
             "backend_open",
             "state_database",
             "summary_cache",
+            "session_history",
             "mcp",
             "tool_catalog",
             "tool_runtime",
@@ -250,6 +262,7 @@ def test_mcp_projection_result_is_not_retained_in_aggregate(
             "tool_catalog",
             "skill_catalog",
             "library_catalog",
+            "session_history",
         }
 
     asyncio.run(scenario())
@@ -410,6 +423,16 @@ class _NoopSummaryCache:
         del database
 
 
+class _NoopSessionHistory:
+    def __init__(
+        self,
+        database: object,
+        *,
+        on_diagnostic: object = None,
+    ) -> None:
+        del database, on_diagnostic
+
+
 class _NoopMCPCatalog:
     @staticmethod
     async def reconcile(
@@ -461,6 +484,7 @@ def _install_noop_reconcile_fakes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(resources_module, "_LocalBackend", _TrackingLocalBackend)
     monkeypatch.setattr(resources_module, "_StateDatabase", _TrackingStateDatabase)
     monkeypatch.setattr(resources_module, "_SummaryCache", _NoopSummaryCache)
+    monkeypatch.setattr(resources_module, "_SessionHistory", _NoopSessionHistory)
     monkeypatch.setattr(resources_module, "_MCPCatalog", _NoopMCPCatalog)
     monkeypatch.setattr(resources_module, "_ToolCatalog", _NoopToolCatalog)
     monkeypatch.setattr(resources_module, "_SkillCatalog", _NoopSkillCatalog)
@@ -581,6 +605,7 @@ def test_aggregate_close_follows_reverse_dependency_order(tmp_path: Path) -> Non
         tool_catalog=object(),
         skill_catalog=object(),
         library_catalog=FakeLibraryCatalog(),  # type: ignore[arg-type]
+        session_history=object(),
     )
 
     asyncio.run(resources.close())
@@ -615,6 +640,7 @@ def test_aggregate_close_attempts_every_step_and_surfaces_failure(
         tool_catalog=object(),
         skill_catalog=object(),
         library_catalog=FakeLibraryCatalog(),  # type: ignore[arg-type]
+        session_history=object(),
     )
 
     with pytest.raises(RuntimeError, match="flush exploded"):

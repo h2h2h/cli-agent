@@ -76,6 +76,7 @@ class AgentLoop:
         context_policy: ContextPolicy,
         session_id: str,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+        on_append: Callable[[ModelMessage], None] | None = None,
     ) -> None:
         self._provider = provider
         self._kernel = kernel
@@ -87,6 +88,7 @@ class AgentLoop:
             provider=provider,
             session_id=session_id,
             on_diagnostic=on_diagnostic,
+            on_append=on_append,
         )
 
     @property

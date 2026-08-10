@@ -20,6 +20,7 @@ from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.source import _prepare_capability_source
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
+from cli_agent.runtime._session_history import _SessionHistory
 from cli_agent.runtime._state_db import _StateDatabase
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
@@ -42,6 +43,7 @@ class _RuntimeResources:
     tool_catalog: _ToolCatalog
     skill_catalog: _SkillCatalog
     library_catalog: _LibraryCatalog
+    session_history: _SessionHistory
 
     async def close(self) -> None:
         """Close Workspace-lifetime resources in reverse dependency order.
@@ -134,6 +136,10 @@ async def _reconcile_runtime_resources(
         state_database = _StateDatabase.open()
         opened.add(lambda: _close_database(state_database))
         summary_cache = _SummaryCache(state_database)
+        session_history = _SessionHistory(
+            state_database,
+            on_diagnostic=on_diagnostic,
+        )
         await _MCPCatalog.reconcile(
             backend,
             on_diagnostic=on_diagnostic,
@@ -161,6 +167,7 @@ async def _reconcile_runtime_resources(
             tool_catalog=tool_catalog,
             skill_catalog=skill_catalog,
             library_catalog=library_catalog,
+            session_history=session_history,
         )
     except BaseException:
         await opened.rollback()

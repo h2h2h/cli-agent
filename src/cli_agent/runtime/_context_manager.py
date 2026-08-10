@@ -287,6 +287,7 @@ class _ContextManager:
         provider: ModelProvider,
         session_id: str,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+        on_append: Callable[[ModelMessage], None] | None = None,
     ) -> None:
         self._ledger = _ContextLedger(system_message)
         self._policy = context_policy
@@ -294,6 +295,7 @@ class _ContextManager:
         self._summarizer = _ContextSummarizer(provider)
         self._session_id = session_id
         self._on_diagnostic = on_diagnostic
+        self._on_append = on_append
         self._anchor_revision: int | None = None
         self._anchor_message_count = 0
         self._anchor_input_tokens: int | None = None
@@ -317,6 +319,8 @@ class _ContextManager:
         """Append one message; the only write entry to Context History."""
 
         self._ledger.append(message)
+        if self._on_append is not None:
+            self._on_append(message)
 
     def observe(self, revision: int, usage: ModelUsage | None) -> None:
         """Anchor Provider-reported usage to one prepared request revision.

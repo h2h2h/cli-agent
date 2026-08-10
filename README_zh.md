@@ -122,3 +122,12 @@ cli-agent \
 
 - `--workspace` —— Agent 工作的目录（默认：当前目录）。
 - `--repertoire` —— 用户维护的能力下层树（默认：`~/.cli-agent/repertoire`）。
+
+## 会话轨迹
+
+每个会话的完整对话轨迹（用户消息、assistant 消息与 tool 结果）以追加日志
+语义逐条持久化到 `~/.cli-agent/state.sqlite3`，保留上下文压缩前的原始内容，
+用于审计、复盘与将来的会话恢复；会话元数据（workspace、系统提示符、时间）
+与消息行分别存放在 `sessions` 与 `session_messages` 表中。内部摘要消息与
+结果缩减产物不进入轨迹。持久化失败不会打断 Agent 循环，而是通过非阻塞
+诊断上报。

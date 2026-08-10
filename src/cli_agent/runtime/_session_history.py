@@ -19,6 +19,7 @@ from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     AssistantMessage,
     ModelMessage,
+    SystemMessage,
     TextBlock,
     ToolCall,
     ToolResultMessage,
@@ -140,6 +141,19 @@ class _SessionHistory:
                 },
             )
         )
+
+
+def serialize_system_prompt(system_message: SystemMessage) -> str:
+    """Serialize a System Message to the ``sessions.system_prompt`` form.
+
+    System Messages never enter ``session_messages``; this form is stored
+    once per session so the trace can be interpreted without the model's
+    current catalog state.
+    """
+
+    return _dump(
+        {"blocks": [_text_block(block) for block in system_message.content]}
+    )
 
 
 def _serialize_message(message: ModelMessage) -> tuple[str, str]:
