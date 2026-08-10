@@ -10,25 +10,27 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from cli_agent.runtime._backend import _FilesystemError, _WorkspaceFilesystem
-from cli_agent.runtime._capability.command_parser import ShellParseResult, SimpleCommand
+from cli_agent.runtime._capability.command_parser import SimpleCommand
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
     _ExecutionOutput,
+    _ExecutionRequest,
     _PreparedExecution,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 
-_CdPreparer = Callable[[ShellParseResult, _CommandContext], _PreparedExecution]
+_CdPreparer = Callable[[_ExecutionRequest, _CommandContext], _PreparedExecution]
 
 
 def _prepare_cd(filesystem: _WorkspaceFilesystem | None) -> _CdPreparer:
     """Build the cd preparer bound to one Workspace Filesystem."""
 
     def prepare(
-        command: ShellParseResult,
+        request: _ExecutionRequest,
         context: _CommandContext,
     ) -> _PreparedExecution:
+        command = request.command
         args = command.leading_arguments
         valid = (
             isinstance(command.root, SimpleCommand)

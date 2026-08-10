@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
-from cli_agent.runtime._capability.command_parser import ShellParseResult, SimpleCommand
+from cli_agent.runtime._capability.command_parser import SimpleCommand
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
     _ExecutionOutput,
+    _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 
 
 def _prepare_export(
-    command: ShellParseResult,
+    request: _ExecutionRequest,
     context: _CommandContext,
 ) -> _InlineExecution:
     """Prepare an environment mutation without applying it before execution."""
 
+    command = request.command
     args = command.leading_arguments
     valid = (
         isinstance(command.root, SimpleCommand)

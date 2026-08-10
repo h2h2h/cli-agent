@@ -212,13 +212,13 @@ def test_supervisor_and_scheduler_carry_no_policy_metadata() -> None:
             "policy",
         }
     )
-    assert "command" in state_fields
+    assert "request" in state_fields
 
     route_fields = set(_ExecutionRoute.__dataclass_fields__)
     assert route_fields == {"command", "parallel_safe"}
 
     assert list(_ExecutionScheduler.admit.__annotations__) == [
-        "command",
+        "request",
         "route",
         "return",
     ]

@@ -20,6 +20,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
     _ExecutionOutput,
+    _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
@@ -55,7 +56,10 @@ def test_custom_command_prepares_export_and_shell_handler_prepares_process(
         export = parse_shell_ast("export A=1 MESSAGE='two words'")
         export_spec = registry.resolve(export)
         assert export_spec is not None
-        execution = export_spec.prepare(export, context)
+        execution = export_spec.prepare(
+            _ExecutionRequest(command=export),
+            context,
+        )
 
         assert isinstance(execution, _InlineExecution)
         assert environment == {}
@@ -64,7 +68,7 @@ def test_custom_command_prepares_export_and_shell_handler_prepares_process(
         assert environment == {"A": "1", "MESSAGE": "two words"}
 
         process_execution = _ShellHandler(_LocalBackendWorkspace(tmp_path, {})).prepare(
-            parse_shell_ast("pwd"),
+            _ExecutionRequest(command=parse_shell_ast("pwd")),
             context,
         )
         assert isinstance(process_execution, _LocalShellExecution)
@@ -82,7 +86,7 @@ def test_inline_export_cancelled_before_run_does_not_mutate_session(
         spec = registry.resolve(command)
         assert spec is not None
         execution = spec.prepare(
-            command,
+            _ExecutionRequest(command=command),
             _CommandContext(
                 workspace=str(tmp_path),
                 cwd=str(tmp_path),
@@ -129,7 +133,7 @@ def test_invalid_inline_export_reports_failure_without_mutation(
         spec = registry.resolve(command)
         assert spec is not None
         execution = spec.prepare(
-            command,
+            _ExecutionRequest(command=command),
             _CommandContext(
                 workspace=str(tmp_path),
                 cwd=str(tmp_path),
@@ -170,18 +174,18 @@ class _FakeHandler:
 
     def prepare(
         self,
-        command,
+        request: _ExecutionRequest,
         context: _CommandContext,
     ) -> _FakeExecution:
         self.prepared.append(
-            (command.raw_command, context.cwd, dict(context.environment))
+            (request.command.raw_command, context.cwd, dict(context.environment))
         )
         return self.execution
 
 
 class _FailingHandler:
-    def prepare(self, command, context: _CommandContext):
-        del command, context
+    def prepare(self, request: _ExecutionRequest, context: _CommandContext):
+        del request, context
         raise RuntimeError("preparation failed")
 
 
@@ -195,8 +199,12 @@ class _SuccessfulExecution:
 
 
 class _SuccessfulHandler:
-    def prepare(self, command, context: _CommandContext) -> _SuccessfulExecution:
-        del command, context
+    def prepare(
+        self,
+        request: _ExecutionRequest,
+        context: _CommandContext,
+    ) -> _SuccessfulExecution:
+        del request, context
         return _SuccessfulExecution()
 
 
@@ -214,7 +222,7 @@ def test_kernel_runs_and_cancels_prepared_execution_without_branch(
             byte_limit=1_000,
         )
         state = kernel._supervisor.admit(
-            parse_shell_ast("fake command"),
+            _ExecutionRequest(command=parse_shell_ast("fake command")),
             _shell_route(handler),
         )
         assert state is not None
@@ -248,8 +256,8 @@ def test_parallel_safe_metadata_forces_an_isolated_command_context(
             prepared_context.environment["WORKER"] = "changed"
             return _ExecutionOutcome.exited()
 
-        def prepare(command, context: _CommandContext) -> _InlineExecution:
-            del command
+        def prepare(request: _ExecutionRequest, context: _CommandContext) -> _InlineExecution:
+            del request
             nonlocal prepared_context
             prepared_context = context
             return _InlineExecution(execute)
@@ -303,11 +311,11 @@ def test_handler_preparation_failure_releases_serial_slot_for_queued_execution(
             byte_limit=1_000,
         )
         failed = kernel._supervisor.admit(
-            parse_shell_ast("fake command"),
+            _ExecutionRequest(command=parse_shell_ast("fake command")),
             _shell_route(_FailingHandler()),
         )
         queued = kernel._supervisor.admit(
-            parse_shell_ast("fake command"),
+            _ExecutionRequest(command=parse_shell_ast("fake command")),
             _shell_route(_SuccessfulHandler()),
         )
         assert failed is not None

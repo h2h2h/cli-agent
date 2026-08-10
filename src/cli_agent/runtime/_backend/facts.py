@@ -60,6 +60,7 @@ class _ShellExecutionRequest:
     command: ShellParseResult
     cwd: str
     environment: Mapping[str, str]
+    input_data: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)

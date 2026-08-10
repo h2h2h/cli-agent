@@ -23,6 +23,7 @@ from cli_agent.runtime._environment.commands import (
     _ShellCommand,
 )
 from cli_agent.runtime._environment.execution_state import _ExecutionState
+from cli_agent.runtime._environment.handlers.base import _ExecutionRequest
 from cli_agent.runtime._environment.handlers.files import _FileHandler
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.handlers.tools import _ToolHandler
@@ -255,7 +256,11 @@ class EnvironmentKernel:
                 message="environment session is closed",
             )
 
-        state = self._supervisor.admit(command, route)
+        request = _ExecutionRequest(
+            command=command,
+            stdin=args.get("stdin"),
+        )
+        state = self._supervisor.admit(request, route)
         if state is None:
             return _protocol_error(
                 call.call_id,

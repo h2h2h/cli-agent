@@ -9,12 +9,14 @@ from cli_agent.runtime._backend import _WorkspaceFilesystem
 from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
+    _ExecutionRequest,
     _PreparedExecution,
 )
 from cli_agent.runtime._environment.handlers.cd import _prepare_cd
+from cli_agent.runtime._environment.handlers.executions import _text_execution
 from cli_agent.runtime._environment.handlers.export import _prepare_export
 
-_CommandPreparer = Callable[[ShellParseResult, _CommandContext], _PreparedExecution]
+_CommandPreparer = Callable[[_ExecutionRequest, _CommandContext], _PreparedExecution]
 _ParallelSafety = bool | Callable[[ShellParseResult], bool]
 
 
@@ -35,7 +37,7 @@ class _Command(ABC):
     @abstractmethod
     def prepare(
         self,
-        command: ShellParseResult,
+        request: _ExecutionRequest,
         context: _CommandContext,
     ) -> _PreparedExecution:
         """Prepare an execution without starting work or mutating Session state."""
@@ -51,6 +53,7 @@ class _CustomCommand(_Command):
         prepare: _CommandPreparer,
         parallel_safe: _ParallelSafety = False,
         isolated: bool = True,
+        consumes_stdin: bool = False,
     ) -> None:
         if (
             not name
@@ -62,10 +65,13 @@ class _CustomCommand(_Command):
             raise TypeError("custom command isolated must be a bool")
         if not isinstance(parallel_safe, bool) and not callable(parallel_safe):
             raise TypeError("custom command parallel_safe must be a bool or callable")
+        if not isinstance(consumes_stdin, bool):
+            raise TypeError("custom command consumes_stdin must be a bool")
         self.name = name
         self.isolated = isolated
         self._prepare = prepare
         self._parallel_safe = parallel_safe
+        self.consumes_stdin = consumes_stdin
 
     def matches(self, command: ShellParseResult) -> bool:
         """Return whether the first command token matches this command name."""
@@ -80,12 +86,22 @@ class _CustomCommand(_Command):
 
     def prepare(
         self,
-        command: ShellParseResult,
+        request: _ExecutionRequest,
         context: _CommandContext,
     ) -> _PreparedExecution:
-        """Construct the command execution without starting it."""
+        """Construct the command execution without starting it.
 
-        return self._prepare(command, context)
+        A custom command that does not consume standard input rejects any
+        non-``None`` stdin instead of silently dropping the input.
+        """
+
+        if request.stdin is not None and not self.consumes_stdin:
+            return _text_execution(
+                f"`{self.name}` does not consume exec stdin; "
+                "omit stdin or use a shell command\n",
+                success=False,
+            )
+        return self._prepare(request, context)
 
 
 class _ShellCommand(_Command):
@@ -129,12 +145,12 @@ class _ShellCommand(_Command):
 
     def prepare(
         self,
-        command: ShellParseResult,
+        request: _ExecutionRequest,
         context: _CommandContext,
     ) -> _PreparedExecution:
         """Construct the Shell execution without starting it."""
 
-        return self._prepare(command, context)
+        return self._prepare(request, context)
 
 
 class _CustomCommandRegistry:

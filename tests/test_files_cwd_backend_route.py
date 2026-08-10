@@ -29,6 +29,7 @@ from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
+    _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.cd import _prepare_cd
 from cli_agent.runtime._environment.handlers.files import _FileHandler
@@ -115,7 +116,9 @@ def test_files_write_builds_one_resolved_request(tmp_path: Path) -> None:
     )
 
     execution = handler.prepare(
-        parse_shell_ast("files write notes/a.txt <<'EOF'\nline\nEOF"),
+        _ExecutionRequest(
+            command=parse_shell_ast("files write notes/a.txt <<'EOF'\nline\nEOF"),
+        ),
         context,
     )
     outcome = asyncio.run(execution.run(_RecordedOutput()))
@@ -139,10 +142,12 @@ def test_files_edit_builds_one_resolved_request(tmp_path: Path) -> None:
     )
 
     execution = handler.prepare(
-        parse_shell_ast(
-            "files edit notes/a.txt <<'EDI'\n"
-            '{"edits": [{"oldText": "a", "newText": "b"}]}\n'
-            "EDI"
+        _ExecutionRequest(
+            command=parse_shell_ast(
+                "files edit notes/a.txt <<'EDI'\n"
+                '{"edits": [{"oldText": "a", "newText": "b"}]}\n'
+                "EDI"
+            ),
         ),
         context,
     )
@@ -168,7 +173,9 @@ def test_files_request_resolves_relative_to_backend_cwd(tmp_path: Path) -> None:
     )
 
     execution = handler.prepare(
-        parse_shell_ast("files write item.txt <<'EOF'\nx\nEOF"),
+        _ExecutionRequest(
+            command=parse_shell_ast("files write item.txt <<'EOF'\nx\nEOF"),
+        ),
         context,
     )
     asyncio.run(execution.run(_RecordedOutput()))
@@ -189,7 +196,7 @@ def test_cd_stats_resolved_target_and_commits_backend_cwd(tmp_path: Path) -> Non
         set_cwd=committed.append,
     )
     execution = _prepare_cd(filesystem)(
-        parse_shell_ast("cd sub"),
+        _ExecutionRequest(command=parse_shell_ast("cd sub")),
         context,
     )
 
@@ -209,7 +216,10 @@ def test_cd_reports_missing_directory_from_filesystem_facts(tmp_path: Path) -> N
         cwd=str(tmp_path),
         environment={},
     )
-    execution = _prepare_cd(filesystem)(parse_shell_ast("cd missing"), context)
+    execution = _prepare_cd(filesystem)(
+        _ExecutionRequest(command=parse_shell_ast("cd missing")),
+        context,
+    )
 
     output = _RecordedOutput()
     outcome = asyncio.run(execution.run(output))
@@ -226,7 +236,10 @@ def test_cd_rejects_non_directory_target(tmp_path: Path) -> None:
         cwd=str(tmp_path),
         environment={},
     )
-    execution = _prepare_cd(filesystem)(parse_shell_ast("cd plain.txt"), context)
+    execution = _prepare_cd(filesystem)(
+        _ExecutionRequest(command=parse_shell_ast("cd plain.txt")),
+        context,
+    )
 
     output = _RecordedOutput()
     outcome = asyncio.run(execution.run(output))
@@ -245,7 +258,10 @@ def test_cd_preserves_non_directory_filesystem_errors() -> None:
         cwd="/workspace",
         environment={},
     )
-    execution = _prepare_cd(filesystem)(parse_shell_ast("cd locked"), context)
+    execution = _prepare_cd(filesystem)(
+        _ExecutionRequest(command=parse_shell_ast("cd locked")),
+        context,
+    )
 
     output = _RecordedOutput()
     outcome = asyncio.run(execution.run(output))
@@ -301,7 +317,9 @@ def test_filesystem_execution_cancel_before_run_has_no_side_effects(
         environment={},
     )
     execution = handler.prepare(
-        parse_shell_ast("files write a.txt <<'EOF'\nx\nEOF"),
+        _ExecutionRequest(
+            command=parse_shell_ast("files write a.txt <<'EOF'\nx\nEOF"),
+        ),
         context,
     )
 

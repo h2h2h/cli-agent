@@ -158,6 +158,7 @@ class _LocalBackendWorkspace:
                 **request.environment,
             },
             mutation=self._capability_view,
+            input_data=request.input_data,
         )
 
     def prepare_tool(

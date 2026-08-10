@@ -16,6 +16,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
     _ExecutionOutput,
+    _ExecutionRequest,
     _PreparedExecution,
 )
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
@@ -44,25 +45,73 @@ class _SilentExecution:
 def test_shell_handler_emits_backend_neutral_request(tmp_path: Path) -> None:
     backend = _RecordingBackend()
     handler = _ShellHandler(backend)
-    command = parse_shell_ast("echo hi")
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(tmp_path),
         environment={"KEY": "value"},
     )
 
-    handler.prepare(command, context)
+    handler.prepare(
+        _ExecutionRequest(command=parse_shell_ast("echo hi")),
+        context,
+    )
 
     assert len(backend.requests) == 1
     request = backend.requests[0]
-    assert request.command is command
+    assert request.command is not None
     assert request.cwd == str(tmp_path)
     assert request.environment == {"KEY": "value"}
-    assert tuple(request.__dataclass_fields__) == ("command", "cwd", "environment")
+    assert request.input_data is None
+    assert tuple(request.__dataclass_fields__) == (
+        "command",
+        "cwd",
+        "environment",
+        "input_data",
+    )
+
+
+def test_shell_handler_encodes_stdin_as_utf8_input_data(tmp_path: Path) -> None:
+    backend = _RecordingBackend()
+    handler = _ShellHandler(backend)
+    context = _CommandContext(
+        workspace=str(tmp_path),
+        cwd=str(tmp_path),
+        environment={},
+    )
+
+    handler.prepare(
+        _ExecutionRequest(
+            command=parse_shell_ast("grep foo"),
+            stdin="héllo 世界\n",
+        ),
+        context,
+    )
+
+    assert len(backend.requests) == 1
+    assert backend.requests[0].input_data == "héllo 世界\n".encode("utf-8")
+
+
+def test_shell_handler_keeps_empty_stdin_distinct_from_omitted(
+    tmp_path: Path,
+) -> None:
+    backend = _RecordingBackend()
+    handler = _ShellHandler(backend)
+    context = _CommandContext(
+        workspace=str(tmp_path),
+        cwd=str(tmp_path),
+        environment={},
+    )
+
+    handler.prepare(
+        _ExecutionRequest(command=parse_shell_ast("cat"), stdin=""),
+        context,
+    )
+
+    assert len(backend.requests) == 1
+    assert backend.requests[0].input_data == b""
 
 
 def test_shell_handler_requires_a_backend_workspace(tmp_path: Path) -> None:
-    command = parse_shell_ast("echo hi")
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(tmp_path),
@@ -70,7 +119,10 @@ def test_shell_handler_requires_a_backend_workspace(tmp_path: Path) -> None:
     )
 
     try:
-        _ShellHandler().prepare(command, context)
+        _ShellHandler().prepare(
+            _ExecutionRequest(command=parse_shell_ast("echo hi")),
+            context,
+        )
     except RuntimeError as exc:
         assert "Backend Workspace" in str(exc)
     else:

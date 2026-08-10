@@ -32,6 +32,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
     _ExecutionOutput,
+    _ExecutionRequest,
     _PreparedExecution,
 )
 from cli_agent.runtime._environment.handlers.executions import _text_execution
@@ -201,10 +202,10 @@ class _FileHandler:
 
     def prepare(
         self,
-        command: ShellParseResult,
+        request: _ExecutionRequest,
         context: _CommandContext,
     ) -> _PreparedExecution:
-        facts = parse_files_command(command)
+        facts = parse_files_command(request.command)
         if facts is None:
             raise RuntimeError("File handler received an ordinary command")
         if not facts.valid:

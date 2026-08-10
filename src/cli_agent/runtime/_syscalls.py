@@ -114,6 +114,15 @@ BUILT_IN_SYSCALL_SCHEMAS = (
                     "minLength": 1,
                     "description": "The command to execute.",
                 },
+                "stdin": {
+                    "type": "string",
+                    "description": (
+                        "Optional text supplied as the command's standard input. "
+                        "Ordinary shell commands receive it on their standard input; "
+                        "Runtime commands may interpret it as their command payload. "
+                        "Omit when the command does not require input."
+                    ),
+                },
                 "wait_ms": {
                     "type": "integer",
                     "minimum": 0,

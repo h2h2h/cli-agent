@@ -320,10 +320,12 @@ def test_shell_request_carries_parse_facts_and_opaque_paths() -> None:
     assert isinstance(request.command, ShellParseResult)
     assert request.cwd == "/workspace"
     assert request.environment == {"KEY": "value"}
+    assert request.input_data is None
     assert tuple(f.name for f in fields(request)) == (
         "command",
         "cwd",
         "environment",
+        "input_data",
     )
 
 
@@ -347,6 +349,7 @@ def test_requests_have_no_backend_discriminator_fields() -> None:
         "command",
         "cwd",
         "environment",
+        "input_data",
     )
     assert tuple(f.name for f in fields(_ToolExecutionRequest)) == (
         "code",

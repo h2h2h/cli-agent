@@ -7,8 +7,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
-from cli_agent.runtime._capability.command_parser import ShellParseResult
-from cli_agent.runtime._environment.handlers.base import _PreparedExecution
+from cli_agent.runtime._environment.handlers.base import (
+    _ExecutionRequest,
+    _PreparedExecution,
+)
 from cli_agent.runtime._environment.routing import _ExecutionRoute
 from cli_agent.runtime.model import JSONValue
 
@@ -18,7 +20,7 @@ _TERMINAL_STATUSES = frozenset({"exited", "failed", "killed"})
 @dataclass(slots=True)
 class _ExecutionState:
     exec_id: str
-    command: ShellParseResult
+    request: _ExecutionRequest
     route: _ExecutionRoute
     status: str = "queued"
     submission_sequence: int | None = None

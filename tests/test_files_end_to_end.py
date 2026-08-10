@@ -20,6 +20,7 @@ from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
+    _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.files import _FileHandler
 
@@ -119,7 +120,9 @@ def test_files_write_in_view_under_policy_never_pierces_repertoire(
 def test_files_write_cancelled_before_run_creates_nothing(tmp_path: Path) -> None:
     async def scenario() -> None:
         execution = _FileHandler().prepare(
-            parse_shell_ast("files write partial.txt <<'EOF'\ncontent\nEOF"),
+            _ExecutionRequest(
+                command=parse_shell_ast("files write partial.txt <<'EOF'\ncontent\nEOF"),
+            ),
             _CommandContext(
                 workspace=str(tmp_path),
                 cwd=str(tmp_path),

@@ -6,7 +6,6 @@ import asyncio
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.execution_state import (
     _ExecutionState,
     _notify_changed,
@@ -16,6 +15,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
     _ExecutionOutput,
+    _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._environment.routing import _ExecutionRoute
@@ -52,12 +52,12 @@ class _ExecutionSupervisor:
 
     def admit(
         self,
-        command: ShellParseResult,
+        request: _ExecutionRequest,
         route: _ExecutionRoute,
     ) -> _ExecutionState | None:
         """Accept routed work and start whatever the Scheduler claims."""
 
-        admission = self._scheduler.admit(command, route)
+        admission = self._scheduler.admit(request, route)
         if admission is None:
             return None
 
@@ -126,7 +126,7 @@ class _ExecutionSupervisor:
         )
         try:
             execution = state.route.command.prepare(
-                state.command,
+                state.request,
                 context,
             )
         except Exception:

@@ -10,6 +10,8 @@ import asyncio
 from pathlib import Path
 from typing import Literal
 
+import pytest
+
 from cli_agent.runtime._backend import _ShellExecutionRequest
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
@@ -44,11 +46,13 @@ def _request(
     *,
     cwd: Path,
     environment: dict[str, str] | None = None,
+    input_data: bytes | None = None,
 ) -> _ShellExecutionRequest:
     return _ShellExecutionRequest(
         command=parse_shell_ast(command),
         cwd=str(cwd),
         environment=environment or {},
+        input_data=input_data,
     )
 
 
@@ -181,5 +185,167 @@ def test_capability_redirect_copy_up_happens_before_spawn(tmp_path: Path) -> Non
         assert lower.read_text(encoding="utf-8") == "lower\n"
         assert not visible.is_symlink()
         assert visible.read_text(encoding="utf-8") == "changed\n"
+
+    asyncio.run(scenario())
+
+
+def test_shell_without_input_data_inherits_host_stdin(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        backend = _LocalBackendWorkspace(tmp_path, {})
+        output = _BufferOutput()
+
+        outcome = await backend.prepare_shell(
+            _request("python3 -c 'import sys; print(sys.stdin.isatty())'", cwd=tmp_path)
+        ).run(output)
+
+        assert outcome == _ExecutionOutcome.exited()
+        assert output.text("stdout") == f"{__import__('sys').stdin.isatty()}\n"
+
+    asyncio.run(scenario())
+
+
+def test_shell_with_empty_input_data_sends_immediate_eof(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        backend = _LocalBackendWorkspace(tmp_path, {})
+        output = _BufferOutput()
+
+        outcome = await backend.prepare_shell(
+            _request(
+                "python3 -c 'import sys; print(sys.stdin.isatty()); print(repr(sys.stdin.read()))'",
+                cwd=tmp_path,
+                input_data=b"",
+            )
+        ).run(output)
+
+        assert outcome == _ExecutionOutcome.exited()
+        assert output.text("stdout") == "False\n''\n"
+
+    asyncio.run(scenario())
+
+
+def test_shell_receives_utf8_input_data(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        backend = _LocalBackendWorkspace(tmp_path, {})
+        output = _BufferOutput()
+
+        outcome = await backend.prepare_shell(
+            _request(
+                "cat",
+                cwd=tmp_path,
+                input_data="héllo 世界\n".encode("utf-8"),
+            )
+        ).run(output)
+
+        assert outcome == _ExecutionOutcome.exited()
+        assert output.text("stdout") == "héllo 世界\n"
+
+    asyncio.run(scenario())
+
+
+def test_shell_sequence_consumes_input_data_once(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        backend = _LocalBackendWorkspace(tmp_path, {})
+        output = _BufferOutput()
+
+        outcome = await backend.prepare_shell(
+            _request("cat; wc -c | tr -d ' '", cwd=tmp_path, input_data=b"hello")
+        ).run(output)
+
+        assert outcome == _ExecutionOutcome.exited()
+        assert output.text("stdout") == "hello0\n"
+
+    asyncio.run(scenario())
+
+
+def test_large_bidirectional_shell_io_does_not_deadlock(tmp_path: Path) -> None:
+    payload = b"x" * (1024 * 1024)
+
+    async def scenario() -> None:
+        backend = _LocalBackendWorkspace(tmp_path, {})
+        output = _BufferOutput()
+
+        outcome = await backend.prepare_shell(
+            _request(
+                "python3 -c 'import sys; "
+                "sys.stdout.buffer.write(b\"y\" * 700_000); "
+                "sys.stdout.buffer.flush(); "
+                "data = sys.stdin.buffer.read(); "
+                "sys.stdout.buffer.write(data)'",
+                cwd=tmp_path,
+                input_data=payload,
+            )
+        ).run(output)
+
+        assert outcome == _ExecutionOutcome.exited()
+        stdout = b"".join(data for name, data in output.chunks if name == "stdout")
+        assert stdout == (b"y" * 700_000) + payload
+        assert len([1 for name, _ in output.chunks if name == "stdout"]) > 1
+
+    asyncio.run(scenario())
+
+
+def test_process_closing_stdin_early_does_not_hang(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        backend = _LocalBackendWorkspace(tmp_path, {})
+        output = _BufferOutput()
+
+        outcome = await backend.prepare_shell(
+            _request(
+                "head -c 4",
+                cwd=tmp_path,
+                input_data=b"a" * (1024 * 1024),
+            )
+        ).run(output)
+
+        assert outcome == _ExecutionOutcome.exited()
+        assert output.text("stdout") == "aaaa"
+
+    asyncio.run(scenario())
+
+
+def test_cancel_with_pending_input_leaves_no_subprocess(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        backend = _LocalBackendWorkspace(tmp_path, {})
+        execution = backend.prepare_shell(
+            _request(
+                "python3 -c 'import time; time.sleep(30)'",
+                cwd=tmp_path,
+                input_data=b"x" * (1024 * 1024),
+            )
+        )
+        output = _BufferOutput()
+
+        task = asyncio.create_task(execution.run(output))
+        await asyncio.sleep(0.2)
+        await execution.cancel()
+        outcome = await asyncio.wait_for(task, timeout=2)
+
+        assert outcome.status == "killed"
+        assert b"".join(data for _, data in output.chunks) == b""
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_run_task_kills_process_and_reaps_input(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        backend = _LocalBackendWorkspace(tmp_path, {})
+        execution = backend.prepare_shell(
+            _request(
+                "python3 -c 'import time; time.sleep(30)'",
+                cwd=tmp_path,
+                input_data=b"x" * (1024 * 1024),
+            )
+        )
+        output = _BufferOutput()
+
+        task = asyncio.create_task(execution.run(output))
+        await asyncio.sleep(0.2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.1)
+
+        assert execution._process._process is not None
+        assert execution._process._process.returncode is not None
 
     asyncio.run(scenario())

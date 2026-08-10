@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from cli_agent.runtime._backend import _BackendWorkspace, _ShellExecutionRequest
-from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
+    _ExecutionRequest,
     _PreparedExecution,
 )
 
@@ -18,16 +18,18 @@ class _ShellHandler:
 
     def prepare(
         self,
-        command: ShellParseResult,
+        request: _ExecutionRequest,
         context: _CommandContext,
     ) -> _PreparedExecution:
         backend = self._backend
         if backend is None:
             raise RuntimeError("Shell handler requires a Backend Workspace")
+        stdin = request.stdin
         return backend.prepare_shell(
             _ShellExecutionRequest(
-                command=command,
+                command=request.command,
                 cwd=str(context.cwd),
                 environment=context.environment,
+                input_data=stdin.encode("utf-8") if stdin is not None else None,
             )
         )

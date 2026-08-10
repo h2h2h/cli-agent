@@ -12,6 +12,7 @@ from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.grammar import parse_tool_command
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
+    _ExecutionRequest,
     _PreparedExecution,
 )
 from cli_agent.runtime._environment.handlers.executions import _text_execution
@@ -58,7 +59,7 @@ class _ToolHandler:
 
     def prepare(
         self,
-        command: ShellParseResult,
+        request: _ExecutionRequest,
         context: _CommandContext,
     ) -> _PreparedExecution:
         catalog = self._catalog
@@ -67,7 +68,7 @@ class _ToolHandler:
                 "Tool catalog is unavailable\n",
                 success=False,
             )
-        facts = parse_tool_command(command, catalog)
+        facts = parse_tool_command(request.command, catalog)
         if facts is None:
             raise RuntimeError("Tool handler received an ordinary command")
         if facts.operation == "list":

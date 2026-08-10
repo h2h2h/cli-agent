@@ -78,7 +78,7 @@ def test_shell_child_receives_host_environment_with_session_overrides(
                 "host-later",
             )
             for state in kernel_a._executions.values():
-                command = state.command
+                command = state.request.command
                 rendered = repr(command)
                 assert all(value not in rendered for value in inherited_values)
         finally:

@@ -17,6 +17,7 @@ from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
+    _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.files import _FileHandler
 
@@ -276,7 +277,7 @@ def _run(
     output = _RecordedOutput()
     backend = _LocalBackendWorkspace(cwd, {}, view)
     execution = _FileHandler(backend.filesystem).prepare(
-        parse_shell_ast(command),
+        _ExecutionRequest(command=parse_shell_ast(command)),
         _CommandContext(workspace=str(cwd), cwd=str(cwd), environment={}),
     )
     outcome = asyncio.run(execution.run(output))

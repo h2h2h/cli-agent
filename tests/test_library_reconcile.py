@@ -20,7 +20,10 @@ from cli_agent.runtime._capability.library.facts import (
     _file_fingerprint,
 )
 from cli_agent.runtime._capability.workspace import _prepare_workspace
-from cli_agent.runtime._environment.handlers.base import _CommandContext
+from cli_agent.runtime._environment.handlers.base import (
+    _CommandContext,
+    _ExecutionRequest,
+)
 from cli_agent.runtime._environment.handlers.files import _FileHandler
 from cli_agent.runtime._state_db import _StateDatabase
 
@@ -110,8 +113,10 @@ async def _write_library_file(
         mark_dirty=catalog.mark_path_dirty,
     )
     execution = handler.prepare(
-        parse_shell_ast(
-            f"files write .workspace/library/{logical} <<'EOF'\n{content}\nEOF"
+        _ExecutionRequest(
+            command=parse_shell_ast(
+                f"files write .workspace/library/{logical} <<'EOF'\n{content}\nEOF"
+            ),
         ),
         _CommandContext(
             workspace=str(workspace),
@@ -322,10 +327,12 @@ def test_files_edit_marks_dirty_and_transitions_to_stale(tmp_path: Path) -> None
             mark_dirty=catalog.mark_path_dirty,
         )
         execution = handler.prepare(
-            parse_shell_ast(
-                "files edit .workspace/library/notes.md <<'EDI'\n"
-                '{"edits": [{"oldText": "one\\n", "newText": "one two\\n"}]}\n'
-                "EDI"
+            _ExecutionRequest(
+                command=parse_shell_ast(
+                    "files edit .workspace/library/notes.md <<'EDI'\n"
+                    '{"edits": [{"oldText": "one\\n", "newText": "one two\\n"}]}\n'
+                    "EDI"
+                ),
             ),
             _CommandContext(
                 workspace=str(tmp_path),
@@ -365,7 +372,11 @@ def test_failed_files_write_never_marks_dirty(tmp_path: Path) -> None:
             mark_dirty=catalog.mark_path_dirty,
         )
         execution = handler.prepare(
-            parse_shell_ast("files write blocker.txt/nested.md <<'EOF'\ncontent\nEOF"),
+            _ExecutionRequest(
+                command=parse_shell_ast(
+                    "files write blocker.txt/nested.md <<'EOF'\ncontent\nEOF"
+                ),
+            ),
             _CommandContext(
                 workspace=str(tmp_path),
                 cwd=str(tmp_path),

@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import uuid4
 
-from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.execution_state import _ExecutionState
+from cli_agent.runtime._environment.handlers.base import _ExecutionRequest
 from cli_agent.runtime._environment.routing import _ExecutionRoute
 
 _DEFAULT_QUEUE_LIMIT = 32
@@ -36,7 +36,7 @@ class _ExecutionScheduler:
 
     def admit(
         self,
-        command: ShellParseResult,
+        request: _ExecutionRequest,
         route: _ExecutionRoute,
     ) -> _SchedulerAdmission | None:
         """Accept routed work when pending capacity is available."""
@@ -50,7 +50,7 @@ class _ExecutionScheduler:
 
         state = _ExecutionState(
             exec_id=uuid4().hex,
-            command=command,
+            request=request,
             route=route,
             submission_sequence=self._next_submission_sequence,
         )

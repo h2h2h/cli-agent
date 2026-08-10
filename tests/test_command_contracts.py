@@ -15,6 +15,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionOutcome,
     _ExecutionOutput,
+    _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
@@ -29,8 +30,8 @@ class _NullOutput:
         del stream, data
 
 
-def _successful_preparer(command, context):
-    del command, context
+def _successful_preparer(request, context):
+    del request, context
 
     async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
         del output
@@ -139,7 +140,10 @@ def test_prepare_does_not_mutate_session_before_execution(tmp_path: Path) -> Non
         command = parse_shell_ast("export KEY=value")
         custom = _builtin_custom_commands()[1]
 
-        execution = custom.prepare(command, context)
+        execution = custom.prepare(
+            _ExecutionRequest(command=command),
+            context,
+        )
 
         assert environment == {}
         assert await execution.run(_NullOutput()) == _ExecutionOutcome.exited()

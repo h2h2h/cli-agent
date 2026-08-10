@@ -37,13 +37,15 @@ class _LocalShellExecution:
         cwd: Path,
         environment: Mapping[str, str],
         mutation: _LocalCapabilityView | None,
+        input_data: bytes | None = None,
     ) -> None:
         self._command = command
         self._cwd = cwd
         self._mutation = mutation
         self._cancel_requested = False
         self._process = _ProcessExecution(
-            _shell_spawner(command.raw_command, cwd, environment)
+            _shell_spawner(command.raw_command, cwd, environment, input_data),
+            input_data=input_data,
         )
 
     async def run(self, output: _ExecutionOutput) -> _ExecutionOutcome:
@@ -84,6 +86,7 @@ class _ProcessExecution:
     async def run(self, output: _ExecutionOutput) -> _ExecutionOutcome:
         self._run_started = True
         process: asyncio.subprocess.Process | None = None
+        stdin_task: asyncio.Task[None] | None = None
         try:
             if self._cancel_requested:
                 return _ExecutionOutcome.killed()
@@ -96,9 +99,9 @@ class _ProcessExecution:
             if self._input_data is not None:
                 if process.stdin is None:
                     raise RuntimeError("process input was configured without stdin")
-                process.stdin.write(self._input_data)
-                await process.stdin.drain()
-                process.stdin.close()
+                stdin_task = asyncio.create_task(
+                    self._feed_stdin(process.stdin, self._input_data)
+                )
 
             stdout_task = asyncio.create_task(
                 self._capture_stream(output, process.stdout, "stdout")
@@ -108,12 +111,21 @@ class _ProcessExecution:
             )
             exit_code = await process.wait()
             await asyncio.gather(stdout_task, stderr_task)
+            await self._finish_stdin(stdin_task)
             if self._cancel_requested:
                 return _ExecutionOutcome.killed(exit_code)
             if exit_code == 0:
                 return _ExecutionOutcome.exited(exit_code)
             return _ExecutionOutcome.failed(exit_code)
+        except asyncio.CancelledError:
+            await self._finish_stdin(stdin_task)
+            if process is not None:
+                _signal_process(process, force=True)
+                with suppress(Exception):
+                    await process.wait()
+            raise
         except Exception:
+            await self._finish_stdin(stdin_task)
             if process is not None:
                 _signal_process(process, force=True)
                 with suppress(Exception):
@@ -144,6 +156,28 @@ class _ProcessExecution:
         except asyncio.TimeoutError:
             _signal_process(process, force=True)
 
+    async def _feed_stdin(
+        self,
+        stdin: asyncio.StreamWriter,
+        data: bytes,
+    ) -> None:
+        try:
+            stdin.write(data)
+            await stdin.drain()
+        except ConnectionError:
+            pass
+        finally:
+            stdin.close()
+
+    async def _finish_stdin(self, task: asyncio.Task[None] | None) -> None:
+        """Stop and reap one stdin writer without leaking it or the subprocess."""
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+
     async def _capture_stream(
         self,
         output: _ExecutionOutput,
@@ -160,14 +194,17 @@ def _shell_spawner(
     raw_command: str,
     cwd: Path,
     environment: Mapping[str, str],
+    input_data: bytes | None = None,
 ) -> _ProcessSpawner:
     """Return a spawner that starts one Shell process in the Workspace."""
 
     async def spawn() -> asyncio.subprocess.Process:
+        stdin = asyncio.subprocess.PIPE if input_data is not None else None
         return await asyncio.create_subprocess_shell(
             raw_command,
             cwd=cwd,
             env=dict(environment),
+            stdin=stdin,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=os.name == "posix",
