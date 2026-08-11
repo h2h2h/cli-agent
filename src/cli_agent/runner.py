@@ -12,6 +12,7 @@ from cli_agent.presentation import (
     render_event,
     render_prompt,
     render_session_id,
+    render_session_usage,
 )
 from cli_agent.runtime import (
     AgentRuntime,
@@ -82,8 +83,16 @@ async def run_agent(
                     )
                     if task is None:
                         return 0
-                    if tui_session is not None and resolve(task) is CommandAction.EXIT:
-                        return 0
+                    if tui_session is not None:
+                        action = resolve(task)
+                        if action is CommandAction.EXIT:
+                            return 0
+                        if action is CommandAction.USAGE:
+                            render_session_usage(
+                                runtime.session_usage(session_id),
+                                stderr=stderr,
+                            )
+                            continue
 
                     completed, needs_newline = await _run_turn(
                         runtime,

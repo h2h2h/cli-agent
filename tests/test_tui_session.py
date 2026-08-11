@@ -197,19 +197,22 @@ def _completions(text: str) -> list:
     return list(completer.get_completions(Document(text), CompleteEvent()))
 
 
-def test_completer_suggests_exit_for_bare_slash() -> None:
+def test_completer_suggests_exit_and_usage_for_bare_slash() -> None:
     completions = _completions("/")
-    assert len(completions) == 1
-    assert completions[0].text == "/exit"
-    assert completions[0].start_position == -1
+    assert [c.text for c in completions] == ["/exit", "/usage"]
+    assert [c.start_position for c in completions] == [-1, -1]
     assert completions[0].display_text == "/exit"
     assert completions[0].display_meta_text == specs[0].description
+    assert completions[1].display_text == "/usage"
+    assert completions[1].display_meta_text == specs[1].description
 
 
 def test_completer_filters_by_case_insensitive_prefix() -> None:
     assert [c.text for c in _completions("/e")] == ["/exit"]
     assert [c.text for c in _completions("/E")] == ["/exit"]
     assert [c.text for c in _completions("/exi")] == ["/exit"]
+    assert [c.text for c in _completions("/u")] == ["/usage"]
+    assert [c.text for c in _completions("/usage")] == ["/usage"]
     assert _completions("/z") == []
     assert _completions("") == []
 

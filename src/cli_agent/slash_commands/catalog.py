@@ -11,6 +11,7 @@ class CommandAction(Enum):
 
     PASS = auto()
     EXIT = auto()
+    USAGE = auto()
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,11 @@ specs: tuple[CommandSpec, ...] = (
         name="exit",
         description="End the current interactive session",
         action=CommandAction.EXIT,
+    ),
+    CommandSpec(
+        name="usage",
+        description="Show the session's total input and output tokens",
+        action=CommandAction.USAGE,
     ),
 )
 

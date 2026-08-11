@@ -11,7 +11,11 @@ from policy_fakes import _AskExecutablePolicy
 
 import cli_agent.runner as runner_module
 from cli_agent.config import CliConfig
-from cli_agent.presentation import render_diagnostic, render_event
+from cli_agent.presentation import (
+    render_diagnostic,
+    render_event,
+    render_session_usage,
+)
 from cli_agent.runner import run_agent
 from cli_agent.runtime import (
     AgentRuntime,
@@ -22,6 +26,7 @@ from cli_agent.runtime import (
     ModelUsage,
     RuntimeDiagnostic,
     ScriptedModelProvider,
+    SessionUsage,
     SystemMessage,
     TextBlock,
     TextDelta,
@@ -596,6 +601,354 @@ def test_tty_unknown_slash_input_runs_agent_turn_unmodified(
     provider.assert_exhausted()
     assert FakeTuiSession.instances[0].closed is True
     assert sessions == [sessions[0]]
+
+
+def test_tty_slash_usage_shows_zero_before_any_turn(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class TerminalInput(StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    class FakeTuiSession:
+        instances: list["FakeTuiSession"] = []
+
+        def __init__(self, *, stdin, stderr, specs) -> None:
+            del stdin, stderr, specs
+            self._responses = iter(("/usage", "/exit"))
+            self.instances.append(self)
+
+        async def read_text(self, prompt: str) -> str:
+            del prompt
+            return next(self._responses)
+
+        async def confirm(self, prompt: str) -> bool:
+            del prompt
+            raise AssertionError("confirmation was not expected")
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(runner_module, "TuiSession", FakeTuiSession)
+    provider = ScriptedModelProvider(script=())
+    sessions = _install_session_capture(monkeypatch)
+    stdout = StringIO()
+    stderr = _TerminalOutput()
+
+    exit_code = asyncio.run(
+        run_agent(
+            _config(tmp_path, task=None),
+            provider,
+            stdin=TerminalInput(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == ""
+    assert "\033[2;32m[usage] input:0, output:0\033[0m\n" in stderr.getvalue()
+    assert provider.requests == ()
+    assert sessions == [sessions[0]]
+    provider.assert_exhausted()
+
+
+def test_tty_slash_usage_shows_cumulative_across_turns(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class TerminalInput(StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    class FakeTuiSession:
+        instances: list["FakeTuiSession"] = []
+
+        def __init__(self, *, stdin, stderr, specs) -> None:
+            del stdin, stderr, specs
+            self._responses = iter(("work", "/usage", "more", "/usage", "/exit"))
+            self.instances.append(self)
+
+        async def read_text(self, prompt: str) -> str:
+            del prompt
+            return next(self._responses)
+
+        async def confirm(self, prompt: str) -> bool:
+            del prompt
+            raise AssertionError("confirmation was not expected")
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(runner_module, "TuiSession", FakeTuiSession)
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                TextDelta(text="Done."),
+                ModelCompletion(
+                    message=AssistantMessage.text("Done."),
+                    finish_reason="stop",
+                    usage=ModelUsage(
+                        input_tokens=10,
+                        output_tokens=20,
+                        total_tokens=30,
+                    ),
+                ),
+            ),
+            (
+                TextDelta(text="More."),
+                ModelCompletion(
+                    message=AssistantMessage.text("More."),
+                    finish_reason="stop",
+                    usage=ModelUsage(
+                        input_tokens=3,
+                        output_tokens=5,
+                        total_tokens=8,
+                    ),
+                ),
+            ),
+        )
+    )
+    stdout = StringIO()
+    stderr = _TerminalOutput()
+
+    exit_code = asyncio.run(
+        run_agent(
+            _config(tmp_path, task=None),
+            provider,
+            stdin=TerminalInput(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "Done.\nMore.\n"
+    assert len(provider.requests) == 2
+    usage_lines = [
+        line
+        for line in stderr.getvalue().splitlines()
+        if "[usage]" in line
+    ]
+    assert usage_lines == [
+        "\033[2;32m[usage] input:10, output:20\033[0m",
+        "\033[2;32m[usage] input:13, output:25\033[0m",
+    ]
+    provider.assert_exhausted()
+
+
+def test_tty_slash_usage_skips_completions_without_usage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class TerminalInput(StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    class FakeTuiSession:
+        instances: list["FakeTuiSession"] = []
+
+        def __init__(self, *, stdin, stderr, specs) -> None:
+            del stdin, stderr, specs
+            self._responses = iter(("first", "/usage", "second", "/usage", "/exit"))
+            self.instances.append(self)
+
+        async def read_text(self, prompt: str) -> str:
+            del prompt
+            return next(self._responses)
+
+        async def confirm(self, prompt: str) -> bool:
+            del prompt
+            raise AssertionError("confirmation was not expected")
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(runner_module, "TuiSession", FakeTuiSession)
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                TextDelta(text="Done."),
+                ModelCompletion(
+                    message=AssistantMessage.text("Done."),
+                    finish_reason="stop",
+                    usage=ModelUsage(
+                        input_tokens=10,
+                        output_tokens=20,
+                        total_tokens=30,
+                    ),
+                ),
+            ),
+            (
+                TextDelta(text="More."),
+                ModelCompletion(
+                    message=AssistantMessage.text("More."),
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+    stdout = StringIO()
+    stderr = _TerminalOutput()
+
+    exit_code = asyncio.run(
+        run_agent(
+            _config(tmp_path, task=None),
+            provider,
+            stdin=TerminalInput(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+    assert exit_code == 0
+    assert len(provider.requests) == 2
+    usage_lines = [
+        line
+        for line in stderr.getvalue().splitlines()
+        if "[usage]" in line
+    ]
+    assert usage_lines == [
+        "\033[2;32m[usage] input:10, output:20\033[0m",
+        "\033[2;32m[usage] input:10, output:20\033[0m",
+    ]
+    provider.assert_exhausted()
+
+
+def test_tty_slash_usage_accumulates_completions_within_one_turn(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class TerminalInput(StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    class FakeTuiSession:
+        instances: list["FakeTuiSession"] = []
+
+        def __init__(self, *, stdin, stderr, specs) -> None:
+            del stdin, stderr, specs
+            self._responses = iter(("work", "/usage", "/exit"))
+            self.instances.append(self)
+
+        async def read_text(self, prompt: str) -> str:
+            del prompt
+            return next(self._responses)
+
+        async def confirm(self, prompt: str) -> bool:
+            del prompt
+            raise AssertionError("confirmation was not expected")
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(runner_module, "TuiSession", FakeTuiSession)
+    call = ToolCall(
+        call_id="usage_proof",
+        name="exec",
+        arguments={"command": _python_command("print('proof')")},
+    )
+    tool_message = AssistantMessage(content=(call,))
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                ToolCallReady(call=call),
+                ModelCompletion(
+                    message=tool_message,
+                    finish_reason="tool_calls",
+                    usage=ModelUsage(
+                        input_tokens=100,
+                        output_tokens=10,
+                        total_tokens=110,
+                    ),
+                ),
+            ),
+            (
+                TextDelta(text="Done."),
+                ModelCompletion(
+                    message=AssistantMessage.text("Done."),
+                    finish_reason="stop",
+                    usage=ModelUsage(
+                        input_tokens=50,
+                        output_tokens=5,
+                        total_tokens=55,
+                    ),
+                ),
+            ),
+        )
+    )
+    stdout = StringIO()
+    stderr = _TerminalOutput()
+
+    exit_code = asyncio.run(
+        run_agent(
+            _config(tmp_path, task=None),
+            provider,
+            stdin=TerminalInput(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "Done.\n"
+    assert len(provider.requests) == 2
+    usage_lines = [
+        line
+        for line in stderr.getvalue().splitlines()
+        if "[usage]" in line
+    ]
+    assert usage_lines == [
+        "\033[2;32m[usage] input:150, output:15\033[0m",
+    ]
+    provider.assert_exhausted()
+
+
+def test_non_tty_slash_usage_runs_as_regular_task(tmp_path: Path) -> None:
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                TextDelta(text="Done."),
+                ModelCompletion(
+                    message=AssistantMessage.text("Done."),
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = asyncio.run(
+        run_agent(
+            _config(tmp_path, task=None),
+            provider,
+            stdin=StringIO("/usage\n:q\n"),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "Done.\n"
+    assert "[usage]" not in stderr.getvalue()
+    assert len(provider.requests) == 1
+    assert provider.requests[0].messages[-1] == UserMessage.text("/usage")
+    provider.assert_exhausted()
+
+
+def test_render_session_usage_is_plain_off_tty_and_styled_on_tty() -> None:
+    plain = StringIO()
+    render_session_usage(
+        SessionUsage(input_tokens=1234, output_tokens=567),
+        stderr=plain,
+    )
+    assert plain.getvalue() == "[usage] input:1234, output:567\n"
+
+    tty = _TerminalOutput()
+    render_session_usage(None, stderr=tty)
+    assert tty.getvalue() == "\033[2;32m[usage] input:0, output:0\033[0m\n"
 
 
 def test_one_shot_task_value_slash_exit_runs_as_regular_task(

@@ -8,6 +8,7 @@ from cli_agent.runtime import (
     ModelCompletion,
     ModelEvent,
     RuntimeDiagnostic,
+    SessionUsage,
     TextDelta,
     ToolCallReady,
 )
@@ -19,6 +20,18 @@ def render_prompt(*, stderr: TextIO) -> None:
     prompt = _styled("cli-agent> ", "\033[1;36m", stream=stderr)
     stderr.write(prompt)
     stderr.flush()
+
+
+def render_session_usage(usage: SessionUsage | None, *, stderr: TextIO) -> None:
+    """Render the session-cumulative token usage to a Host stream.
+
+    A missing usage snapshot is rendered as zero values.
+    """
+
+    if usage is None:
+        usage = SessionUsage(input_tokens=0, output_tokens=0)
+    text = f"[usage] input:{usage.input_tokens}, output:{usage.output_tokens}"
+    print(_styled(text, "\033[2;32m", stream=stderr), file=stderr, flush=True)
 
 
 def render_session_id(session_id: str, *, stderr: TextIO) -> None:

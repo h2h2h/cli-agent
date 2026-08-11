@@ -10,12 +10,16 @@ import pytest
 from cli_agent.slash_commands import CommandAction, CommandSpec, resolve, specs
 
 
-def test_catalog_contains_only_exit_with_display_metadata() -> None:
-    assert len(specs) == 1
-    spec = specs[0]
-    assert spec.name == "exit"
-    assert spec.description
-    assert spec.action is CommandAction.EXIT
+def test_catalog_contains_exit_and_usage_with_display_metadata() -> None:
+    assert len(specs) == 2
+    exit_spec = specs[0]
+    assert exit_spec.name == "exit"
+    assert exit_spec.description
+    assert exit_spec.action is CommandAction.EXIT
+    usage_spec = specs[1]
+    assert usage_spec.name == "usage"
+    assert usage_spec.description
+    assert usage_spec.action is CommandAction.USAGE
 
 
 def test_specs_is_read_only_stable_sequence() -> None:
@@ -38,6 +42,14 @@ def test_command_spec_is_immutable() -> None:
 )
 def test_resolve_matches_exit_with_surrounding_whitespace(text: str) -> None:
     assert resolve(text) is CommandAction.EXIT
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["/usage", " /usage", "/usage ", "  /usage  ", "\t/usage\n"],
+)
+def test_resolve_matches_usage_with_surrounding_whitespace(text: str) -> None:
+    assert resolve(text) is CommandAction.USAGE
 
 
 @pytest.mark.parametrize(
