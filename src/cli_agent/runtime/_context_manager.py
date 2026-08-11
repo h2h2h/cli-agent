@@ -44,6 +44,14 @@ class ContextOverflowError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class SessionUsage:
+    """Session-cumulative input and output tokens across all model calls."""
+
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
 class ContextPressure:
     """Token pressure of the next projected normal Model Request."""
 
@@ -302,6 +310,13 @@ class _ContextManager:
         self._last_prepared_revision: int | None = None
         self._observed_revision: int | None = None
         self._last_summarize_revision: int | None = None
+        self._usage = SessionUsage(input_tokens=0, output_tokens=0)
+
+    @property
+    def usage(self) -> SessionUsage:
+        """Return the session-cumulative token usage snapshot."""
+
+        return self._usage
 
     @property
     def history(self) -> tuple[ModelMessage, ...]:
@@ -343,6 +358,7 @@ class _ContextManager:
         self._anchor_revision = revision
         self._anchor_message_count = self._ledger.message_count
         self._anchor_input_tokens = usage.input_tokens
+        self._accumulate(usage)
 
     async def prepare_request(self) -> PreparedContext:
         """Project the next normal Model Request, compacting as needed."""
@@ -635,6 +651,7 @@ class _ContextManager:
         self._ledger.commit_summary(text.strip(), protected_start)
         self._last_summarize_revision = self._ledger.revision
         self._invalidate_anchor()
+        self._accumulate(summary_result.usage)
         projected_after, _ = self._projected()
         operation = ContextOperation(
             tier=3,
@@ -807,6 +824,16 @@ class _ContextManager:
         self._anchor_revision = None
         self._anchor_message_count = 0
         self._anchor_input_tokens = None
+
+    def _accumulate(self, usage: ModelUsage | None) -> None:
+        """Add one reported completion usage to the session total."""
+
+        if usage is None:
+            return
+        self._usage = SessionUsage(
+            input_tokens=self._usage.input_tokens + usage.input_tokens,
+            output_tokens=self._usage.output_tokens + usage.output_tokens,
+        )
 
     def _emit_operations(
         self,

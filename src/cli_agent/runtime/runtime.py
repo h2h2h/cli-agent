@@ -12,6 +12,7 @@ from typing import Any
 
 from cli_agent.runtime._agent_loop import AgentLoop
 from cli_agent.runtime._context import ContextPolicy
+from cli_agent.runtime._context_manager import SessionUsage
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.interaction import UserInteraction
 from cli_agent.runtime._environment.policy import ExecutionPolicy
@@ -300,6 +301,23 @@ class AgentRuntime:
         session = self._sessions.pop(session_id, None)
         if session is not None:
             await self._close_session_state(session)
+
+    def session_usage(self, session_id: str) -> SessionUsage | None:
+        """Return the session-cumulative token usage, or ``None`` when unknown.
+
+        Args:
+            session_id (`str`):
+                Host-visible Session identifier.
+
+        Returns:
+            The session-cumulative input and output token counts, or ``None``
+            when no open Session with this id exists, including closed ones.
+        """
+
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        return session.loop.usage
 
     async def __aenter__(self) -> AgentRuntime:
         self._ensure_open()

@@ -327,6 +327,7 @@ def test_skill_is_discoverable_and_loaded_on_demand(
         "RuntimeClosedError",
         "RuntimeDiagnostic",
         "ScriptedModelProvider",
+        "SessionUsage",
         "SystemMessage",
         "SyscallSchema",
         "TextBlock",

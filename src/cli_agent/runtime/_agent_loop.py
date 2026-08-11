@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from cli_agent.runtime._context import ContextPolicy
 from cli_agent.runtime._context_manager import (
     ContextOverflowError,
+    SessionUsage,
     _ContextManager,
 )
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -96,6 +97,12 @@ class AgentLoop:
         """Return an immutable snapshot of the active conversation."""
 
         return self._context.history
+
+    @property
+    def usage(self) -> SessionUsage:
+        """Return the session-cumulative token usage snapshot."""
+
+        return self._context.usage
 
     async def run(self, message: UserMessage) -> AsyncIterator[ModelEvent]:
         """Run one model turn, dispatching Tool Calls in message order."""
