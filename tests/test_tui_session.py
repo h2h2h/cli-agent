@@ -290,6 +290,31 @@ def test_escape_closes_menu_and_keeps_buffer(pipe_session) -> None:
     assert asyncio.run(scenario()) == (True, True, "/ex")
 
 
+def test_backspace_reopens_completion_menu(pipe_session) -> None:
+    session, input_stream = pipe_session
+
+    async def scenario() -> tuple[bool, bool, str | None]:
+        pending = asyncio.create_task(session.read_text("task> "))
+        input_stream.send_text("/e")
+        await asyncio.sleep(0.2)
+        app = get_app()
+        opened = app.layout.current_buffer.complete_state is not None
+
+        input_stream.send_text("z")
+        await asyncio.sleep(0.2)
+        closed = app.layout.current_buffer.complete_state is None
+
+        input_stream.send_text("\x7f")
+        await asyncio.sleep(0.2)
+        reopened = app.layout.current_buffer.complete_state is not None
+
+        input_stream.send_text("\r")
+        await pending
+        return opened, closed, reopened
+
+    assert asyncio.run(scenario()) == (True, True, True)
+
+
 def test_confirm_does_not_offer_slash_command_candidates(pipe_session) -> None:
     session, input_stream = pipe_session
 

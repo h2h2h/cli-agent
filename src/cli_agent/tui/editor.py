@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.filters import has_completions
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -33,6 +34,24 @@ def _build_key_bindings() -> KeyBindings:
     @bindings.add(Keys.Escape, filter=has_completions, eager=True)
     def _close_completion(event) -> None:
         event.current_buffer.cancel_completion()
+
+    @bindings.add(Keys.Backspace, save_before=lambda event: not event.is_repeat)
+    def _delete_before_cursor(event) -> None:
+        buffer = event.current_buffer
+        deleted = buffer.delete_before_cursor()
+        if not deleted:
+            event.app.output.bell()
+        if buffer.completer is not None and buffer.complete_while_typing():
+            completions = list(
+                buffer.completer.get_completions(
+                    buffer.document,
+                    CompleteEvent(completion_requested=True),
+                )
+            )
+            if completions:
+                buffer._set_completions(completions)
+            else:
+                buffer.cancel_completion()
 
     @bindings.add(Keys.ControlC)
     def _clear_or_interrupt(event) -> None:

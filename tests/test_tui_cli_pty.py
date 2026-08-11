@@ -37,6 +37,7 @@ pytestmark = pytest.mark.skipif(
 _COMPLETION_STOP = b"reason=stop"
 _INTERACTION_PROMPT = b"Allow once? [y/N]"
 _PROMPT = b"cli-agent>"
+_SLASH_DESCRIPTION = b"End the current interactive session"
 _PTY_TIMEOUT = 5.0
 
 
@@ -188,6 +189,142 @@ def test_cli_pty_permission_confirmation_accepts_only_yes(
     assert result.report["exit_code"] == 0
     assert result.report["tasks"] == ["rm approval-proof.txt"]
     assert proof.exists() is expected_exists
+    assert result.stdout == "completed\n"
+
+
+def test_cli_pty_slash_shows_candidate_and_description_on_stderr(
+    tmp_path: Path,
+) -> None:
+    result = _run_cli_pty(
+        tmp_path,
+        scenario="empty",
+        steps=(
+            (b"/", _SLASH_DESCRIPTION),
+            (b"\x03", None),
+            (b":q\r", None),
+        ),
+    )
+
+    _assert_restored(result)
+    assert result.report["exit_code"] == 0
+    assert result.report["tasks"] == []
+    assert b"/exit" in result.terminal_output.encode()
+    assert _SLASH_DESCRIPTION in result.terminal_output.encode()
+    assert "cli-agent>" not in result.stdout
+    assert "/exit" not in result.stdout
+
+
+def test_cli_pty_slash_prefix_filter_and_reopen_after_delete(
+    tmp_path: Path,
+) -> None:
+    result = _run_cli_pty(
+        tmp_path,
+        scenario="empty",
+        steps=(
+            (b"/e", _SLASH_DESCRIPTION),
+            (b"z", b"z"),
+            (b"\x7f", _SLASH_DESCRIPTION),
+            (b"\x03", None),
+            (b":q\r", None),
+        ),
+    )
+
+    _assert_restored(result)
+    assert result.report["exit_code"] == 0
+    assert result.report["tasks"] == []
+    assert result.terminal_output.encode().count(_SLASH_DESCRIPTION) >= 2
+
+
+def test_cli_pty_slash_tab_accepts_candidate_and_keeps_editing(
+    tmp_path: Path,
+) -> None:
+    result = _run_cli_pty(
+        tmp_path,
+        scenario="single",
+        steps=(
+            (b"/e", _SLASH_DESCRIPTION),
+            (b"\t now\r", _COMPLETION_STOP),
+            (b"", _PROMPT),
+            (b":q\r", None),
+        ),
+    )
+
+    _assert_restored(result)
+    assert result.report["exit_code"] == 0
+    assert result.report["tasks"] == ["/exit now"]
+    assert result.stdout == "completed\n"
+
+
+def test_cli_pty_slash_down_selects_candidate_before_tab(
+    tmp_path: Path,
+) -> None:
+    result = _run_cli_pty(
+        tmp_path,
+        scenario="single",
+        steps=(
+            (b"/e", _SLASH_DESCRIPTION),
+            (b"\x1b[B\t now\r", _COMPLETION_STOP),
+            (b"", _PROMPT),
+            (b":q\r", None),
+        ),
+    )
+
+    _assert_restored(result)
+    assert result.report["exit_code"] == 0
+    assert result.report["tasks"] == ["/exit now"]
+    assert result.stdout == "completed\n"
+
+
+def test_cli_pty_slash_enter_submits_buffer_without_candidate(
+    tmp_path: Path,
+) -> None:
+    result = _run_cli_pty(
+        tmp_path,
+        scenario="single",
+        steps=(
+            (b"/e", _SLASH_DESCRIPTION),
+            (b"\r", _COMPLETION_STOP),
+            (b"", _PROMPT),
+            (b":q\r", None),
+        ),
+    )
+
+    _assert_restored(result)
+    assert result.report["exit_code"] == 0
+    assert result.report["tasks"] == ["/e"]
+    assert result.stdout == "completed\n"
+
+
+def test_cli_pty_full_slash_exit_ends_session_without_turn(
+    tmp_path: Path,
+) -> None:
+    result = _run_cli_pty(
+        tmp_path,
+        scenario="empty",
+        steps=((b"/exit\r", None),),
+    )
+
+    _assert_restored(result)
+    assert result.report["exit_code"] == 0
+    assert result.report["tasks"] == []
+    assert result.stdout == ""
+    assert "[session]" in result.terminal_output
+
+
+def test_cli_pty_unknown_slash_input_runs_agent_turn(tmp_path: Path) -> None:
+    result = _run_cli_pty(
+        tmp_path,
+        scenario="single",
+        steps=(
+            (b"/unknown\r", _COMPLETION_STOP),
+            (b"", _PROMPT),
+            (b":q\r", None),
+        ),
+    )
+
+    _assert_restored(result)
+    assert result.report["exit_code"] == 0
+    assert result.report["tasks"] == ["/unknown"]
     assert result.stdout == "completed\n"
 
 
