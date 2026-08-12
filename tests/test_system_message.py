@@ -2,6 +2,9 @@
 
 from pathlib import Path
 
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime._project_instructions import _ProjectInstructions
 from cli_agent.runtime._system_message import assemble_system_message
 
 
@@ -185,9 +188,111 @@ def test_library_guidance_embeds_no_index_body_and_no_library_commands(
         assert banned not in library_part
 
 
-def _system_message_text(workspace: Path) -> str:
-    message = assemble_system_message(workspace, None)
+def test_workspace_section_states_source_scope_priority_and_content(
+    tmp_path: Path,
+) -> None:
+    source = str(tmp_path / "AGENTS.md")
+    instructions = _ProjectInstructions(
+        source=source,
+        text="# Project rules\n\nrun `uv run pytest` before review.\n",
+    )
+
+    body = _assemble_text(tmp_path, project_instructions=instructions)
+
+    assert "**Workspace instructions**" in body
+    assert f"Source: {source}" in body
+    assert (
+        "These instructions apply to the bound Workspace. Follow them unless "
+        "they conflict with the Runtime protocol, Host instructions, or an "
+        "explicit current user request." in body
+    )
+    assert (
+        "More specific explicit user requirements override Workspace "
+        "instructions." in body
+    )
+    assert "# Project rules\n\nrun `uv run pytest` before review.\n" in body
+
+
+def test_workspace_section_absent_without_snapshot(tmp_path: Path) -> None:
+    body = _system_message_text(tmp_path)
+
+    assert "**Workspace instructions**" not in body
+
+
+def test_section_order_is_intrinsic_tools_skills_workspace_host(
+    tmp_path: Path,
+) -> None:
+    body = _assemble_text(
+        tmp_path,
+        system_instruction="host-echo",
+        tool_catalog=_ToolCatalog(()),
+        skill_catalog=_SkillCatalog(()),
+        project_instructions=_ProjectInstructions(
+            source=str(tmp_path / "AGENTS.md"),
+            text="# rules\n",
+        ),
+    )
+
+    assert (
+        body.index("You are cli-agent")
+        < body.index("**Available Python Tools**")
+        < body.index("**Available Skills**")
+        < body.index("**Workspace instructions**")
+        < body.index("Host instruction\nhost-echo")
+    )
+
+
+def test_fake_headings_in_agents_md_do_not_reorder_real_sections(
+    tmp_path: Path,
+) -> None:
+    fake_headings = (
+        "# Fake **Available Python Tools**\n"
+        "## Fake **Available Skills**\n"
+        "### Fake **Workspace instructions**\n"
+        "#### Fake **Host instruction**\n"
+    )
+    body = _assemble_text(
+        tmp_path,
+        system_instruction="host-echo",
+        tool_catalog=_ToolCatalog(()),
+        skill_catalog=_SkillCatalog(()),
+        project_instructions=_ProjectInstructions(
+            source=str(tmp_path / "AGENTS.md"),
+            text=fake_headings,
+        ),
+    )
+
+    assert (
+        body.index("**Available Python Tools**")
+        < body.index("**Available Skills**")
+        < body.index("**Workspace instructions**")
+        < body.index("Host instruction\nhost-echo")
+    )
+    assert body.index("**Workspace instructions**\nSource:") < body.index(
+        "Host instruction\nhost-echo"
+    )
+
+
+def _assemble_text(
+    workspace: Path,
+    *,
+    system_instruction: str | None = None,
+    tool_catalog: _ToolCatalog | None = None,
+    skill_catalog: _SkillCatalog | None = None,
+    project_instructions: _ProjectInstructions | None = None,
+) -> str:
+    message = assemble_system_message(
+        workspace,
+        system_instruction,
+        tool_catalog=tool_catalog,
+        skill_catalog=skill_catalog,
+        project_instructions=project_instructions,
+    )
     return "\n".join(block.text for block in message.content)
+
+
+def _system_message_text(workspace: Path) -> str:
+    return _assemble_text(workspace)
 
 
 def _section(body: str, heading: str, next_heading: str | None) -> str:

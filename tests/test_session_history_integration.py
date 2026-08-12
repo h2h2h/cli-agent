@@ -195,6 +195,29 @@ def test_run_turn_persists_session_trace_in_order(
     asyncio.run(scenario())
 
 
+def test_system_prompt_persists_final_workspace_instructions_section(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _install_test_state_database(monkeypatch, tmp_path)
+    rules = "# Project rules\n\nrun `uv run pytest` before review.\n"
+    (tmp_path / "AGENTS.md").write_text(rules, encoding="utf-8")
+    provider = ScriptedModelProvider(script=(_plain_step("done"),))
+
+    async def scenario() -> None:
+        async with await _open_runtime(tmp_path, provider) as runtime:
+            await _run_turn(runtime, "s1", "hello")
+
+        (session,) = _sessions(tmp_path / "state.sqlite3")
+        system_prompt = json.loads(session[2])["blocks"][0]["text"]
+        assert "**Workspace instructions**" in system_prompt
+        assert f"Source: {tmp_path.resolve() / 'AGENTS.md'}" in system_prompt
+        assert rules in system_prompt
+        provider.assert_exhausted()
+
+    asyncio.run(scenario())
+
+
 def test_tier3_summary_stays_out_of_session_messages(
     tmp_path: Path,
     monkeypatch,

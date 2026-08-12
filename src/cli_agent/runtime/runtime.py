@@ -244,7 +244,10 @@ class AgentRuntime:
                 self._instruction,
                 tool_catalog=self._resources.tool_catalog,
                 skill_catalog=self._resources.skill_catalog,
+                project_instructions=self._resources.project_instructions,
             )
+            print(system.content[0].text)
+            exit()
             self._resources.session_history.begin_session(
                 session_id,
                 str(self._resources.workspace),
