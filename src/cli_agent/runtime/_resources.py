@@ -20,6 +20,10 @@ from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.source import _prepare_capability_source
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
+from cli_agent.runtime._project_instructions import (
+    _load_project_instructions,
+    _ProjectInstructions,
+)
 from cli_agent.runtime._session_history import _SessionHistory
 from cli_agent.runtime._state_db import _StateDatabase
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
@@ -40,6 +44,7 @@ class _RuntimeResources:
     backend: _BackendWorkspace
     base_env: Mapping[str, str] = field(repr=False)
     capability_view: _BoundCapabilityView
+    project_instructions: _ProjectInstructions | None
     tool_catalog: _ToolCatalog
     skill_catalog: _SkillCatalog
     library_catalog: _LibraryCatalog
@@ -104,9 +109,10 @@ async def _reconcile_runtime_resources(
     """Reconcile Workspace-lifetime resources in the established order.
 
     The RFC-0012 open order is fixed: Host sources, Backend Workspace and
-    Bound View, Workspace MCP, Tool Catalog, Backend Tool Runtime, Skill
-    Catalog, Library Catalog. Any failure rolls back every already-opened
-    resource in reverse order and re-raises the original failure.
+    Bound View, Workspace project instructions, Workspace MCP, Tool Catalog,
+    Backend Tool Runtime, Skill Catalog, Library Catalog. Any failure rolls
+    back every already-opened resource in reverse order and re-raises the
+    original failure.
 
     Args:
         workspace (`str | Path`):
@@ -133,6 +139,10 @@ async def _reconcile_runtime_resources(
             capability_state=_CapabilityState(root=paths.state),
         )
         opened.add(backend.close)
+        project_instructions = await _load_project_instructions(
+            backend.filesystem,
+            str(paths.root),
+        )
         state_database = _StateDatabase.open()
         opened.add(lambda: _close_database(state_database))
         summary_cache = _SummaryCache(state_database)
@@ -164,6 +174,7 @@ async def _reconcile_runtime_resources(
             backend=backend,
             base_env=backend.workspace_environment,
             capability_view=backend.capabilities,
+            project_instructions=project_instructions,
             tool_catalog=tool_catalog,
             skill_catalog=skill_catalog,
             library_catalog=library_catalog,

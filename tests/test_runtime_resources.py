@@ -14,6 +14,7 @@ from cli_agent.runtime._backend import _BackendWorkspace, _BoundCapabilityView
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime._project_instructions import _ProjectInstructions
 from cli_agent.runtime._resources import (
     _reconcile_runtime_resources,
     _RuntimeResources,
@@ -50,9 +51,32 @@ def test_reconcile_returns_complete_resource_aggregate(tmp_path: Path) -> None:
         assert isinstance(resources.base_env, Mapping)
         assert dict(resources.base_env) == {"TOKEN": "secret"}
         assert isinstance(resources.capability_view, _BoundCapabilityView)
+        assert resources.project_instructions is None
         assert isinstance(resources.tool_catalog, _ToolCatalog)
         assert isinstance(resources.skill_catalog, _SkillCatalog)
         assert isinstance(resources.library_catalog, _LibraryCatalog)
+
+    asyncio.run(scenario())
+
+
+def test_reconcile_loads_workspace_agents_md_snapshot(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    _environment(workspace, "TOKEN=secret\n")
+    content = "# Project rules\n\nrun `uv run pytest`.\n"
+    (workspace / "AGENTS.md").write_text(content, encoding="utf-8")
+
+    async def scenario() -> None:
+        resources = await _reconcile_runtime_resources(
+            workspace=workspace,
+            repertoire=None,
+            on_diagnostic=None,
+        )
+
+        assert isinstance(resources.project_instructions, _ProjectInstructions)
+        assert resources.project_instructions.source == str(
+            workspace.resolve() / "AGENTS.md"
+        )
+        assert resources.project_instructions.text == content
 
     asyncio.run(scenario())
 
@@ -121,6 +145,14 @@ def test_reconcile_runs_steps_in_documented_order(
             del source, capability_source, capability_state
             order.append("backend_open")
             return _FakeBackendWorkspace()
+
+    async def load_project_instructions(
+        filesystem: object,
+        workspace: str,
+    ) -> None:
+        del filesystem, workspace
+        order.append("project_instructions")
+        return None
 
     class _FakeMCPCatalog:
         @staticmethod
@@ -206,6 +238,11 @@ def test_reconcile_runs_steps_in_documented_order(
         prepare_capability_source,
     )
     monkeypatch.setattr(resources_module, "_LocalBackend", _FakeLocalBackend)
+    monkeypatch.setattr(
+        resources_module,
+        "_load_project_instructions",
+        load_project_instructions,
+    )
     monkeypatch.setattr(resources_module, "_StateDatabase", _FakeStateDatabase)
     monkeypatch.setattr(resources_module, "_SummaryCache", _FakeSummaryCache)
     monkeypatch.setattr(resources_module, "_SessionHistory", _FakeSessionHistory)
@@ -225,6 +262,7 @@ def test_reconcile_runs_steps_in_documented_order(
             "prepare_workspace",
             "prepare_capability_source",
             "backend_open",
+            "project_instructions",
             "state_database",
             "summary_cache",
             "session_history",
@@ -259,6 +297,7 @@ def test_mcp_projection_result_is_not_retained_in_aggregate(
             "backend",
             "base_env",
             "capability_view",
+            "project_instructions",
             "tool_catalog",
             "skill_catalog",
             "library_catalog",
@@ -418,6 +457,14 @@ class _TrackingStateDatabase:
         self.order.append("db.close")
 
 
+async def _noop_load_project_instructions(
+    filesystem: object,
+    workspace: str,
+) -> None:
+    del filesystem, workspace
+    return None
+
+
 class _NoopSummaryCache:
     def __init__(self, database: object) -> None:
         del database
@@ -482,6 +529,11 @@ def _install_noop_reconcile_fakes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     _TrackingLocalBackend.tool_runtime_failure = None
     _TrackingStateDatabase.order = order
     monkeypatch.setattr(resources_module, "_LocalBackend", _TrackingLocalBackend)
+    monkeypatch.setattr(
+        resources_module,
+        "_load_project_instructions",
+        _noop_load_project_instructions,
+    )
     monkeypatch.setattr(resources_module, "_StateDatabase", _TrackingStateDatabase)
     monkeypatch.setattr(resources_module, "_SummaryCache", _NoopSummaryCache)
     monkeypatch.setattr(resources_module, "_SessionHistory", _NoopSessionHistory)
@@ -546,6 +598,33 @@ def test_reconcile_failure_at_tool_runtime_closes_opened_resources(
     ]
 
 
+def test_project_instruction_load_failure_closes_opened_resources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def failing_load(filesystem: object, workspace: str) -> object:
+        del filesystem, workspace
+        raise ValueError("AGENTS.md is not valid UTF-8")
+
+    order = _install_noop_reconcile_fakes(monkeypatch)
+    monkeypatch.setattr(
+        resources_module,
+        "_load_project_instructions",
+        failing_load,
+    )
+
+    with pytest.raises(ValueError, match="not valid UTF-8"):
+        asyncio.run(
+            _reconcile_runtime_resources(
+                workspace=tmp_path,
+                repertoire=None,
+                on_diagnostic=None,
+            )
+        )
+
+    assert order == ["backend_open", "backend.close"]
+
+
 def test_backend_open_failure_propagates_without_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -602,6 +681,7 @@ def test_aggregate_close_follows_reverse_dependency_order(tmp_path: Path) -> Non
         backend=FakeBackend(),  # type: ignore[arg-type]
         base_env={},
         capability_view=object(),
+        project_instructions=None,
         tool_catalog=object(),
         skill_catalog=object(),
         library_catalog=FakeLibraryCatalog(),  # type: ignore[arg-type]
@@ -637,6 +717,7 @@ def test_aggregate_close_attempts_every_step_and_surfaces_failure(
         backend=backend,  # type: ignore[arg-type]
         base_env={},
         capability_view=object(),
+        project_instructions=None,
         tool_catalog=object(),
         skill_catalog=object(),
         library_catalog=FakeLibraryCatalog(),  # type: ignore[arg-type]
