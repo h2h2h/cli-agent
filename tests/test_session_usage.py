@@ -20,7 +20,7 @@ from cli_agent.runtime import (
     UserMessage,
 )
 from cli_agent.runtime._agent_loop import AgentLoop
-from cli_agent.runtime._context_manager import _ContextManager
+from cli_agent.runtime._context.manager import _ContextManager
 
 SYSTEM_MESSAGE = SystemMessage.text("System")
 SESSION_ID = "test-session"

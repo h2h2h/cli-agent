@@ -1,21 +1,23 @@
-"""Session-scoped Context ownership: ledger, budget, and request preparation."""
+"""Session-scoped Context ownership and request preparation."""
 
 from __future__ import annotations
 
-import json
-import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import AbstractSet, Literal
 
-from cli_agent.runtime._context import ContextPolicy
-from cli_agent.runtime._context_summarizer import (
+from cli_agent.runtime._context.ledger import _ContextLedger, _ContextLedgerError
+from cli_agent.runtime._context.policy import ContextPolicy
+from cli_agent.runtime._context.summarizer import (
     _ContextSummarizer,
     build_summary_messages,
     has_all_summary_sections,
-    summary_message,
 )
-from cli_agent.runtime._tool_result_reducer import _ToolResultReducer
+from cli_agent.runtime._context.tokens import (
+    estimate_message_tokens,
+    estimate_request_tokens,
+)
+from cli_agent.runtime._context.tool_results import _ToolResultReducer
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     AssistantMessage,
@@ -33,10 +35,6 @@ from cli_agent.runtime.model import (
 
 UsageSource = Literal["reported", "estimated"]
 OperationReason = Literal["watermark", "oversized_result", "overflow_recovery"]
-
-
-class _ContextLedgerError(RuntimeError):
-    """Raised when a Context History mutation breaks the model protocol."""
 
 
 class ContextOverflowError(RuntimeError):
@@ -93,197 +91,6 @@ class PreparedContext:
     operations: tuple[ContextOperation, ...] = ()
 
 
-class _ContextLedger:
-    """Own the ordered conversation and validate Turn and Tool Exchange edges."""
-
-    def __init__(self, system_message: SystemMessage) -> None:
-        self._messages: list[ModelMessage] = [system_message]
-        self._revision = 0
-        self._summary: str | None = None
-
-    @property
-    def history(self) -> tuple[ModelMessage, ...]:
-        """Return an immutable snapshot of the conversation."""
-
-        return tuple(self._messages)
-
-    @property
-    def revision(self) -> int:
-        """Return the current Context Revision."""
-
-        return self._revision
-
-    @property
-    def message_count(self) -> int:
-        """Return the number of messages owned by the Ledger."""
-
-        return len(self._messages)
-
-    @property
-    def summary(self) -> str | None:
-        """Return the current summary text, or ``None`` before the first commit."""
-
-        return self._summary
-
-    @property
-    def summary_frontier(self) -> int:
-        """Return the message index after the last summarized content."""
-
-        return 2 if self._summary is not None else 1
-
-    def summarize_delta(
-        self,
-        protected_start: int,
-        demand_tokens: int,
-    ) -> tuple[int, int] | None:
-        """Return the oldest closed-turn range meeting the token demand.
-
-        Only complete closed Turns after the Summary Frontier and before the
-        Protected Suffix are eligible; Active Turns and Tool Exchanges are
-        never split.
-        """
-
-        frontier = self.summary_frontier
-        accumulated = 0
-        selected_start: int | None = None
-        selected_end = frontier
-        for start, end in self._turn_ranges():
-            if start < frontier or end > protected_start:
-                continue
-            if not self._turn_is_closed(start, end):
-                continue
-            if selected_start is None:
-                selected_start = start
-            accumulated += sum(
-                estimate_message_tokens(message)
-                for message in self._messages[start:end]
-            )
-            selected_end = end
-            if accumulated >= demand_tokens:
-                break
-        if selected_start is None:
-            return None
-        return selected_start, selected_end
-
-    def commit_summary(self, summary_text: str, protected_start: int) -> None:
-        """Atomically replace the summary and delete summarized delta turns."""
-
-        self._messages = [
-            self._messages[0],
-            summary_message(summary_text),
-            *self._messages[protected_start:],
-        ]
-        self._summary = summary_text
-        self._revision += 1
-
-    def append(self, message: ModelMessage) -> None:
-        """Append one message, rejecting protocol-illegal mutations."""
-
-        if isinstance(message, SystemMessage):
-            raise _ContextLedgerError("system message cannot be appended")
-        if isinstance(message, AssistantMessage):
-            self._validate_assistant(message)
-        elif isinstance(message, ToolResultMessage):
-            self._validate_tool_results(message)
-        self._messages.append(message)
-        self._revision += 1
-
-    def replace_tool_results(
-        self,
-        message_index: int,
-        content: tuple[ToolResult, ...],
-    ) -> None:
-        """Replace one Tool Result Message payload without changing call_ids."""
-
-        self._messages[message_index] = ToolResultMessage(content=content)
-        self._revision += 1
-
-    def protected_suffix_start(self, target_tokens: int) -> int:
-        """Return the message index where the Protected Suffix begins.
-
-        The Protected Suffix accumulates complete User Turns from the end until
-        ``target_tokens`` is met; Active Turns are always included.
-        """
-
-        accumulated = 0
-        protected = len(self._messages)
-        for start, end in reversed(self._turn_ranges()):
-            accumulated += sum(
-                estimate_message_tokens(message)
-                for message in self._messages[start:end]
-            )
-            protected = start
-            if self._turn_is_closed(start, end) and accumulated >= target_tokens:
-                break
-        return protected
-
-    def _turn_ranges(self) -> tuple[tuple[int, int], ...]:
-        starts = [
-            index
-            for index, message in enumerate(self._messages)
-            if isinstance(message, UserMessage)
-        ]
-        ranges = []
-        for position, start in enumerate(starts):
-            end = (
-                starts[position + 1]
-                if position + 1 < len(starts)
-                else len(self._messages)
-            )
-            ranges.append((start, end))
-        return tuple(ranges)
-
-    def _turn_is_closed(self, start: int, end: int) -> bool:
-        del start
-        last = self._messages[end - 1]
-        if not isinstance(last, AssistantMessage):
-            return False
-        return not any(isinstance(block, ToolCall) for block in last.content)
-
-    def _validate_assistant(self, message: AssistantMessage) -> None:
-        call_ids = [
-            block.call_id for block in message.content if isinstance(block, ToolCall)
-        ]
-        if len(call_ids) != len(set(call_ids)):
-            raise _ContextLedgerError(
-                "assistant message contains a duplicate tool call_id"
-            )
-        if isinstance(self._messages[-1], AssistantMessage):
-            raise _ContextLedgerError(
-                "assistant message must follow a user or tool result message"
-            )
-
-    def _validate_tool_results(self, message: ToolResultMessage) -> None:
-        previous = self._messages[-1]
-        if not isinstance(previous, AssistantMessage):
-            raise _ContextLedgerError(
-                "tool result appended without a preceding tool call"
-            )
-        expected = {
-            block.call_id for block in previous.content if isinstance(block, ToolCall)
-        }
-        if not expected:
-            raise _ContextLedgerError(
-                "tool result appended without a preceding tool call"
-            )
-        seen: set[str] = set()
-        for result in message.content:
-            if result.call_id not in expected:
-                raise _ContextLedgerError(
-                    f"tool result call_id {result.call_id!r} has no matching tool call"
-                )
-            if result.call_id in seen:
-                raise _ContextLedgerError(
-                    f"duplicate tool result for call_id {result.call_id!r}"
-                )
-            seen.add(result.call_id)
-        missing = expected - seen
-        if missing:
-            raise _ContextLedgerError(
-                f"tool result is missing call_id {sorted(missing)[0]!r}"
-            )
-
-
 class _ContextManager:
     """Own Context History, revisions, usage anchors, and request preparation."""
 
@@ -299,7 +106,7 @@ class _ContextManager:
     ) -> None:
         self._ledger = _ContextLedger(system_message)
         self._policy = context_policy
-        self._reducer = _ToolResultReducer(context_policy.excluded_tools)
+        self._reducer = _ToolResultReducer()
         self._summarizer = _ContextSummarizer(provider)
         self._session_id = session_id
         self._on_diagnostic = on_diagnostic
@@ -540,11 +347,10 @@ class _ContextManager:
             candidate = self._next_candidate(state, skipped)
             if candidate is None:
                 break
-            message_index, result_index, call, result = candidate
+            message_index, result_index, result = candidate
             reclaim = self._candidate_reclaim(
                 message_index,
                 result_index,
-                call,
                 result,
                 prune=prune,
             )
@@ -557,7 +363,6 @@ class _ContextManager:
             self._apply_result(
                 message_index,
                 result_index,
-                call,
                 result,
                 prune=prune,
             )
@@ -687,13 +492,12 @@ class _ContextManager:
             candidate = self._newest_compressible()
             if candidate is None:
                 break
-            message_index, result_index, call, result = candidate
+            message_index, result_index, result = candidate
             prune = self._reducer.state_of(result) == "snipped"
             revision_before = self._ledger.revision
             self._apply_result(
                 message_index,
                 result_index,
-                call,
                 result,
                 prune=prune,
             )
@@ -715,7 +519,7 @@ class _ContextManager:
         self,
         state: str,
         skipped: AbstractSet[tuple[int, int]],
-    ) -> tuple[int, int, ToolCall, ToolResult] | None:
+    ) -> tuple[int, int, ToolResult] | None:
         protected = self._protected_start()
         history = self._ledger.history
         for message_index in range(1, protected):
@@ -736,14 +540,16 @@ class _ContextManager:
                 call = calls.get(result.call_id)
                 if call is None or self._reducer.state_of(result) != state:
                     continue
-                if not self._reducer.can_reduce(call, result):
+                if call.name in self._policy.excluded_tools:
                     continue
-                return message_index, result_index, call, result
+                if not self._reducer.can_reduce(result):
+                    continue
+                return message_index, result_index, result
         return None
 
     def _newest_compressible(
         self,
-    ) -> tuple[int, int, ToolCall, ToolResult] | None:
+    ) -> tuple[int, int, ToolResult] | None:
         history = self._ledger.history
         for message_index in range(len(history) - 1, 0, -1):
             message = history[message_index]
@@ -760,16 +566,17 @@ class _ContextManager:
             for result_index in range(len(message.content) - 1, -1, -1):
                 result = message.content[result_index]
                 call = calls.get(result.call_id)
-                if call is None or not self._reducer.can_reduce(call, result):
+                if call is None or call.name in self._policy.excluded_tools:
                     continue
-                return message_index, result_index, call, result
+                if not self._reducer.can_reduce(result):
+                    continue
+                return message_index, result_index, result
         return None
 
     def _candidate_reclaim(
         self,
         message_index: int,
         result_index: int,
-        call: ToolCall,
         result: ToolResult,
         *,
         prune: bool,
@@ -777,9 +584,7 @@ class _ContextManager:
         message = self._ledger.history[message_index]
         assert isinstance(message, ToolResultMessage)
         new_result = (
-            self._reducer.prune(call, result)
-            if prune
-            else self._reducer.snip(call, result)
+            self._reducer.prune(result) if prune else self._reducer.snip(result)
         )
         content = (
             message.content[:result_index]
@@ -794,7 +599,6 @@ class _ContextManager:
         self,
         message_index: int,
         result_index: int,
-        call: ToolCall,
         result: ToolResult,
         *,
         prune: bool,
@@ -802,9 +606,7 @@ class _ContextManager:
         message = self._ledger.history[message_index]
         assert isinstance(message, ToolResultMessage)
         new_result = (
-            self._reducer.prune(call, result)
-            if prune
-            else self._reducer.snip(call, result)
+            self._reducer.prune(result) if prune else self._reducer.snip(result)
         )
         content = (
             message.content[:result_index]
@@ -899,55 +701,3 @@ class _ContextManager:
             return self._anchor_input_tokens, "reported"
         added = sum(estimate_message_tokens(message) for message in delta)
         return self._anchor_input_tokens + added, "estimated"
-
-
-def estimate_request_tokens(request: ModelRequest) -> int:
-    """Return a conservative deterministic input token estimate for one request."""
-
-    message_tokens = sum(
-        estimate_message_tokens(message) for message in request.messages
-    )
-    tool_tokens = sum(
-        8 + _estimate_text_tokens(_dump(tool.to_json())) for tool in request.tools
-    )
-    return message_tokens + tool_tokens
-
-
-def estimate_message_tokens(message: ModelMessage) -> int:
-    """Return a conservative deterministic input token estimate for one message."""
-
-    if isinstance(message, SystemMessage | UserMessage):
-        return 4 + _estimate_text_tokens(_join_text(message.content))
-    if isinstance(message, AssistantMessage):
-        text_blocks = tuple(
-            block for block in message.content if isinstance(block, TextBlock)
-        )
-        calls = tuple(block for block in message.content if isinstance(block, ToolCall))
-        call_tokens = sum(
-            8 + _estimate_text_tokens(_dump(call.arguments)) for call in calls
-        )
-        return 4 + _estimate_text_tokens(_join_text(text_blocks)) + call_tokens
-    return 4 + sum(
-        8
-        + _estimate_text_tokens(
-            _dump(result.error if result.error is not None else result.output)
-        )
-        for result in message.content
-    )
-
-
-def _estimate_text_tokens(text: str) -> int:
-    cjk = sum(
-        1
-        for char in text
-        if "\u3400" <= char <= "\u4dbf" or "\u4e00" <= char <= "\u9fff"
-    )
-    return cjk + math.ceil((len(text) - cjk) / 4)
-
-
-def _join_text(blocks: tuple[TextBlock, ...]) -> str:
-    return "".join(block.text for block in blocks)
-
-
-def _dump(value: object) -> str:
-    return json.dumps(value, sort_keys=True)

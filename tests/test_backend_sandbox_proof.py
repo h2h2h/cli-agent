@@ -48,15 +48,15 @@ from cli_agent.runtime._backend.facts import (
     _ResolvedPath,
     _ToolRuntimeStatus,
 )
-from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
+from cli_agent.runtime._database.state import _StateDatabase
+from cli_agent.runtime._database.summary_cache import _SummaryCache
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import (
     _ExecutionOutcome,
     _ExecutionOutput,
     _PreparedExecution,
 )
-from cli_agent.runtime._state_db import _StateDatabase
 
 _SANDBOX_ROOT = "/sandbox"
 _VIEW_ROOT = "/sandbox/.workspace"

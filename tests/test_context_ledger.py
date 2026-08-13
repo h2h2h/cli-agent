@@ -14,10 +14,9 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._context_manager import (
-    _ContextLedger,
-    _ContextLedgerError,
-    _ContextManager,
+from cli_agent.runtime._context.ledger import _ContextLedger, _ContextLedgerError
+from cli_agent.runtime._context.manager import _ContextManager
+from cli_agent.runtime._context.tokens import (
     estimate_message_tokens,
     estimate_request_tokens,
 )

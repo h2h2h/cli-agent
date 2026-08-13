@@ -3,8 +3,8 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from cli_agent.runtime._session_history import _SessionHistory
-from cli_agent.runtime._state_db import _StateDatabase
+from cli_agent.runtime._database.session_history import _SessionHistory
+from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     AssistantMessage,

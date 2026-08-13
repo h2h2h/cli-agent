@@ -14,7 +14,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TypeAlias
 
-from cli_agent.runtime._state_db import _StateDatabase
+from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     AssistantMessage,
@@ -151,9 +151,7 @@ def serialize_system_prompt(system_message: SystemMessage) -> str:
     current catalog state.
     """
 
-    return _dump(
-        {"blocks": [_text_block(block) for block in system_message.content]}
-    )
+    return _dump({"blocks": [_text_block(block) for block in system_message.content]})
 
 
 def _serialize_message(message: ModelMessage) -> tuple[str, str]:

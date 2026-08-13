@@ -12,7 +12,7 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._context_manager import (
+from cli_agent.runtime._context.manager import (
     ContextOverflowError,
     _ContextManager,
 )

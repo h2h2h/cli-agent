@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from cli_agent.runtime._state_db import _StateDatabase
+from cli_agent.runtime._database.state import _StateDatabase
 
 _SUBJECT_KINDS = ("file", "directory")
 

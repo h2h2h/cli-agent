@@ -26,9 +26,9 @@ from cli_agent.runtime._backend import (
     _FilesystemError,
     _FileWriteRequest,
 )
-from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
-from cli_agent.runtime._state_db import _StateDatabase
+from cli_agent.runtime._database.state import _StateDatabase
+from cli_agent.runtime._database.summary_cache import _SummaryCache
 
 _LOWER: dict[str, bytes | None] = {
     "library/notes.md": b"lower note\n",

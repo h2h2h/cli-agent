@@ -24,7 +24,7 @@ _FORBIDDEN_MODULES = frozenset(
         "cli_agent.runtime.model",
         "cli_agent.runtime.runtime",
         "cli_agent.runtime._agent_loop",
-        "cli_agent.runtime._state_db",
+        "cli_agent.runtime._database.state",
         "cli_agent.runtime._capability.view",
     }
 )

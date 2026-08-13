@@ -12,8 +12,8 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._context_manager import _ContextManager
-from cli_agent.runtime._context_summarizer import (
+from cli_agent.runtime._context.manager import _ContextManager
+from cli_agent.runtime._context.summarizer import (
     SUMMARY_DELIMITER_CLOSE,
     SUMMARY_DELIMITER_OPEN,
 )

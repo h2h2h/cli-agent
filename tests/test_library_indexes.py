@@ -5,14 +5,14 @@ from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
     _LocalCapabilityView,
 )
-from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.library.facts import (
     _content_digest,
     _file_fingerprint,
 )
 from cli_agent.runtime._capability.workspace import _prepare_workspace
-from cli_agent.runtime._state_db import _StateDatabase
+from cli_agent.runtime._database.state import _StateDatabase
+from cli_agent.runtime._database.summary_cache import _SummaryCache
 
 
 def _repertoire(workspace: Path) -> Path:

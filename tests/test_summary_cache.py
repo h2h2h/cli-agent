@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from cli_agent.runtime._capability.library.cache import _SummaryCache
-from cli_agent.runtime._state_db import _default_state_db_path, _StateDatabase
+from cli_agent.runtime._database.state import _default_state_db_path, _StateDatabase
+from cli_agent.runtime._database.summary_cache import _SummaryCache
 
 
 def _cache(path: Path) -> _SummaryCache:

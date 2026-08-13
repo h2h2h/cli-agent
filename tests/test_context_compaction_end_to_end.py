@@ -29,7 +29,7 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._context_manager import estimate_request_tokens
+from cli_agent.runtime._context.tokens import estimate_request_tokens
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 _user_interaction = _ScriptedInteraction("deny")

@@ -1,5 +1,5 @@
 from cli_agent.runtime import ToolCall, ToolResult
-from cli_agent.runtime._tool_result_reducer import (
+from cli_agent.runtime._context.tool_results import (
     SNIP_CHUNK_MAX_CHARS,
     SNIP_HEAD_CHUNKS,
     SNIP_TAIL_CHUNKS,
@@ -67,35 +67,19 @@ def test_state_of_detects_monotonic_reduction_states() -> None:
 
 
 def test_can_reduce_only_recognized_success_snapshots() -> None:
-    assert REDUCER.can_reduce(CALL, _result(output=_snapshot()))
-    assert (
-        REDUCER.can_reduce(CALL, _result(output=_snapshot(), error={"code": "x"}))
-        is False
-    )
-    assert REDUCER.can_reduce(CALL, _result(output="not a snapshot")) is False
-    assert REDUCER.can_reduce(CALL, _result(output=_snapshot()["ok"])) is False
-    assert REDUCER.can_reduce(CALL, _result(output=None)) is False
+    assert REDUCER.can_reduce(_result(output=_snapshot()))
+    assert REDUCER.can_reduce(_result(output=_snapshot(), error={"code": "x"})) is False
+    assert REDUCER.can_reduce(_result(output="not a snapshot")) is False
+    assert REDUCER.can_reduce(_result(output=_snapshot()["ok"])) is False
+    assert REDUCER.can_reduce(_result(output=None)) is False
     assert (
         REDUCER.can_reduce(
-            CALL,
             _result(output={**_snapshot(), "chunks": "not-a-list"}),
         )
         is False
     )
     pruned = _result(output={**_snapshot(), "reclaimed": {"state": "pruned"}})
-    assert REDUCER.can_reduce(CALL, pruned) is False
-
-
-def test_can_reduce_respects_excluded_tools() -> None:
-    reducer = _ToolResultReducer(excluded_tools=frozenset({"exec"}))
-
-    assert reducer.can_reduce(CALL, _result(output=_snapshot())) is False
-    other_call = ToolCall(
-        call_id="call_2",
-        name="output",
-        arguments={"exec_id": "exec_1"},
-    )
-    assert reducer.can_reduce(other_call, _result(output=_snapshot())) is True
+    assert REDUCER.can_reduce(pruned) is False
 
 
 def test_snip_keeps_bounded_head_and_tail_with_omission_stats() -> None:
@@ -103,7 +87,7 @@ def test_snip_keeps_bounded_head_and_tail_with_omission_stats() -> None:
     snapshot = _snapshot(chunk_count=20)
     result = _result(output=snapshot)
 
-    snipped = REDUCER.snip(CALL, result)
+    snipped = REDUCER.snip(result)
 
     assert snipped.call_id == CALL.call_id
     output = snipped.output
@@ -136,7 +120,7 @@ def test_snip_caps_oversized_chunk_text_without_splitting_characters() -> None:
     snapshot = _snapshot(chunk_count=1, text=text)
     result = _result(output=snapshot)
 
-    snipped = REDUCER.snip(CALL, result)
+    snipped = REDUCER.snip(result)
 
     output = snipped.output
     assert isinstance(output, dict)
@@ -160,7 +144,7 @@ def test_snip_preserves_mixed_streams_and_short_results() -> None:
     ]
     short_result = _result(output={**_snapshot(chunk_count=8), "chunks": mixed})
 
-    snipped = REDUCER.snip(CALL, short_result)
+    snipped = REDUCER.snip(short_result)
 
     output = snipped.output
     assert isinstance(output, dict)
@@ -174,7 +158,7 @@ def test_snip_preserves_mixed_streams_and_short_results() -> None:
 def test_prune_keeps_only_identification_and_reclaim_marker() -> None:
     result = _result(output=_snapshot(chunk_count=20))
 
-    pruned = REDUCER.prune(CALL, result)
+    pruned = REDUCER.prune(result)
 
     assert pruned.call_id == CALL.call_id
     output = pruned.output

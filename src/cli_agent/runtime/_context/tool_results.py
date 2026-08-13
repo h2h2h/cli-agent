@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from cli_agent.runtime.model import JSONValue, ToolCall, ToolResult
+from cli_agent.runtime.model import JSONValue, ToolResult
 
 SNIP_HEAD_CHUNKS = 6
 SNIP_TAIL_CHUNKS = 4
@@ -15,9 +15,6 @@ ReductionState = Literal["raw", "snipped", "pruned"]
 
 class _ToolResultReducer:
     """Reduce recognized Execution snapshots without calling any model."""
-
-    def __init__(self, excluded_tools: frozenset[str] = frozenset()) -> None:
-        self._excluded_tools = excluded_tools
 
     def state_of(self, result: ToolResult) -> ReductionState:
         """Return the monotonic compaction state of one Tool Result."""
@@ -33,21 +30,18 @@ class _ToolResultReducer:
                     return "pruned"
         return "raw"
 
-    def can_reduce(self, call: ToolCall, result: ToolResult) -> bool:
+    def can_reduce(self, result: ToolResult) -> bool:
         """Return whether one success Tool Result is a reduction candidate."""
 
         if result.error is not None:
-            return False
-        if call.name in self._excluded_tools:
             return False
         if not _is_execution_snapshot(result.output):
             return False
         return self.state_of(result) != "pruned"
 
-    def snip(self, call: ToolCall, result: ToolResult) -> ToolResult:
+    def snip(self, result: ToolResult) -> ToolResult:
         """Return a bounded-head/tail version of one Execution snapshot."""
 
-        del call
         output = result.output
         assert isinstance(output, dict)
         chunks = output["chunks"]
@@ -75,10 +69,9 @@ class _ToolResultReducer:
             },
         )
 
-    def prune(self, call: ToolCall, result: ToolResult) -> ToolResult:
+    def prune(self, result: ToolResult) -> ToolResult:
         """Return a terminal identification-only version of a snipped snapshot."""
 
-        del call
         output = result.output
         assert isinstance(output, dict)
         return ToolResult(

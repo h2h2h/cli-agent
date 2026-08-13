@@ -11,7 +11,7 @@ from cli_agent.runtime import (
     ToolCallReady,
     UserMessage,
 )
-from cli_agent.runtime._context_summarizer import (
+from cli_agent.runtime._context.summarizer import (
     SUMMARY_SECTION_HEADERS,
     SummaryResult,
     _ContextSummarizer,

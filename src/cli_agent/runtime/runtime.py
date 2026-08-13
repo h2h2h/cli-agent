@@ -11,8 +11,8 @@ from types import TracebackType
 from typing import Any
 
 from cli_agent.runtime._agent_loop import AgentLoop
-from cli_agent.runtime._context import ContextPolicy
-from cli_agent.runtime._context_manager import SessionUsage
+from cli_agent.runtime._context import ContextPolicy, SessionUsage
+from cli_agent.runtime._database.session_history import serialize_system_prompt
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.interaction import UserInteraction
 from cli_agent.runtime._environment.policy import ExecutionPolicy
@@ -20,7 +20,6 @@ from cli_agent.runtime._resources import (
     _reconcile_runtime_resources,
     _RuntimeResources,
 )
-from cli_agent.runtime._session_history import serialize_system_prompt
 from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import ModelEvent, ModelProvider, UserMessage
@@ -246,8 +245,6 @@ class AgentRuntime:
                 skill_catalog=self._resources.skill_catalog,
                 project_instructions=self._resources.project_instructions,
             )
-            print(system.content[0].text)
-            exit()
             self._resources.session_history.begin_session(
                 session_id,
                 str(self._resources.workspace),

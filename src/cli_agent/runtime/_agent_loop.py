@@ -8,9 +8,9 @@ import re
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping
 
-from cli_agent.runtime._context import ContextPolicy
-from cli_agent.runtime._context_manager import (
+from cli_agent.runtime._context import (
     ContextOverflowError,
+    ContextPolicy,
     SessionUsage,
     _ContextManager,
 )

@@ -28,8 +28,8 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._session_history import _SessionHistory
-from cli_agent.runtime._state_db import _StateDatabase
+from cli_agent.runtime._database.session_history import _SessionHistory
+from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 _user_interaction = _ScriptedInteraction("deny")

@@ -21,7 +21,6 @@ from cli_agent.runtime._backend import (
     _FileWriteRequest,
     _WorkspaceFilesystem,
 )
-from cli_agent.runtime._capability.library.cache import _SummaryCache
 from cli_agent.runtime._capability.library.facts import (
     _SUMMARY_UNAVAILABLE,
     LibraryEntry,
@@ -33,6 +32,7 @@ from cli_agent.runtime._capability.library.parser import (
     LibraryParseError,
     _select_parser,
 )
+from cli_agent.runtime._database.summary_cache import _SummaryCache
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     ModelCompletion,
