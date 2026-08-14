@@ -27,6 +27,25 @@ class SessionNotFoundError(HostFacingError):
         )
 
 
+class SessionArchivedError(HostFacingError):
+    """Raised when a resume-facing operation targets an archived session.
+
+    Archived sessions stay excluded from the default listing and from
+    resume until they are explicitly unarchived.
+
+    Args:
+        session_id (`str`): The archived session id.
+    """
+
+    def __init__(self, *, session_id: str) -> None:
+        super().__init__(
+            code="session_archived",
+            message="Session is archived.",
+            hint="Unarchive the session before resuming it.",
+            details={"session_id": session_id},
+        )
+
+
 class SessionConflictError(HostFacingError):
     """Raised when a durable write's precondition no longer matches.
 

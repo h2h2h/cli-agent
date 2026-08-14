@@ -7,9 +7,12 @@ anchored to the journal revision they were derived from. Sessions are
 created with revision 0, every journal append carries the caller's
 expected revision and compares-and-swaps the session frontier inside
 one short transaction, and loading re-validates session metadata plus
-the full raw journal. Database failures, corrupted rows, unknown ids,
-and revision conflicts raise classified Host-facing session errors
-instead of degrading to a diagnostic-only trace.
+the full raw journal. Archive, unarchive, and delete keep separate
+lifecycle semantics: archive only sets the metadata marker, and delete
+removes the whole session through the schema's cascade. Database
+failures, corrupted rows, unknown ids, and revision conflicts raise
+classified Host-facing session errors instead of degrading to a
+diagnostic-only trace.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from cli_agent.errors.session import (
+    SessionArchivedError,
     SessionConflictError,
     SessionCorruptedError,
     SessionNotFoundError,
@@ -32,7 +36,18 @@ from cli_agent.runtime._session import (
     decode_journal_message,
     encode_journal_message,
 )
-from cli_agent.runtime.model import ModelMessage
+from cli_agent.runtime.model import (
+    AssistantMessage,
+    ModelMessage,
+    ToolCall,
+    ToolResult,
+    ToolResultMessage,
+)
+
+_INTERRUPTED_MESSAGE = (
+    "The previous tool execution was interrupted. Its side effects are "
+    "unknown. Inspect the workspace before retrying."
+)
 
 _INSERT_USAGE_SQL = (
     "INSERT INTO session_usage_records "
@@ -147,8 +162,16 @@ class SessionStore:
             raise _persistence_error("load", session_id, exc) from exc
         return session, _decode_journal(session_id, journal, session.revision)
 
-    def list(self) -> tuple[Session, ...]:
-        """List every durable session in creation order.
+    def list(self, *, include_archived: bool = False) -> tuple[Session, ...]:
+        """List durable sessions in creation order.
+
+        Archived sessions are excluded by default because resume only
+        considers live sessions; management views pass
+        ``include_archived=True``.
+
+        Args:
+            include_archived (`bool`): Whether to also return archived
+                sessions.
 
         Returns:
             The stored sessions ordered by ``created_at``.
@@ -159,12 +182,13 @@ class SessionStore:
             SessionPersistenceError: If the database cannot read.
         """
 
+        archived_filter = "" if include_archived else " WHERE archived_at IS NULL"
         try:
             with self._database.transaction() as connection:
                 rows = connection.execute(
                     "SELECT session_id, workspace_id, revision, config, "
-                    "created_at, updated_at, archived_at FROM sessions "
-                    "ORDER BY created_at"
+                    "created_at, updated_at, archived_at FROM sessions"
+                    f"{archived_filter} ORDER BY created_at"
                 ).fetchall()
         except sqlite3.Error as exc:
             raise _persistence_error("list", None, exc) from exc
@@ -538,6 +562,244 @@ class SessionStore:
                 session_id,
                 exc,
             ) from exc
+
+    def archive(self, session_id: str) -> None:
+        """Mark one session archived.
+
+        Archiving only sets the ``archived_at`` metadata marker: the
+        journal, usage records, and snapshots stay untouched, and the
+        session stays resumable after an explicit unarchive.
+
+        Args:
+            session_id (`str`): The session to archive.
+
+        Raises:
+            SessionNotFoundError: If the session id has no row.
+            SessionPersistenceError: If the database cannot write.
+        """
+
+        now = datetime.now(timezone.utc)
+        try:
+            with self._database.transaction() as connection:
+                cursor = connection.execute(
+                    "UPDATE sessions SET archived_at = ?, updated_at = ? "
+                    "WHERE session_id = ?",
+                    (_isoformat(now), _isoformat(now), session_id),
+                )
+        except sqlite3.Error as exc:
+            raise _persistence_error("archive", session_id, exc) from exc
+        if cursor.rowcount == 0:
+            raise SessionNotFoundError(session_id=session_id)
+
+    def unarchive(self, session_id: str) -> None:
+        """Clear one session's archived marker.
+
+        Args:
+            session_id (`str`): The session to unarchive.
+
+        Raises:
+            SessionNotFoundError: If the session id has no row.
+            SessionPersistenceError: If the database cannot write.
+        """
+
+        now = datetime.now(timezone.utc)
+        try:
+            with self._database.transaction() as connection:
+                cursor = connection.execute(
+                    "UPDATE sessions SET archived_at = NULL, updated_at = ? "
+                    "WHERE session_id = ?",
+                    (_isoformat(now), session_id),
+                )
+        except sqlite3.Error as exc:
+            raise _persistence_error("unarchive", session_id, exc) from exc
+        if cursor.rowcount == 0:
+            raise SessionNotFoundError(session_id=session_id)
+
+    def delete(self, session_id: str) -> None:
+        """Delete one session and all its durable data.
+
+        The journal, usage records, and context snapshots are removed
+        by the schema's foreign-key cascade inside the same transaction
+        as the metadata delete. Detaching an active binding before the
+        delete is the Runtime's responsibility.
+
+        Args:
+            session_id (`str`): The session to delete.
+
+        Raises:
+            SessionNotFoundError: If the session id has no row.
+            SessionPersistenceError: If the database cannot write.
+        """
+
+        try:
+            with self._database.transaction() as connection:
+                cursor = connection.execute(
+                    "DELETE FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                )
+        except sqlite3.Error as exc:
+            raise _persistence_error("delete", session_id, exc) from exc
+        if cursor.rowcount == 0:
+            raise SessionNotFoundError(session_id=session_id)
+
+    def repair_interrupted_execution(
+        self,
+        session_id: str,
+        *,
+        expected_revision: int,
+    ) -> int:
+        """Repair one session's crash frontier for interrupted tool calls.
+
+        Scans the journal for tool calls that never received a matching
+        tool result - the frontier left behind when a process crashed
+        between an assistant tool call and its results - and appends
+        one synthetic ``execution_interrupted`` ToolResultMessage through
+        the usual compare-and-swap guard, so a concurrent writer can
+        never be silently overwritten. The repair never executes tools:
+        the synthetic results only tell the model that the side effects
+        are unknown. Resuming twice only appends once, because the
+        synthetic results resolve the frontier.
+
+        Args:
+            session_id (`str`): The session to repair.
+            expected_revision (`int`): The revision the caller believes
+                is the session frontier.
+
+        Returns:
+            The new revision after a repair append, or the unchanged
+            current revision when the frontier already holds no
+            unresolved tool calls.
+
+        Raises:
+            SessionNotFoundError: If the session id has no row.
+            SessionArchivedError: If the session is archived; resume
+                requires an explicit unarchive first.
+            SessionConflictError: If the session revision no longer
+                equals ``expected_revision``.
+            SessionCorruptedError: If the journal structure is invalid.
+            SessionPersistenceError: If the database cannot read or
+                write.
+        """
+
+        now = datetime.now(timezone.utc)
+        try:
+            with self._database.transaction() as connection:
+                session_row = connection.execute(
+                    "SELECT revision, archived_at FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if session_row is None:
+                    raise SessionNotFoundError(session_id=session_id)
+                frontier, archived_at = session_row
+                if archived_at is not None:
+                    raise SessionArchivedError(session_id=session_id)
+                rows = connection.execute(
+                    "SELECT revision, role, payload FROM session_journal "
+                    "WHERE session_id = ? ORDER BY revision",
+                    (session_id,),
+                ).fetchall()
+                pending = _unresolved_call_ids(session_id, rows)
+                if not pending:
+                    return frontier
+                cursor = connection.execute(
+                    "UPDATE sessions SET revision = ?, updated_at = ? "
+                    "WHERE session_id = ? AND revision = ?",
+                    (
+                        expected_revision + 1,
+                        _isoformat(now),
+                        session_id,
+                        expected_revision,
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    raise _classify_stale(
+                        connection,
+                        session_id,
+                        expected_revision,
+                    )
+                _, payload = encode_journal_message(
+                    ToolResultMessage(
+                        content=tuple(
+                            ToolResult(
+                                call_id=call_id,
+                                output=_interrupted_output(),
+                            )
+                            for call_id in pending
+                        )
+                    )
+                )
+                connection.execute(
+                    "INSERT INTO session_journal "
+                    "(session_id, revision, role, payload, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        session_id,
+                        expected_revision + 1,
+                        "tool_result",
+                        payload,
+                        _isoformat(now),
+                    ),
+                )
+        except sqlite3.Error as exc:
+            raise _persistence_error(
+                "repair_interrupted_execution",
+                session_id,
+                exc,
+            ) from exc
+        return expected_revision + 1
+
+
+def _unresolved_call_ids(
+    session_id: str,
+    rows: list[tuple[object, ...]],
+) -> list[str]:
+    """Return tool call ids that never received a matching tool result.
+
+    The journal structure is validated while scanning: a tool call id
+    may appear at most once, and every tool result must reference a
+    preceding tool call. Structural anomalies fail closed.
+    """
+
+    seen: set[str] = set()
+    pending: dict[str, None] = {}
+    for revision, role, payload in rows:
+        try:
+            message = decode_journal_message(role, payload)
+        except ValueError as exc:
+            raise SessionCorruptedError(
+                session_id=session_id,
+                reason=str(exc),
+            ) from exc
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if not isinstance(block, ToolCall):
+                    continue
+                if block.call_id in seen:
+                    raise SessionCorruptedError(
+                        session_id=session_id,
+                        reason=f"duplicate tool call id: {block.call_id}",
+                    )
+                seen.add(block.call_id)
+                pending[block.call_id] = None
+        elif isinstance(message, ToolResultMessage):
+            for result in message.content:
+                if result.call_id not in pending:
+                    raise SessionCorruptedError(
+                        session_id=session_id,
+                        reason=(
+                            f"tool result without preceding tool call: {result.call_id}"
+                        ),
+                    )
+                del pending[result.call_id]
+    return list(pending)
+
+
+def _interrupted_output() -> dict[str, str]:
+    return {
+        "code": "execution_interrupted",
+        "message": _INTERRUPTED_MESSAGE,
+        "outcome": "unknown",
+    }
 
 
 def _classify_stale(

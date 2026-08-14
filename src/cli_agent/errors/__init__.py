@@ -38,6 +38,7 @@ from cli_agent.errors.boundary import (
 from cli_agent.errors.host import HostFacingError, InternalRuntimeError
 from cli_agent.errors.model import ModelFacingError
 from cli_agent.errors.session import (
+    SessionArchivedError,
     SessionConflictError,
     SessionCorruptedError,
     SessionNotFoundError,
@@ -51,6 +52,7 @@ __all__ = (
     "INTERNAL_ERROR_DIAGNOSTIC_KIND",
     "InternalRuntimeError",
     "ModelFacingError",
+    "SessionArchivedError",
     "SessionConflictError",
     "SessionCorruptedError",
     "SessionNotFoundError",
