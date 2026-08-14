@@ -11,6 +11,7 @@ from types import TracebackType
 from typing import Any
 
 from cli_agent.errors import HostFacingError, error_boundary
+from cli_agent.errors.session import SessionConflictError
 from cli_agent.runtime._agent_loop import AgentLoop
 from cli_agent.runtime._context import ContextOverflowError, ContextPolicy, SessionUsage
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -20,12 +21,13 @@ from cli_agent.runtime._resources import (
     _reconcile_runtime_resources,
     _RuntimeResources,
 )
-from cli_agent.runtime._session import serialize_system_prompt
+from cli_agent.runtime._session import SessionConfig, serialize_system_prompt
 from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     ModelContextOverflowError,
     ModelEvent,
+    ModelMessage,
     ModelProvider,
     UserMessage,
 )
@@ -265,27 +267,30 @@ class AgentRuntime:
                 skill_catalog=self._resources.skill_catalog,
                 project_instructions=self._resources.project_instructions,
             )
-            created = self._resources.session_history.begin_session(
-                session_id,
-                str(self._resources.workspace),
-                serialize_system_prompt(system),
-            )
-            if created is False:
+            try:
+                self._resources.session_store.create(
+                    session_id,
+                    str(self._resources.workspace),
+                    SessionConfig(system_prompt=serialize_system_prompt(system)),
+                )
+            except SessionConflictError as exc:
                 raise HostFacingError(
                     code="session_already_exists",
                     message="Session already exists and must be resumed.",
                     hint="Resume the existing session or choose a new session id.",
                     details={"session_id": session_id},
-                )
-            if created is None:
-                raise HostFacingError(
-                    code="session_persistence_failed",
-                    message="Session could not be created durably.",
-                    hint="Resolve the persistence failure before retrying.",
-                    details={"session_id": session_id},
-                )
+                ) from exc
             kernel = self._new_kernel(session_id)
             try:
+                journal_frontier = [0]
+
+                def on_append(message: ModelMessage) -> None:
+                    journal_frontier[0] = self._resources.session_store.append(
+                        session_id,
+                        message,
+                        expected_revision=journal_frontier[0],
+                    )
+
                 loop = AgentLoop(
                     bound_provider,
                     kernel,
@@ -293,11 +298,7 @@ class AgentRuntime:
                     context_policy=self._context_policy,
                     session_id=session_id,
                     on_diagnostic=self._on_diagnostic,
-                    on_append=(
-                        lambda message: self._resources.session_history.append(
-                            session_id, message
-                        )
-                    ),
+                    on_append=on_append,
                 )
             except BaseException:
                 await kernel.close()

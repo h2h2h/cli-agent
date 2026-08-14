@@ -1,9 +1,9 @@
-"""End-to-end session trace persistence through the public Runtime.
+"""End-to-end durable session persistence through the public Runtime.
 
-These tests drive the full Runtime order - begin_session, run_turn appends,
-close_session - with scripted providers over a real test state database and
-pin the trace semantics: original message content, compaction boundaries,
-and failure-safe writes.
+These tests drive the full Runtime order - create, run_turn appends,
+close_session - with scripted providers over a real test state database
+and pin the journal semantics: original message content, compaction
+boundaries, and fail-closed writes.
 """
 
 import asyncio
@@ -30,7 +30,7 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._database.session_history import _SessionHistory
+from cli_agent.runtime._database.session_store import SessionStore
 from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
@@ -329,11 +329,8 @@ def test_unwritable_database_prevents_session_creation(
 
     monkeypatch.setattr(
         resources_module,
-        "_SessionHistory",
-        lambda database, on_diagnostic=None: _SessionHistory(
-            _UnwritableDatabase(),  # type: ignore[arg-type]
-            on_diagnostic=on_diagnostic,
-        ),
+        "SessionStore",
+        lambda database: SessionStore(_UnwritableDatabase()),  # type: ignore[arg-type]
     )
     provider = ScriptedModelProvider(script=())
     received: list[RuntimeDiagnostic] = []
@@ -348,14 +345,12 @@ def test_unwritable_database_prevents_session_creation(
             await runtime.close()
 
         assert raised.value.code == "session_persistence_failed"
-        assert raised.value.details == {"session_id": "s1"}
-        assert received
-        assert {diagnostic.kind for diagnostic in received} == {
-            "session_history.write_failed"
+        assert raised.value.details == {
+            "operation": "create",
+            "session_id": "s1",
+            "exception_type": "OperationalError",
         }
-        assert {diagnostic.detail["operation"] for diagnostic in received} == {
-            "begin_session"
-        }
+        assert received == []
         provider.assert_exhausted()
 
     asyncio.run(scenario())
