@@ -10,8 +10,9 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
+from cli_agent.errors import error_boundary
 from cli_agent.runtime._agent_loop import AgentLoop
-from cli_agent.runtime._context import ContextPolicy, SessionUsage
+from cli_agent.runtime._context import ContextOverflowError, ContextPolicy, SessionUsage
 from cli_agent.runtime._database.session_history import serialize_system_prompt
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.interaction import UserInteraction
@@ -22,11 +23,25 @@ from cli_agent.runtime._resources import (
 )
 from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
-from cli_agent.runtime.model import ModelEvent, ModelProvider, UserMessage
+from cli_agent.runtime.model import (
+    ModelContextOverflowError,
+    ModelEvent,
+    ModelProvider,
+    UserMessage,
+)
 
 
 class RuntimeClosedError(RuntimeError):
     """Raised when work is requested from a closed Agent Runtime."""
+
+
+# Legacy error types that intentionally cross run_turn today. Their owning
+# issues reclassify them (Context failures become HostFacingError or an
+# internal recovery signal); this tuple shrinks to empty as they migrate.
+_LEGACY_TURN_EXCEPTIONS: tuple[type[Exception], ...] = (
+    ContextOverflowError,
+    ModelContextOverflowError,
+)
 
 
 @dataclass(slots=True)
@@ -284,12 +299,17 @@ class AgentRuntime:
             active_task = asyncio.current_task()
             session.active_task = active_task
             try:
-                async for event in session.loop.run(message):
-                    if self._closed or session.closing:
-                        return
-                    yield event
-                    if self._closed or session.closing:
-                        return
+                with error_boundary(
+                    "runtime.run_turn",
+                    on_diagnostic=self._boundary_diagnostic,
+                    passthrough=_LEGACY_TURN_EXCEPTIONS,
+                ):
+                    async for event in session.loop.run(message):
+                        if self._closed or session.closing:
+                            return
+                        yield event
+                        if self._closed or session.closing:
+                            return
             finally:
                 if session.active_task is active_task:
                     session.active_task = None
@@ -348,6 +368,16 @@ class AgentRuntime:
             parallel_commands=self._parallel_commands,
             on_diagnostic=self._on_diagnostic,
         )
+
+    def _boundary_diagnostic(
+        self,
+        kind: str,
+        message: str,
+        detail: Mapping[str, object],
+    ) -> None:
+        """Sink used by ``error_boundary`` to emit boundary diagnostics."""
+
+        self._emit_diagnostic(kind, message, detail=detail)
 
     async def _close_session_state(self, session: _Session) -> None:
         """Cancel one active turn, stop its Kernel, and await its unwind."""

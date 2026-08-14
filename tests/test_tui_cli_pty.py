@@ -157,7 +157,8 @@ def test_cli_pty_runtime_exception_restores_terminal(tmp_path: Path) -> None:
     _assert_restored(result)
     assert result.report["exit_code"] == 1
     assert result.report["tasks"] == ["task"]
-    assert "ScriptedModelProvider received more model requests" in (
+    assert "An internal runtime error occurred." in result.terminal_output
+    assert "ScriptedModelProvider received more model requests" not in (
         result.terminal_output
     )
 

@@ -8,6 +8,7 @@ from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
+from cli_agent.errors import error_boundary
 from cli_agent.runtime._backend import _BackendWorkspace
 from cli_agent.runtime._backend.local import _LocalBackendWorkspace
 from cli_agent.runtime._capability.command_parser import (
@@ -157,6 +158,13 @@ class EnvironmentKernel:
     async def dispatch(self, call: ToolCall) -> ToolResult:
         """Dispatch one provider-neutral Tool Call in this Kernel."""
 
+        with error_boundary(
+            "kernel.dispatch",
+            on_diagnostic=self._boundary_diagnostic,
+        ):
+            return await self._dispatch(call)
+
+    async def _dispatch(self, call: ToolCall) -> ToolResult:
         if self._closed:
             return _protocol_error(
                 call.call_id,
@@ -201,12 +209,23 @@ class EnvironmentKernel:
         calls: tuple[ToolCall, ...],
     ) -> tuple[ToolResult, ...]:
         """Admit model-returned calls in order, then await them concurrently."""
+
+        with error_boundary(
+            "kernel.dispatch",
+            on_diagnostic=self._boundary_diagnostic,
+        ):
+            return await self._dispatch_batch(calls)
+
+    async def _dispatch_batch(
+        self,
+        calls: tuple[ToolCall, ...],
+    ) -> tuple[ToolResult, ...]:
         admitted: list[tuple[ToolCall, ToolResult]] = []
         for call in calls:
             if call.name == "exec":
                 result = await self._exec(call, wait_for_completion=False)
             else:
-                result = await self.dispatch(call)
+                result = await self._dispatch(call)
             admitted.append((call, result))
 
         return tuple(
@@ -480,6 +499,16 @@ class EnvironmentKernel:
 
     def _set_cwd(self, cwd: str) -> None:
         self._cwd = cwd
+
+    def _boundary_diagnostic(
+        self,
+        kind: str,
+        message: str,
+        detail: Mapping[str, object],
+    ) -> None:
+        """Sink used by ``error_boundary`` to emit boundary diagnostics."""
+
+        self._emit_diagnostic(kind, message, detail=detail)
 
     def _emit_diagnostic(
         self,
