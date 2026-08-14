@@ -1,12 +1,15 @@
 """Fail-closed Session repository over the application state database.
 
-``SessionStore`` owns the canonical journal: sessions are created with
-revision 0, every journal append carries the caller's expected revision
-and compares-and-swaps the session frontier inside one short
-transaction, and loading re-validates session metadata plus the full
-raw journal. Database failures, corrupted rows, unknown ids, and
-revision conflicts raise classified Host-facing session errors instead
-of degrading to a diagnostic-only trace.
+``SessionStore`` owns the canonical journal plus two derived durable
+domains: usage records are the accounting truth deduplicated by
+``model_call_id``, and context snapshots are rebuildable caches
+anchored to the journal revision they were derived from. Sessions are
+created with revision 0, every journal append carries the caller's
+expected revision and compares-and-swaps the session frontier inside
+one short transaction, and loading re-validates session metadata plus
+the full raw journal. Database failures, corrupted rows, unknown ids,
+and revision conflicts raise classified Host-facing session errors
+instead of degrading to a diagnostic-only trace.
 """
 
 from __future__ import annotations
@@ -22,12 +25,20 @@ from cli_agent.errors.session import (
 )
 from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime._session import (
+    ContextSnapshot,
+    ModelCallUsage,
     Session,
     SessionConfig,
     decode_journal_message,
     encode_journal_message,
 )
 from cli_agent.runtime.model import ModelMessage
+
+_INSERT_USAGE_SQL = (
+    "INSERT INTO session_usage_records "
+    "(model_call_id, session_id, purpose, input_tokens, output_tokens, "
+    "created_at) VALUES (?, ?, ?, ?, ?, ?)"
+)
 
 
 class SessionStore:
@@ -167,6 +178,7 @@ class SessionStore:
         message: ModelMessage,
         *,
         expected_revision: int,
+        usage: ModelCallUsage | None = None,
     ) -> int:
         """Append one message as the next journal entry.
 
@@ -177,6 +189,14 @@ class SessionStore:
         revision; never increment a cached value and assume the commit
         succeeded.
 
+        When ``usage`` is provided, the message and the usage record
+        commit atomically: a crash can never leave one without the
+        other. The commit is idempotent by ``model_call_id``: retrying
+        an already-committed call returns the current revision without
+        appending the message again or double-counting tokens, while a
+        duplicate id whose stored usage disagrees raises
+        `SessionConflictError`.
+
         Args:
             session_id (`str`): The session to append to.
             message (`ModelMessage`): The message just appended to
@@ -184,6 +204,9 @@ class SessionStore:
                 journal entry.
             expected_revision (`int`): The revision the caller believes
                 is the session frontier.
+            usage (`ModelCallUsage | None`): The model-call accounting
+                record that belongs to ``message`` and must commit in
+                the same transaction; ``None`` for calls without usage.
 
         Returns:
             The new session revision after the append.
@@ -191,7 +214,8 @@ class SessionStore:
         Raises:
             SessionNotFoundError: If the session id has no row.
             SessionConflictError: If the session revision no longer
-                equals ``expected_revision``.
+                equals ``expected_revision``, or a duplicate
+                ``model_call_id`` carries different usage data.
             SessionCorruptedError: If the next journal revision is
                 already occupied; the transaction rolls back.
             SessionPersistenceError: If the database cannot write.
@@ -202,6 +226,16 @@ class SessionStore:
         next_revision = expected_revision + 1
         try:
             with self._database.transaction() as connection:
+                if usage is not None:
+                    existing = _existing_usage_row(connection, usage.model_call_id)
+                    if existing is not None:
+                        if existing != _usage_row_values(usage):
+                            raise _usage_conflict(session_id, usage)
+                        (frontier,) = connection.execute(
+                            "SELECT revision FROM sessions WHERE session_id = ?",
+                            (session_id,),
+                        ).fetchone()
+                        return frontier
                 cursor = connection.execute(
                     "UPDATE sessions SET revision = ?, updated_at = ? "
                     "WHERE session_id = ? AND revision = ?",
@@ -236,9 +270,274 @@ class SessionStore:
                         session_id=session_id,
                         reason=(f"journal revision {next_revision} already exists"),
                     ) from exc
+                if usage is not None:
+                    try:
+                        connection.execute(
+                            _INSERT_USAGE_SQL,
+                            _usage_insert_values(usage, now),
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        raise _usage_conflict(session_id, usage) from exc
         except sqlite3.Error as exc:
             raise _persistence_error("append", session_id, exc) from exc
         return next_revision
+
+    def load_usage_records(self, session_id: str) -> tuple[ModelCallUsage, ...]:
+        """Load every usage record for one session in creation order.
+
+        Args:
+            session_id (`str`): The session to read accounting for.
+
+        Returns:
+            The stored `ModelCallUsage` records, empty for unknown
+            sessions.
+
+        Raises:
+            SessionCorruptedError: If one record fails validation.
+            SessionPersistenceError: If the database cannot read.
+        """
+
+        try:
+            with self._database.transaction() as connection:
+                rows = connection.execute(
+                    "SELECT model_call_id, session_id, purpose, input_tokens, "
+                    "output_tokens, created_at FROM session_usage_records "
+                    "WHERE session_id = ? ORDER BY created_at",
+                    (session_id,),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise _persistence_error("load_usage_records", session_id, exc) from exc
+        records: list[ModelCallUsage] = []
+        for (
+            model_call_id,
+            sid,
+            purpose,
+            input_tokens,
+            output_tokens,
+            created_at,
+        ) in rows:
+            try:
+                records.append(
+                    ModelCallUsage(
+                        model_call_id=model_call_id,
+                        session_id=sid,
+                        purpose=purpose,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        created_at=_parse_timestamp(created_at),
+                    )
+                )
+            except ValueError as exc:
+                raise SessionCorruptedError(
+                    session_id=session_id,
+                    reason=str(exc),
+                ) from exc
+        return tuple(records)
+
+    def usage_total(self, session_id: str) -> tuple[int, int]:
+        """Project the aggregate token usage for one session.
+
+        The aggregate is a rebuildable projection of the usage records;
+        the records themselves are the accounting truth.
+
+        Args:
+            session_id (`str`): The session to aggregate.
+
+        Returns:
+            The ``(input_tokens, output_tokens)`` sums across all
+            stored records, ``(0, 0)`` for unknown sessions.
+
+        Raises:
+            SessionPersistenceError: If the database cannot read.
+        """
+
+        try:
+            with self._database.transaction() as connection:
+                (input_tokens, output_tokens) = connection.execute(
+                    "SELECT COALESCE(SUM(input_tokens), 0), "
+                    "COALESCE(SUM(output_tokens), 0) "
+                    "FROM session_usage_records WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise _persistence_error("usage_total", session_id, exc) from exc
+        return input_tokens, output_tokens
+
+    def load_snapshot(
+        self,
+        session_id: str,
+        *,
+        derivation_version: str,
+    ) -> ContextSnapshot | None:
+        """Load one context snapshot, or ``None`` when it is unusable.
+
+        A snapshot is usable only when its stored derivation version
+        matches the caller's, its payload decodes cleanly, and its
+        source revision does not exceed the session frontier. Any
+        violation returns ``None`` without touching the canonical
+        journal, so callers always fall back to rebuilding from the
+        raw journal.
+
+        Args:
+            session_id (`str`): The session to read the snapshot of.
+            derivation_version (`str`): The derivation logic version
+                the caller currently implements.
+
+        Returns:
+            The decoded `ContextSnapshot`, or ``None`` when no usable
+            snapshot exists.
+
+        Raises:
+            SessionPersistenceError: If the database cannot read.
+        """
+
+        try:
+            with self._database.transaction() as connection:
+                row = connection.execute(
+                    "SELECT source_revision, derivation_version, payload "
+                    "FROM session_context_snapshots WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                source_revision, stored_version, payload = row
+                if stored_version != derivation_version:
+                    return None
+                session_row = connection.execute(
+                    "SELECT revision FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if session_row is None or source_revision > session_row[0]:
+                    return None
+                try:
+                    return ContextSnapshot.from_json(
+                        payload,
+                        session_id=session_id,
+                        source_revision=source_revision,
+                        derivation_version=stored_version,
+                    )
+                except ValueError:
+                    return None
+        except sqlite3.Error as exc:
+            raise _persistence_error("load_snapshot", session_id, exc) from exc
+
+    def save_snapshot(
+        self,
+        snapshot: ContextSnapshot,
+        *,
+        expected_revision: int,
+        usage: ModelCallUsage | None = None,
+    ) -> None:
+        """Replace one session's context snapshot.
+
+        The snapshot only commits when the session revision still
+        equals ``expected_revision``, so a stale derivation can never
+        overwrite a newer one. Snapshots never advance the journal
+        frontier. When ``usage`` is provided, the compaction call's
+        accounting record commits in the same transaction and is
+        idempotent by ``model_call_id``.
+
+        Args:
+            snapshot (`ContextSnapshot`): The derived conversation
+                projection to store; its ``source_revision`` must not
+                exceed ``expected_revision``.
+            expected_revision (`int`): The revision the caller believes
+                is the session frontier.
+            usage (`ModelCallUsage | None`): The compaction call's
+                accounting record committing beside the snapshot.
+
+        Raises:
+            ValueError: If ``snapshot.source_revision`` exceeds
+                ``expected_revision``.
+            SessionNotFoundError: If the session id has no row.
+            SessionConflictError: If the session revision no longer
+                equals ``expected_revision``, or a duplicate
+                ``model_call_id`` carries different usage data.
+            SessionPersistenceError: If the database cannot write.
+        """
+
+        if snapshot.source_revision > expected_revision:
+            raise ValueError(
+                f"snapshot source revision {snapshot.source_revision} "
+                f"exceeds session revision {expected_revision}"
+            )
+        now = datetime.now(timezone.utc)
+        try:
+            with self._database.transaction() as connection:
+                insert_usage = usage is not None
+                if usage is not None:
+                    existing = _existing_usage_row(connection, usage.model_call_id)
+                    if existing is not None:
+                        if existing != _usage_row_values(usage):
+                            raise _usage_conflict(snapshot.session_id, usage)
+                        insert_usage = False
+                cursor = connection.execute(
+                    "UPDATE sessions SET updated_at = ? "
+                    "WHERE session_id = ? AND revision = ?",
+                    (
+                        _isoformat(now),
+                        snapshot.session_id,
+                        expected_revision,
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    raise _classify_stale(
+                        connection,
+                        snapshot.session_id,
+                        expected_revision,
+                    )
+                connection.execute(
+                    "INSERT OR REPLACE INTO session_context_snapshots "
+                    "(session_id, source_revision, derivation_version, payload, "
+                    "created_at) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        snapshot.session_id,
+                        snapshot.source_revision,
+                        snapshot.derivation_version,
+                        snapshot.to_json(),
+                        _isoformat(now),
+                    ),
+                )
+                if insert_usage:
+                    try:
+                        connection.execute(
+                            _INSERT_USAGE_SQL,
+                            _usage_insert_values(usage, now),
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        raise _usage_conflict(snapshot.session_id, usage) from exc
+        except sqlite3.Error as exc:
+            raise _persistence_error(
+                "save_snapshot",
+                snapshot.session_id,
+                exc,
+            ) from exc
+
+    def invalidate_snapshot(self, session_id: str) -> None:
+        """Delete one session's context snapshot.
+
+        Invalidation only removes the rebuildable derived cache; the
+        canonical journal is never touched.
+
+        Args:
+            session_id (`str`): The session whose snapshot is stale.
+
+        Raises:
+            SessionPersistenceError: If the database cannot write.
+        """
+
+        try:
+            with self._database.transaction() as connection:
+                connection.execute(
+                    "DELETE FROM session_context_snapshots WHERE session_id = ?",
+                    (session_id,),
+                )
+        except sqlite3.Error as exc:
+            raise _persistence_error(
+                "invalidate_snapshot",
+                session_id,
+                exc,
+            ) from exc
 
 
 def _classify_stale(
@@ -256,6 +555,53 @@ def _classify_stale(
         session_id=session_id,
         expected_revision=expected_revision,
         actual_revision=row[0],
+    )
+
+
+def _existing_usage_row(
+    connection: sqlite3.Connection,
+    model_call_id: str,
+) -> tuple[object, ...] | None:
+    return connection.execute(
+        "SELECT session_id, purpose, input_tokens, output_tokens "
+        "FROM session_usage_records WHERE model_call_id = ?",
+        (model_call_id,),
+    ).fetchone()
+
+
+def _usage_row_values(usage: ModelCallUsage) -> tuple[object, ...]:
+    return (
+        usage.session_id,
+        usage.purpose,
+        usage.input_tokens,
+        usage.output_tokens,
+    )
+
+
+def _usage_insert_values(
+    usage: ModelCallUsage,
+    now: datetime,
+) -> tuple[object, ...]:
+    return (
+        usage.model_call_id,
+        usage.session_id,
+        usage.purpose,
+        usage.input_tokens,
+        usage.output_tokens,
+        _isoformat(now),
+    )
+
+
+def _usage_conflict(
+    session_id: str,
+    usage: ModelCallUsage,
+) -> SessionConflictError:
+    return SessionConflictError(
+        session_id=session_id,
+        model_call_id=usage.model_call_id,
+        message=(
+            "A model call with this id was already committed with different data."
+        ),
     )
 
 

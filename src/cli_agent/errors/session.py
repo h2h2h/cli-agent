@@ -28,16 +28,22 @@ class SessionNotFoundError(HostFacingError):
 
 
 class SessionConflictError(HostFacingError):
-    """Raised when a write's expected revision no longer matches.
+    """Raised when a durable write's precondition no longer matches.
 
-    The expected and actual revisions are included when known; a
-    duplicate create reports the conflict without a revision pair.
+    Covers stale-revision writes, duplicate session creation, and
+    duplicate model-call ids whose stored usage disagrees with the
+    incoming payload. The expected and actual revisions are included
+    when known; a duplicate create reports the conflict without a
+    revision pair.
 
     Args:
         session_id (`str`): The session whose durable state changed.
         expected_revision (`int | None`): The revision the caller
             believed was current.
         actual_revision (`int | None`): The revision currently stored.
+        model_call_id (`str | None`): The duplicate model-call id for
+            idempotency conflicts.
+        message (`str`): Human-readable summary of the conflict.
     """
 
     def __init__(
@@ -46,15 +52,19 @@ class SessionConflictError(HostFacingError):
         session_id: str,
         expected_revision: int | None = None,
         actual_revision: int | None = None,
+        model_call_id: str | None = None,
+        message: str = "Session state changed since it was last read.",
     ) -> None:
         details: dict[str, object] = {"session_id": session_id}
         if expected_revision is not None:
             details["expected_revision"] = expected_revision
         if actual_revision is not None:
             details["actual_revision"] = actual_revision
+        if model_call_id is not None:
+            details["model_call_id"] = model_call_id
         super().__init__(
             code="session_conflict",
-            message="Session state changed since it was last read.",
+            message=message,
             hint="Reload the session before retrying the write.",
             details=details,
         )
