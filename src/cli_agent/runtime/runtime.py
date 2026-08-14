@@ -10,10 +10,9 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-from cli_agent.errors import error_boundary
+from cli_agent.errors import HostFacingError, error_boundary
 from cli_agent.runtime._agent_loop import AgentLoop
 from cli_agent.runtime._context import ContextOverflowError, ContextPolicy, SessionUsage
-from cli_agent.runtime._database.session_history import serialize_system_prompt
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.interaction import UserInteraction
 from cli_agent.runtime._environment.policy import ExecutionPolicy
@@ -21,6 +20,7 @@ from cli_agent.runtime._resources import (
     _reconcile_runtime_resources,
     _RuntimeResources,
 )
+from cli_agent.runtime._session import serialize_system_prompt
 from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
@@ -233,12 +233,13 @@ class AgentRuntime:
         *,
         provider: ModelProvider | None = None,
     ) -> AsyncIterator[ModelEvent]:
-        """Run one turn in a get-or-created Agent Session.
+        """Run one turn in an active or newly created Agent Session.
 
         Args:
             session_id (`str`):
-                Host-visible Session identifier. Reusing an id that was closed
-                creates a fresh Loop and Kernel.
+                Host-visible Session identifier. A durable id that is no
+                longer active must be resumed explicitly and cannot be reused
+                to create fresh in-memory state.
             message (`UserMessage`):
                 User-authored message to append to the Session history.
             provider (`ModelProvider | None`):
@@ -247,6 +248,10 @@ class AgentRuntime:
 
         Yields:
             Model events streamed by the Session's Agent Loop.
+
+        Raises:
+            HostFacingError: If ``session_id`` already exists and requires
+                resume, or durable Session creation fails.
         """
 
         self._ensure_open()
@@ -260,11 +265,25 @@ class AgentRuntime:
                 skill_catalog=self._resources.skill_catalog,
                 project_instructions=self._resources.project_instructions,
             )
-            self._resources.session_history.begin_session(
+            created = self._resources.session_history.begin_session(
                 session_id,
                 str(self._resources.workspace),
                 serialize_system_prompt(system),
             )
+            if created is False:
+                raise HostFacingError(
+                    code="session_already_exists",
+                    message="Session already exists and must be resumed.",
+                    hint="Resume the existing session or choose a new session id.",
+                    details={"session_id": session_id},
+                )
+            if created is None:
+                raise HostFacingError(
+                    code="session_persistence_failed",
+                    message="Session could not be created durably.",
+                    hint="Resolve the persistence failure before retrying.",
+                    details={"session_id": session_id},
+                )
             kernel = self._new_kernel(session_id)
             try:
                 loop = AgentLoop(
@@ -315,9 +334,12 @@ class AgentRuntime:
                     session.active_task = None
 
     async def close_session(self, session_id: str) -> None:
-        """Close and forget one Agent Session idempotently."""
+        """Close and forget one Agent Session idempotently.
 
-        self._resources.session_history.close_session(session_id)
+        Closing detaches the Runtime binding only: no session lifecycle
+        state is persisted, so the session stays resumable.
+        """
+
         session = self._sessions.pop(session_id, None)
         if session is not None:
             await self._close_session_state(session)

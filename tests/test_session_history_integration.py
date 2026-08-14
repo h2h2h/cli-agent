@@ -13,9 +13,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
 from interaction_fakes import _ScriptedInteraction
 
 import cli_agent.runtime._resources as resources_module
+from cli_agent.errors import HostFacingError
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -121,8 +123,8 @@ async def _run_turn(
 def _sessions(path: Path) -> list[tuple]:
     connection = sqlite3.connect(path)
     rows = connection.execute(
-        "SELECT session_id, workspace, system_prompt, created_at, closed_at "
-        "FROM sessions ORDER BY session_id"
+        "SELECT session_id, workspace_id, config, created_at, updated_at, "
+        "archived_at FROM sessions ORDER BY session_id"
     ).fetchall()
     connection.close()
     return rows
@@ -131,12 +133,16 @@ def _sessions(path: Path) -> list[tuple]:
 def _messages(path: Path, session_id: str) -> list[tuple]:
     connection = sqlite3.connect(path)
     rows = connection.execute(
-        "SELECT seq, role, payload, created_at FROM session_messages "
-        "WHERE session_id = ? ORDER BY seq",
+        "SELECT revision, role, payload, created_at FROM session_journal "
+        "WHERE session_id = ? ORDER BY revision",
         (session_id,),
     ).fetchall()
     connection.close()
     return rows
+
+
+def _session_config_prompt(row: tuple) -> str:
+    return json.loads(row[2])["system_prompt"]
 
 
 def test_run_turn_persists_session_trace_in_order(
@@ -157,22 +163,25 @@ def test_run_turn_persists_session_trace_in_order(
             await _run_turn(runtime, "s1", "hello")
 
         (session,) = _sessions(tmp_path / "state.sqlite3")
-        session_id, workspace, system_prompt, created_at, closed_at = session
+        session_id, workspace_id, config, created_at, updated_at, archived_at = session
         assert session_id == "s1"
-        assert workspace == str(tmp_path.resolve())
-        assert json.loads(system_prompt)["blocks"][0]["text"].startswith(
-            "You are cli-agent"
-        )
-        assert closed_at is None
+        assert workspace_id == str(tmp_path.resolve())
+        assert json.loads(_session_config_prompt(session))["blocks"][0][
+            "text"
+        ].startswith("You are cli-agent")
+        assert json.loads(config)["schema_version"] == 1
+        assert archived_at is None
         rows = _messages(tmp_path / "state.sqlite3", "s1")
         assert [(row[0], row[1]) for row in rows] == [
-            (0, "user"),
-            (1, "assistant"),
-            (2, "tool_result"),
-            (3, "assistant"),
+            (1, "user"),
+            (2, "assistant"),
+            (3, "tool_result"),
+            (4, "assistant"),
         ]
         assert json.loads(rows[0][2]) == {
-            "blocks": [{"type": "text", "text": "hello"}]
+            "schema_version": 1,
+            "role": "user",
+            "blocks": [{"type": "text", "text": "hello"}],
         }
         assistant_blocks = json.loads(rows[1][2])["blocks"]
         assert assistant_blocks == [
@@ -188,7 +197,9 @@ def test_run_turn_persists_session_trace_in_order(
         assert tool_result["output"]["exit_code"] == 0
         assert tool_result["error"] is None
         assert json.loads(rows[3][2]) == {
-            "blocks": [{"type": "text", "text": "echoed"}]
+            "schema_version": 1,
+            "role": "assistant",
+            "blocks": [{"type": "text", "text": "echoed"}],
         }
         provider.assert_exhausted()
 
@@ -209,7 +220,7 @@ def test_system_prompt_persists_final_workspace_instructions_section(
             await _run_turn(runtime, "s1", "hello")
 
         (session,) = _sessions(tmp_path / "state.sqlite3")
-        system_prompt = json.loads(session[2])["blocks"][0]["text"]
+        system_prompt = json.loads(_session_config_prompt(session))["blocks"][0]["text"]
         assert "**Workspace instructions**" in system_prompt
         assert f"Source: {tmp_path.resolve() / 'AGENTS.md'}" in system_prompt
         assert rules in system_prompt
@@ -218,7 +229,7 @@ def test_system_prompt_persists_final_workspace_instructions_section(
     asyncio.run(scenario())
 
 
-def test_tier3_summary_stays_out_of_session_messages(
+def test_tier3_summary_stays_out_of_session_journal(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -306,7 +317,7 @@ def test_reduced_tool_result_keeps_original_payload_in_database(
     asyncio.run(scenario())
 
 
-def test_unwritable_database_reports_diagnostic_and_loop_continues(
+def test_unwritable_database_prevents_session_creation(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -324,40 +335,33 @@ def test_unwritable_database_reports_diagnostic_and_loop_continues(
             on_diagnostic=on_diagnostic,
         ),
     )
-    provider = ScriptedModelProvider(
-        script=(
-            _plain_step("first answer"),
-            _plain_step("second answer"),
-        )
-    )
+    provider = ScriptedModelProvider(script=())
     received: list[RuntimeDiagnostic] = []
 
     async def scenario() -> None:
         runtime = await _open_runtime(tmp_path, provider, received)
         try:
-            events = await _run_turn(runtime, "s1", "First turn")
-            assert events == (_completion(AssistantMessage.text("first answer")),)
-            await _run_turn(runtime, "s1", "Second turn")
+            with pytest.raises(HostFacingError) as raised:
+                await _run_turn(runtime, "s1", "First turn")
             await runtime.close_session("s1")
         finally:
             await runtime.close()
 
+        assert raised.value.code == "session_persistence_failed"
+        assert raised.value.details == {"session_id": "s1"}
         assert received
         assert {diagnostic.kind for diagnostic in received} == {
             "session_history.write_failed"
         }
-        assert {
-            diagnostic.detail["operation"] for diagnostic in received
-        } == {"begin_session", "append", "close_session"}
+        assert {diagnostic.detail["operation"] for diagnostic in received} == {
+            "begin_session"
+        }
         provider.assert_exhausted()
 
     asyncio.run(scenario())
 
 
-def test_close_session_stamps_closed_at_through_runtime(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
+def test_close_session_persists_no_lifecycle_state(tmp_path: Path, monkeypatch) -> None:
     _install_test_state_database(monkeypatch, tmp_path)
     provider = ScriptedModelProvider(script=(_plain_step("done"),))
 
@@ -366,13 +370,43 @@ def test_close_session_stamps_closed_at_through_runtime(
         try:
             await _run_turn(runtime, "s1", "hello")
             (session,) = _sessions(tmp_path / "state.sqlite3")
-            assert session[4] is None
+            before = (session[4], session[5])
 
             await runtime.close_session("s1")
 
             (closed_session,) = _sessions(tmp_path / "state.sqlite3")
-            assert closed_session[4] is not None
+            assert (closed_session[4], closed_session[5]) == before
+            assert closed_session[5] is None
         finally:
             await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_existing_session_id_requires_resume_after_runtime_restart(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _install_test_state_database(monkeypatch, tmp_path)
+    first_provider = ScriptedModelProvider(script=(_plain_step("done"),))
+    reopened_provider = ScriptedModelProvider(script=())
+
+    async def scenario() -> None:
+        async with await _open_runtime(tmp_path, first_provider) as runtime:
+            await _run_turn(runtime, "s1", "hello")
+
+        async with await _open_runtime(tmp_path, reopened_provider) as reopened:
+            with pytest.raises(HostFacingError) as raised:
+                await _run_turn(reopened, "s1", "must resume")
+
+        assert raised.value.code == "session_already_exists"
+        assert raised.value.details == {"session_id": "s1"}
+        rows = _messages(tmp_path / "state.sqlite3", "s1")
+        assert [(row[0], row[1]) for row in rows] == [
+            (1, "user"),
+            (2, "assistant"),
+        ]
+        first_provider.assert_exhausted()
+        reopened_provider.assert_exhausted()
 
     asyncio.run(scenario())

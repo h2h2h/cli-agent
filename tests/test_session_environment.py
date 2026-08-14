@@ -74,8 +74,8 @@ def test_sessions_own_isolated_copies_of_runtime_open_environment(
         await runtime.close_session("session-a")
         assert session_a._env == {}
 
-        await _collect_turn(runtime, "session-a", "fresh a")
-        fresh_session_a = _session_kernel(runtime, "session-a")
+        await _collect_turn(runtime, "session-fresh", "fresh a")
+        fresh_session_a = _session_kernel(runtime, "session-fresh")
         assert fresh_session_a is not session_a
         assert fresh_session_a._env == {"VALUE": "workspace"}
         assert session_b._env == {"VALUE": "workspace"}

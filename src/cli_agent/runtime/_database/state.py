@@ -3,9 +3,12 @@
 The database lives at ``~/.cli-agent/state.sqlite3`` and is not bound
 to one capability: future application state can add tables through the same
 explicit migration boundary. Library summaries are stored in the
-``library_summary_cache`` table by the ``_SummaryCache`` adapter, and session
-traces in the ``sessions`` and ``session_messages`` tables by the
-``_SessionHistory`` adapter, never through generic SQL exposed here.
+``library_summary_cache`` table by the ``_SummaryCache`` adapter. Durable
+sessions live in the ``sessions``, ``session_journal``,
+``session_usage_records``, and ``session_context_snapshots`` tables: the
+journal is the canonical conversation truth, usage records are the
+accounting truth deduplicated by ``model_call_id``, and context snapshots
+are rebuildable derived caches.
 """
 
 from __future__ import annotations
@@ -22,32 +25,61 @@ from cli_agent.runtime._capability.workspace import (
 )
 
 _BUSY_TIMEOUT_SECONDS = 5.0
+_SCHEMA_VERSION = 3
 
-_MIGRATIONS: tuple[str, ...] = (
-    """CREATE TABLE library_summary_cache (
+_MIGRATIONS: tuple[tuple[int, str], ...] = (
+    (
+        _SCHEMA_VERSION,
+        """CREATE TABLE library_summary_cache (
         fingerprint TEXT PRIMARY KEY,
         subject_kind TEXT NOT NULL
             CHECK (subject_kind IN ('file', 'directory')),
         summary TEXT NOT NULL,
         created_at TEXT NOT NULL,
         last_used_at TEXT NOT NULL
-    )""",
-    """CREATE TABLE sessions (
-        session_id   TEXT PRIMARY KEY,
-        workspace    TEXT NOT NULL,
-        system_prompt TEXT NOT NULL,
-        created_at   TEXT NOT NULL,
-        closed_at    TEXT
     );
 
-    CREATE TABLE session_messages (
-        session_id  TEXT NOT NULL REFERENCES sessions(session_id),
-        seq         INTEGER NOT NULL,
-        role        TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool_result')),
-        payload     TEXT NOT NULL,
-        created_at  TEXT NOT NULL,
-        PRIMARY KEY (session_id, seq)
+    CREATE TABLE sessions (
+        session_id   TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        revision     INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+        config       TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL,
+        archived_at  TEXT
+    );
+
+    CREATE TABLE session_journal (
+        session_id TEXT NOT NULL
+            REFERENCES sessions(session_id) ON DELETE CASCADE,
+        revision   INTEGER NOT NULL CHECK (revision >= 1),
+        role       TEXT NOT NULL
+            CHECK (role IN ('user', 'assistant', 'tool_result')),
+        payload    TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, revision)
+    );
+
+    CREATE TABLE session_usage_records (
+        model_call_id TEXT PRIMARY KEY,
+        session_id    TEXT NOT NULL
+            REFERENCES sessions(session_id) ON DELETE CASCADE,
+        purpose       TEXT NOT NULL
+            CHECK (purpose IN ('agent', 'compaction')),
+        input_tokens  INTEGER NOT NULL CHECK (input_tokens >= 0),
+        output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
+        created_at    TEXT NOT NULL
+    );
+
+    CREATE TABLE session_context_snapshots (
+        session_id         TEXT PRIMARY KEY
+            REFERENCES sessions(session_id) ON DELETE CASCADE,
+        source_revision    INTEGER NOT NULL CHECK (source_revision >= 0),
+        derivation_version TEXT NOT NULL,
+        payload            TEXT NOT NULL,
+        created_at         TEXT NOT NULL
     )""",
+    ),
 )
 
 
@@ -93,6 +125,7 @@ class _StateDatabase:
             timeout=_BUSY_TIMEOUT_SECONDS,
             check_same_thread=False,
         )
+        connection.execute("PRAGMA foreign_keys = ON")
         database = cls(database_path, connection)
         database._migrate()
         return database
@@ -124,7 +157,7 @@ class _StateDatabase:
     def _migrate(self) -> None:
         with self._lock:
             (version,) = self._connection.execute("PRAGMA user_version").fetchone()
-            for target, script in enumerate(_MIGRATIONS, start=1):
+            for target, script in _MIGRATIONS:
                 if target <= version:
                     continue
                 self._connection.execute("BEGIN")

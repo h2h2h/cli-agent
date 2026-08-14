@@ -142,7 +142,7 @@ def test_runs_the_smallest_deterministic_agent_loop(
             )
 
             await runtime.close_session("session-a")
-            await _collect_turn(runtime, "session-a", fresh_user)
+            await _collect_turn(runtime, "session-fresh", fresh_user)
 
             fresh_system_message = provider.requests[3].messages[0]
             assert isinstance(fresh_system_message, SystemMessage)
@@ -151,8 +151,8 @@ def test_runs_the_smallest_deterministic_agent_loop(
                 fresh_system_message,
                 fresh_user,
             )
-            await runtime.close_session("session-a")
-            await runtime.close_session("session-a")
+            await runtime.close_session("session-fresh")
+            await runtime.close_session("session-fresh")
             assert not runtime.closed
 
         assert runtime.closed

@@ -22,7 +22,7 @@ def test_migration_creates_table_and_reopens_idempotently(tmp_path: Path) -> Non
 
     connection = sqlite3.connect(path)
     (version,) = connection.execute("PRAGMA user_version").fetchone()
-    assert version == 2
+    assert version == 3
     names = {
         row[0]
         for row in connection.execute(
@@ -201,6 +201,4 @@ def test_busy_timeout_is_bounded(tmp_path: Path) -> None:
 
 
 def test_default_database_path_is_user_config() -> None:
-    assert _default_state_db_path() == (
-        Path.home() / ".cli-agent" / "state.sqlite3"
-    )
+    assert _default_state_db_path() == (Path.home() / ".cli-agent" / "state.sqlite3")

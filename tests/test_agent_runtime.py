@@ -7,6 +7,7 @@ from interaction_fakes import _ScriptedInteraction
 from policy_fakes import _DenyExecutablePolicy
 
 import cli_agent.runtime.runtime as runtime_module
+from cli_agent.errors import HostFacingError
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -405,17 +406,11 @@ def test_serializes_concurrent_turns_on_the_same_session(tmp_path: Path) -> None
     asyncio.run(scenario())
 
 
-def test_reusing_closed_session_id_creates_fresh_state(tmp_path: Path) -> None:
+def test_reusing_detached_session_id_requires_resume(tmp_path: Path) -> None:
     first_user = UserMessage.text("Before close")
     second_user = UserMessage.text("After close")
     first_assistant = AssistantMessage.text("Old state")
-    second_assistant = AssistantMessage.text("Fresh state")
-    provider = ScriptedModelProvider(
-        script=(
-            (_completion(first_assistant),),
-            (_completion(second_assistant),),
-        )
-    )
+    provider = ScriptedModelProvider(script=((_completion(first_assistant),),))
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
@@ -431,20 +426,16 @@ def test_reusing_closed_session_id_creates_fresh_state(tmp_path: Path) -> None:
         await runtime.close_session("session-a")
         await runtime.close_session("session-a")
         await runtime.close_session("unknown")
-        await _collect_turn(runtime, "session-a", second_user)
-        second_session = runtime._sessions["session-a"]
+        with pytest.raises(HostFacingError) as raised:
+            await _collect_turn(runtime, "session-a", second_user)
 
         first_system = provider.requests[0].messages[0]
-        second_system = provider.requests[1].messages[0]
         assert isinstance(first_system, SystemMessage)
-        assert isinstance(second_system, SystemMessage)
         assert provider.requests[0].messages == (first_system, first_user)
-        assert provider.requests[1].messages == (second_system, second_user)
-        assert second_system is not first_system
+        assert raised.value.code == "session_already_exists"
+        assert raised.value.details == {"session_id": "session-a"}
         assert first_kernel._closed is True
-        assert second_session is not first_session
-        assert second_session.loop is not first_session.loop
-        assert second_session.kernel is not first_kernel
+        assert "session-a" not in runtime._sessions
         provider.assert_exhausted()
         await runtime.close()
 
@@ -477,7 +468,10 @@ def test_assembles_workspace_and_optional_host_instruction(
         assert ".workspace/tools" in text
         assert ".workspace/skills" in text
         assert ".workspace/library" in text
-        assert "Use `output` and `kill` only to manage Executions started by `exec`" in text
+        assert (
+            "Use `output` and `kill` only to manage Executions started by `exec`"
+            in text
+        )
         assert "not an operating-system security boundary" in text
         assert text.endswith("Host instruction\nPrefer focused, reversible changes.")
         provider.assert_exhausted()

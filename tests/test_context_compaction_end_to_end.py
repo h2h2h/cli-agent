@@ -377,7 +377,7 @@ def test_cross_session_compaction_is_isolated(
         asyncio.run(runtime.close())
 
 
-def test_close_session_releases_context_and_reuse_is_fresh(
+def test_close_session_releases_context_and_new_id_is_fresh(
     tmp_path: Path,
 ) -> None:
     provider = ScriptedModelProvider(
@@ -390,7 +390,7 @@ def test_close_session_releases_context_and_reuse_is_fresh(
     try:
         asyncio.run(_run_turn(runtime, "session", "First turn"))
         asyncio.run(runtime.close_session("session"))
-        asyncio.run(_run_turn(runtime, "session", "Second turn"))
+        asyncio.run(_run_turn(runtime, "fresh-session", "Second turn"))
 
         first_system = provider.requests[0].messages[0]
         second_system = provider.requests[1].messages[0]

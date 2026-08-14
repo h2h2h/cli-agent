@@ -111,7 +111,7 @@ def test_public_runtime_combines_workspace_session_and_host_environment(
         await runtime.close_session("session-a")
         await _collect_turn(
             runtime,
-            "session-a",
+            "session-fresh",
             "inspect fresh",
             provider=fresh_provider,
         )

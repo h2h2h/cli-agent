@@ -68,9 +68,11 @@ async def _drain(catalog: _LibraryCatalog) -> None:
 async def _collect(
     runtime: AgentRuntime,
     text: str = "Hello",
+    *,
+    session_id: str = "session",
 ) -> tuple[ModelEvent, ...]:
     return tuple(
-        [event async for event in runtime.run_turn("session", UserMessage.text(text))]
+        [event async for event in runtime.run_turn(session_id, UserMessage.text(text))]
     )
 
 
@@ -249,7 +251,7 @@ def test_restart_reuses_sqlite_cache_without_repeat_requests(tmp_path: Path) -> 
             context_policy=_CONTEXT_POLICY,
         )
         try:
-            await _collect(runtime)
+            await _collect(runtime, session_id="session-restarted")
             catalog = _catalog(runtime)
             assert catalog.get("guide.md").status == "ready"  # type: ignore[union-attr]
             assert catalog.get("guide.md").summary == "Guide summary."  # type: ignore[union-attr]
@@ -304,7 +306,7 @@ def test_runtime_files_write_is_stale_at_next_request_then_converges(
         try:
             catalog = _catalog(runtime)
             provider._catalog = catalog
-            await _collect(runtime)
+            await _collect(runtime, session_id="session-recovered")
             await _drain(catalog)
             assert catalog.get("notes/guide.md").status == "ready"  # type: ignore[union-attr]
             provider.observe = True
@@ -387,7 +389,7 @@ def test_failure_and_overflow_stay_entry_scoped_then_restart_recovers(
             context_policy=_CONTEXT_POLICY,
         )
         try:
-            await _collect(runtime)
+            await _collect(runtime, session_id="session-recovered")
             await _drain(_catalog(runtime))
             catalog = _catalog(runtime)
             assert catalog.get("bad.md").status == "ready"  # type: ignore[union-attr]
@@ -431,7 +433,7 @@ def test_close_cancels_pending_summaries_and_restart_converges(tmp_path: Path) -
             context_policy=_CONTEXT_POLICY,
         )
         try:
-            await _collect(runtime)
+            await _collect(runtime, session_id="session-fresh")
             await _drain(_catalog(runtime))
             assert _catalog(runtime).get("slow.md").status == "ready"  # type: ignore[union-attr]
         finally:
@@ -483,7 +485,7 @@ def test_capability_view_scenarios_index_the_effective_library(tmp_path: Path) -
             whiteout.write_text("", encoding="utf-8")
             (Path(view.root) / "library" / "hidden.md").unlink()
 
-            await _collect(runtime)
+            await _collect(runtime, session_id="session-second-workspace")
             await _drain(catalog)
 
             by_path = {entry.path: entry for entry in catalog.entries}
@@ -613,7 +615,7 @@ def test_file_summaries_reuse_across_workspaces(tmp_path: Path) -> None:
             context_policy=_CONTEXT_POLICY,
         )
         try:
-            await _collect(runtime)
+            await _collect(runtime, session_id="session-second-workspace")
             await _drain(_catalog(runtime))
             entry = _catalog(runtime).get("docs.md")
             assert entry is not None

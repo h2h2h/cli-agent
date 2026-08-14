@@ -361,7 +361,7 @@ def test_public_runtime_proves_concurrent_session_scheduling(
             fresh_user = UserMessage.text("Start a fresh Session A")
             fresh_events = await _collect_turn(
                 runtime,
-                "session-a",
+                "session-a-fresh",
                 fresh_user,
                 provider=fresh_provider,
             )
@@ -387,7 +387,7 @@ def test_public_runtime_proves_concurrent_session_scheduling(
             fresh_exec_id = str(_result_output(fresh_results[2])["exec_id"])
             assert fresh_exec_id not in old_handles_a
             assert fresh_proof.exists()
-            fresh_session = runtime._sessions["session-a"]
+            fresh_session = runtime._sessions["session-a-fresh"]
             assert fresh_session is not old_session_a
             assert fresh_session.kernel is not old_kernel_a
             assert (

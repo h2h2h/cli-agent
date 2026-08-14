@@ -16,88 +16,71 @@ from cli_agent.runtime.model import (
     UserMessage,
 )
 
-_V1_LIBRARY_TABLE = """CREATE TABLE library_summary_cache (
-    fingerprint TEXT PRIMARY KEY,
-    subject_kind TEXT NOT NULL
-        CHECK (subject_kind IN ('file', 'directory')),
-    summary TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    last_used_at TEXT NOT NULL
-)"""
-
 
 def _open(path: Path) -> tuple[_StateDatabase, _SessionHistory]:
     database = _StateDatabase.open(path)
     return database, _SessionHistory(database)
 
 
-def test_migration_creates_tables_and_upgrades_user_version(tmp_path: Path) -> None:
+def test_migration_creates_durable_schema_and_upgrades_user_version(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "state.sqlite3"
     database = _StateDatabase.open(path)
     database.close()
 
     connection = sqlite3.connect(path)
     (version,) = connection.execute("PRAGMA user_version").fetchone()
-    assert version == 2
     names = {
         row[0]
         for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         )
     }
-    assert {"sessions", "session_messages"} <= names
     connection.close()
+
+    assert version == 3
+    assert {
+        "sessions",
+        "session_journal",
+        "session_usage_records",
+        "session_context_snapshots",
+    } <= names
+    assert "session_messages" not in names
 
     reopened = _StateDatabase.open(path)
     reopened.close()
 
 
-def test_upgrade_from_version_1_preserves_library_summaries(tmp_path: Path) -> None:
-    path = tmp_path / "state.sqlite3"
-    connection = sqlite3.connect(path)
-    connection.execute(_V1_LIBRARY_TABLE)
-    connection.execute(
-        "INSERT INTO library_summary_cache VALUES (?, ?, ?, ?, ?)",
-        (
-            "fp-1",
-            "file",
-            "kept summary",
-            "2026-01-01T00:00:00+00:00",
-            "2026-01-01T00:00:00+00:00",
-        ),
-    )
-    connection.execute("PRAGMA user_version = 1")
-    connection.commit()
-    connection.close()
-
-    database = _StateDatabase.open(path)
-    with database.transaction() as upgraded:
-        (version,) = upgraded.execute("PRAGMA user_version").fetchone()
-        assert version == 2
-        (summary,) = upgraded.execute(
-            "SELECT summary FROM library_summary_cache WHERE fingerprint = 'fp-1'"
-        ).fetchone()
-        assert summary == "kept summary"
-    database.close()
-
-
-def test_begin_session_keeps_first_record_on_reuse(tmp_path: Path) -> None:
+def test_begin_session_reports_existing_id_and_keeps_first_record(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "state.sqlite3"
     database, history = _open(path)
-    history.begin_session("s1", "/workspace", '{"blocks": []}')
-    history.begin_session("s1", "/other", '{"blocks": [{"type": "text", "text": "x"}]}')
+    created = history.begin_session("s1", "/workspace", '{"blocks": []}')
+    reused = history.begin_session(
+        "s1",
+        "/other",
+        '{"blocks": [{"type": "text", "text": "x"}]}',
+    )
 
     connection = sqlite3.connect(path)
     rows = connection.execute(
-        "SELECT workspace, system_prompt FROM sessions WHERE session_id = 's1'"
+        "SELECT workspace_id, config, revision FROM sessions WHERE session_id = 's1'"
     ).fetchall()
     connection.close()
 
-    assert rows == [("/workspace", '{"blocks": []}')]
+    assert created is True
+    assert reused is False
+    assert [(row[0], row[2]) for row in rows] == [("/workspace", 0)]
+    assert json.loads(rows[0][1]) == {
+        "schema_version": 1,
+        "system_prompt": '{"blocks": []}',
+    }
     database.close()
 
 
-def test_append_stores_ordered_messages_with_serialized_payloads(
+def test_append_stores_ordered_journal_entries_with_serialized_payloads(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "state.sqlite3"
@@ -120,20 +103,28 @@ def test_append_stores_ordered_messages_with_serialized_payloads(
 
     connection = sqlite3.connect(path)
     rows = connection.execute(
-        "SELECT seq, role, payload, created_at FROM session_messages "
-        "WHERE session_id = 's1' ORDER BY seq"
+        "SELECT revision, role, payload, created_at FROM session_journal "
+        "WHERE session_id = 's1' ORDER BY revision"
     ).fetchall()
+    (revision,) = connection.execute(
+        "SELECT revision FROM sessions WHERE session_id = 's1'"
+    ).fetchone()
     connection.close()
 
     assert [(row[0], row[1]) for row in rows] == [
-        (0, "user"),
-        (1, "assistant"),
-        (2, "tool_result"),
+        (1, "user"),
+        (2, "assistant"),
+        (3, "tool_result"),
     ]
+    assert revision == 3
     assert json.loads(rows[0][2]) == {
-        "blocks": [{"type": "text", "text": "hello"}]
+        "schema_version": 1,
+        "role": "user",
+        "blocks": [{"type": "text", "text": "hello"}],
     }
     assert json.loads(rows[1][2]) == {
+        "schema_version": 1,
+        "role": "assistant",
         "blocks": [
             {"type": "text", "text": "hi"},
             {
@@ -142,29 +133,15 @@ def test_append_stores_ordered_messages_with_serialized_payloads(
                 "name": "exec",
                 "arguments": {"command": "ls"},
             },
-        ]
+        ],
     }
     assert json.loads(rows[2][2]) == {
-        "results": [{"call_id": "c1", "output": {"ok": True}, "error": None}]
+        "schema_version": 1,
+        "role": "tool_result",
+        "results": [{"call_id": "c1", "output": {"ok": True}, "error": None}],
     }
     timestamps = [datetime.fromisoformat(row[3]) for row in rows]
     assert timestamps == sorted(timestamps)
-    database.close()
-
-
-def test_close_session_stamps_closed_at(tmp_path: Path) -> None:
-    path = tmp_path / "state.sqlite3"
-    database, history = _open(path)
-    history.begin_session("s1", "/workspace", '{"blocks": []}')
-    history.close_session("s1")
-
-    connection = sqlite3.connect(path)
-    (closed_at,) = connection.execute(
-        "SELECT closed_at FROM sessions WHERE session_id = 's1'"
-    ).fetchone()
-    connection.close()
-
-    assert datetime.fromisoformat(closed_at).tzinfo is not None
     database.close()
 
 
@@ -202,7 +179,23 @@ def test_append_of_system_message_reports_diagnostic_without_raising(
         "session_history.write_failed"
     ]
     connection = sqlite3.connect(path)
-    (count,) = connection.execute("SELECT COUNT(*) FROM session_messages").fetchone()
+    (count,) = connection.execute("SELECT COUNT(*) FROM session_journal").fetchone()
+    connection.close()
+    assert count == 0
+    database.close()
+
+
+def test_append_to_unknown_session_reports_diagnostic(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    received: list[RuntimeDiagnostic] = []
+    database = _StateDatabase.open(path)
+    history = _SessionHistory(database, on_diagnostic=received.append)
+
+    history.append("missing", UserMessage.text("hello"))
+
+    assert [diagnostic.detail["operation"] for diagnostic in received] == ["append"]
+    connection = sqlite3.connect(path)
+    (count,) = connection.execute("SELECT COUNT(*) FROM session_journal").fetchone()
     connection.close()
     assert count == 0
     database.close()
