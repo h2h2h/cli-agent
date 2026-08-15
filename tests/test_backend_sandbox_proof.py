@@ -52,10 +52,11 @@ from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime._database.summary_cache import _SummaryCache
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._environment.handlers.base import (
-    _ExecutionOutcome,
-    _ExecutionOutput,
-    _PreparedExecution,
+from cli_agent.runtime._execution import (
+    _KILLED_BEFORE_START,
+    ExecutionHandle,
+    ExecutionOutputSink,
+    ExitStatus,
 )
 
 _SANDBOX_ROOT = "/sandbox"
@@ -320,26 +321,26 @@ class _SandboxShellExecution:
         self._raw = raw_command.strip()
         self._cancelled = False
 
-    async def run(self, output: _ExecutionOutput) -> _ExecutionOutcome:
+    async def run(self, output: ExecutionOutputSink) -> ExitStatus:
         if self._cancelled:
-            return _ExecutionOutcome.killed()
+            return ExitStatus(_KILLED_BEFORE_START)
         return await _run_sandbox_shell(self, output)
 
-    async def cancel(self) -> None:
+    async def kill(self) -> None:
         self._cancelled = True
 
 
 async def _run_sandbox_shell(
     execution: _SandboxShellExecution,
-    output: _ExecutionOutput,
-) -> _ExecutionOutcome:
+    output: ExecutionOutputSink,
+) -> ExitStatus:
     raw = execution._raw
     try:
         if not raw:
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
         if raw == "pwd":
             await output.write("stdout", (execution._cwd + "\n").encode("utf-8"))
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
         if raw.startswith("echo "):
             return await _sandbox_echo(execution, output, raw)
         if raw.startswith("cat "):
@@ -348,82 +349,82 @@ async def _run_sandbox_shell(
             return await _sandbox_ls(execution, output, raw)
         if raw.startswith("mkdir "):
             execution._dirs.add(_resolve(raw[6:].strip(), execution._cwd))
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
         if raw.startswith("rm "):
             await execution._files.pop(_resolve(raw[3:].strip(), execution._cwd), None)
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
         if raw.startswith("sleep "):
             return await _sandbox_sleep(execution, output, raw)
     except Exception as exc:
         await output.write("stderr", f"sandbox: {exc}\n".encode("utf-8"))
-        return _ExecutionOutcome.failed(1)
+        return ExitStatus(1)
     await output.write(
         "stderr",
         f"sandbox: unsupported shell command: {raw}\n".encode("utf-8"),
     )
-    return _ExecutionOutcome.failed(1)
+    return ExitStatus(1)
 
 
 async def _sandbox_echo(
     execution: _SandboxShellExecution,
-    output: _ExecutionOutput,
+    output: ExecutionOutputSink,
     raw: str,
-) -> _ExecutionOutcome:
+) -> ExitStatus:
     append = ">>" in raw
     text, _, redirect = raw.partition(">>" if append else ">")
     text = text.removeprefix("echo ").strip().strip("'\"")
     if not redirect:
         await output.write("stdout", (text + "\n").encode("utf-8"))
-        return _ExecutionOutcome.exited()
+        return ExitStatus(0)
     path = _resolve(redirect.strip().strip("'\""), execution._cwd)
     content = (text + "\n").encode("utf-8")
     if append:
         execution._files[path] = execution._files.get(path, b"") + content
     else:
         execution._files[path] = content
-    return _ExecutionOutcome.exited()
+    return ExitStatus(0)
 
 
 async def _sandbox_cat(
     execution: _SandboxShellExecution,
-    output: _ExecutionOutput,
+    output: ExecutionOutputSink,
     raw: str,
-) -> _ExecutionOutcome:
+) -> ExitStatus:
     path = _resolve(raw[4:].strip().strip("'\""), execution._cwd)
     try:
         content = execution._files[path]
     except KeyError:
         await output.write("stderr", f"cat: no such file: {path}\n".encode("utf-8"))
-        return _ExecutionOutcome.failed(1)
+        return ExitStatus(1)
     await output.write("stdout", content)
-    return _ExecutionOutcome.exited()
+    return ExitStatus(0)
 
 
 async def _sandbox_ls(
     execution: _SandboxShellExecution,
-    output: _ExecutionOutput,
+    output: ExecutionOutputSink,
     raw: str,
-) -> _ExecutionOutcome:
+) -> ExitStatus:
     path = raw[3:].strip() or execution._cwd
     target = _resolve(path.strip("'\""), execution._cwd)
     for name in sorted(_entries_beneath(execution._files, execution._dirs, target)):
         await output.write("stdout", (name + "\n").encode("utf-8"))
-    return _ExecutionOutcome.exited()
+    return ExitStatus(0)
 
 
 async def _sandbox_sleep(
     execution: _SandboxShellExecution,
-    output: _ExecutionOutput,
+    output: ExecutionOutputSink,
     raw: str,
-) -> _ExecutionOutcome:
+) -> ExitStatus:
     del output
     seconds = float(raw[6:].strip())
     deadline = asyncio.get_running_loop().time() + seconds
     while asyncio.get_running_loop().time() < deadline:
         if execution._cancelled:
-            return _ExecutionOutcome.killed()
+            return ExitStatus(_KILLED_BEFORE_START)
         await asyncio.sleep(0.01)
-    return _ExecutionOutcome.exited()
+    return ExitStatus(0)
 
 
 class _SandboxPath:
@@ -502,9 +503,9 @@ class _SandboxToolExecution:
         self._request = request
         self._cancelled = False
 
-    async def run(self, output: _ExecutionOutput) -> _ExecutionOutcome:
+    async def run(self, output: ExecutionOutputSink) -> ExitStatus:
         if self._cancelled:
-            return _ExecutionOutcome.killed()
+            return ExitStatus(_KILLED_BEFORE_START)
         try:
             result = _run_sandbox_code(
                 self._request.code,
@@ -517,12 +518,12 @@ class _SandboxToolExecution:
             await output.write(
                 "stderr", f"{type(exc).__name__}: {exc}\n".encode("utf-8")
             )
-            return _ExecutionOutcome.failed(1)
+            return ExitStatus(1)
         if result is not None:
             await output.write("stdout", f"{result}\n".encode("utf-8"))
-        return _ExecutionOutcome.exited()
+        return ExitStatus(0)
 
-    async def cancel(self) -> None:
+    async def kill(self) -> None:
         self._cancelled = True
 
 
@@ -605,7 +606,7 @@ class _SandboxBackendWorkspace:
     def prepare_shell(
         self,
         request: object,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         return _SandboxShellExecution(
             self._files,
             self._dirs,
@@ -616,7 +617,7 @@ class _SandboxBackendWorkspace:
     def prepare_tool(
         self,
         request: object,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         return _SandboxToolExecution(
             self._files,
             self.capabilities.root,

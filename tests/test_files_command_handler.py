@@ -16,17 +16,19 @@ from cli_agent.runtime._backend.local import (
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.files import _FileHandler
+from cli_agent.runtime._execution import (
+    ExitStatus,
+)
 
 
 def test_files_write_creates_file_and_reports_byte_count(tmp_path: Path) -> None:
     outcome, output = _write(tmp_path, "files write hello.txt", stdin="line1\nline2\n")
 
     target = tmp_path / "hello.txt"
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert target.read_text(encoding="utf-8") == "line1\nline2\n"
     assert output.text("stdout") == f"wrote 12 bytes to {target}\n"
     assert output.text("stderr") == ""
@@ -40,7 +42,7 @@ def test_files_write_creates_parent_directories(tmp_path: Path) -> None:
     )
 
     target = tmp_path / "nested" / "deep" / "file.txt"
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert target.read_text(encoding="utf-8") == "content\n"
 
 
@@ -51,7 +53,7 @@ def test_files_write_overwrites_content_and_preserves_mode(tmp_path: Path) -> No
 
     outcome, output = _write(tmp_path, "files write keep.py", stdin="new\n")
 
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert target.read_text(encoding="utf-8") == "new\n"
     assert stat.S_IMODE(target.stat().st_mode) == 0o750
     assert output.text("stdout") == f"wrote 4 bytes to {target}\n"
@@ -61,7 +63,7 @@ def test_files_write_new_file_uses_default_mode(tmp_path: Path) -> None:
     outcome, _ = _write(tmp_path, "files write fresh.py", stdin="x\n")
 
     target = tmp_path / "fresh.py"
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
 
@@ -69,7 +71,7 @@ def test_files_write_empty_stdin_creates_empty_file(tmp_path: Path) -> None:
     outcome, output = _write(tmp_path, "files write empty.txt", stdin="")
 
     target = tmp_path / "empty.txt"
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert target.read_text(encoding="utf-8") == ""
     assert output.text("stdout") == f"wrote 0 bytes to {target}\n"
 
@@ -86,7 +88,7 @@ def test_files_write_preserves_stdin_content_exactly(tmp_path: Path) -> None:
     )
 
     target = tmp_path / "exact.txt"
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert target.read_text(encoding="utf-8") == content
     assert output.text("stdout") == f"wrote {len(content.encode())} bytes to {target}\n"
 
@@ -96,7 +98,7 @@ def test_files_write_preserves_unicode_and_trailing_newline(tmp_path: Path) -> N
     outcome, output = _write(tmp_path, "files write unicode.txt", stdin=content)
 
     target = tmp_path / "unicode.txt"
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert target.read_bytes() == content.encode("utf-8")
     assert output.text("stdout") == f"wrote {len(content.encode())} bytes to {target}\n"
 
@@ -104,7 +106,7 @@ def test_files_write_preserves_unicode_and_trailing_newline(tmp_path: Path) -> N
 def test_files_write_without_stdin_fails_clearly(tmp_path: Path) -> None:
     outcome, output = _write(tmp_path, "files write missing.txt")
 
-    assert outcome.status == "failed"
+    assert outcome == 1
     assert "requires payload in exec.stdin" in output.text("stderr")
     assert output.text("stdout") == ""
     assert not (tmp_path / "missing.txt").exists()
@@ -116,7 +118,7 @@ def test_files_write_rejects_directory_target(tmp_path: Path) -> None:
 
     outcome, output = _write(tmp_path, "files write target", stdin="x\n")
 
-    assert outcome.status == "failed"
+    assert outcome == 1
     assert "failed to write" in output.text("stderr")
     assert output.text("stdout") == ""
 
@@ -124,7 +126,7 @@ def test_files_write_rejects_directory_target(tmp_path: Path) -> None:
 def test_files_write_rejects_nul_in_path(tmp_path: Path) -> None:
     outcome, output = _write(tmp_path, "files write bad\x00path", stdin="x\n")
 
-    assert outcome.status == "failed"
+    assert outcome == 1
     assert "null" in output.text("stderr")
 
 
@@ -141,7 +143,7 @@ def test_files_write_to_unwritable_directory_fails(tmp_path: Path) -> None:
             stdin="x\n",
         )
 
-        assert outcome.status == "failed"
+        assert outcome == 1
         assert "failed to write" in output.text("stderr")
         assert not (parent / "data.txt").exists()
     finally:
@@ -157,7 +159,7 @@ def test_files_write_usage_errors_fail_without_shell(tmp_path: Path) -> None:
     )
     for command in commands:
         outcome, output = _write(tmp_path, command, stdin="x\n")
-        assert outcome.status == "failed"
+        assert outcome == 1
         assert output.text("stderr") != ""
         assert output.text("stdout") == ""
         assert not (tmp_path / "f").exists()
@@ -181,7 +183,7 @@ def test_files_write_copies_up_in_view_lower_link(tmp_path: Path) -> None:
         view=view,
     )
 
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert not visible.is_symlink()
     assert visible.read_text(encoding="utf-8") == "NEW = 2\n"
     assert lower.read_text(encoding="utf-8") == "LOWER = 1\n"
@@ -194,7 +196,7 @@ def _write(
     *,
     stdin: str | None = None,
     view: _LocalCapabilityView | None = None,
-) -> tuple[_ExecutionOutcome, _RecordedOutput]:
+) -> tuple[ExitStatus, _RecordedOutput]:
     output = _RecordedOutput()
     backend = _LocalBackendWorkspace(cwd, {}, view)
     execution = _FileHandler(backend.filesystem).prepare(

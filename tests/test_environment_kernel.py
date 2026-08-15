@@ -996,7 +996,7 @@ def test_kill_removes_queued_execution_and_reuses_capacity(
 
             killed_state = kernel._executions[str(selected["exec_id"])]
             assert killed_state.kill_requested is True
-            assert killed_state.prepared_execution is None
+            assert killed_state.handle is None
             assert killed_state.completion_task is None
 
             replacement = _output(
@@ -1118,7 +1118,7 @@ def test_killing_queued_execution_wakes_exec_and_output_waiters(
             assert killed["status"] == "killed"
             assert exec_result == killed
             assert output_result == killed
-            assert queued_state.prepared_execution is None
+            assert queued_state.handle is None
             assert queued_state.completion_task is None
             assert not must_not_start.exists()
         finally:

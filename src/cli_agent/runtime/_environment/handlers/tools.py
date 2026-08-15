@@ -13,9 +13,9 @@ from cli_agent.runtime._capability.tools.grammar import parse_tool_command
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionRequest,
-    _PreparedExecution,
 )
 from cli_agent.runtime._environment.handlers.executions import _text_execution
+from cli_agent.runtime._execution import ExecutionHandle
 
 
 class _ToolHandler:
@@ -61,7 +61,7 @@ class _ToolHandler:
         self,
         request: _ExecutionRequest,
         context: _CommandContext,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         catalog = self._catalog
         if catalog is None:
             return _text_execution(

@@ -27,10 +27,13 @@ from cli_agent.runtime._capability.source import _prepare_capability_source
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
+from cli_agent.runtime._execution import (
+    _KILLED_BEFORE_START,
+    ExitStatus,
+)
 
 
 def test_attach_exposes_lower_files_and_preserves_workspace_overrides(
@@ -377,10 +380,10 @@ def test_cancelled_shell_execution_does_not_copy_up(tmp_path: Path) -> None:
                 environment={},
             ),
         )
-        await execution.cancel()
+        await execution.kill()
         outcome = await execution.run(_DiscardOutput())
 
-        assert outcome == _ExecutionOutcome.killed()
+        assert outcome == ExitStatus(_KILLED_BEFORE_START)
 
     asyncio.run(scenario())
 

@@ -18,14 +18,14 @@ from cli_agent.runtime._environment.commands import (
     _CustomCommandRegistry,
     _ShellCommand,
 )
-from cli_agent.runtime._environment.handlers.base import (
-    _ExecutionOutcome,
-    _ExecutionOutput,
-)
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.routing import (
     _CommandRouter,
+)
+from cli_agent.runtime._execution import (
+    ExecutionOutputSink,
+    ExitStatus,
 )
 
 
@@ -33,9 +33,9 @@ def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> No
     def prepare_cli_read(command, context):
         del command, context
 
-        async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+        async def execute(output: ExecutionOutputSink) -> ExitStatus:
             del output
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
 
         return _InlineExecution(execute)
 
@@ -224,9 +224,9 @@ def test_files_command_cannot_be_silently_overridden(tmp_path: Path) -> None:
     def prepare_duplicate(command, context):
         del command, context
 
-        async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+        async def execute(output: ExecutionOutputSink) -> ExitStatus:
             del output
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
 
         return _InlineExecution(execute)
 

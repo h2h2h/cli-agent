@@ -382,7 +382,7 @@ def test_failed_files_write_never_marks_dirty(tmp_path: Path) -> None:
         )
         outcome = await execution.run(_DiscardOutput())
 
-        assert outcome.status == "failed"
+        assert outcome == 1
         assert catalog._dirty_paths == set()
         await catalog.close()
 

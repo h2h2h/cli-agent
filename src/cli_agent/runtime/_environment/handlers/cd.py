@@ -13,14 +13,16 @@ from cli_agent.runtime._backend import _FilesystemError, _WorkspaceFilesystem
 from cli_agent.runtime._capability.command_parser import SimpleCommand
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
-    _ExecutionOutput,
     _ExecutionRequest,
-    _PreparedExecution,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
+from cli_agent.runtime._execution import (
+    ExecutionHandle,
+    ExecutionOutputSink,
+    ExitStatus,
+)
 
-_CdPreparer = Callable[[_ExecutionRequest, _CommandContext], _PreparedExecution]
+_CdPreparer = Callable[[_ExecutionRequest, _CommandContext], ExecutionHandle]
 
 
 def _prepare_cd(filesystem: _WorkspaceFilesystem | None) -> _CdPreparer:
@@ -29,7 +31,7 @@ def _prepare_cd(filesystem: _WorkspaceFilesystem | None) -> _CdPreparer:
     def prepare(
         request: _ExecutionRequest,
         context: _CommandContext,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         command = request.command
         args = command.leading_arguments
         valid = (
@@ -37,16 +39,16 @@ def _prepare_cd(filesystem: _WorkspaceFilesystem | None) -> _CdPreparer:
             and not command.contains_shell_composition
         )
 
-        async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+        async def execute(output: ExecutionOutputSink) -> ExitStatus:
             if not valid:
                 await output.write("stderr", b"cd does not support Shell composition\n")
-                return _ExecutionOutcome.failed(1)
+                return ExitStatus(1)
             if filesystem is None:
                 await output.write(
                     "stderr",
                     b"Workspace filesystem is unavailable\n",
                 )
-                return _ExecutionOutcome.failed(1)
+                return ExitStatus(1)
             requested = context.workspace if not args else args[0]
             target = requested
             try:
@@ -69,15 +71,15 @@ def _prepare_cd(filesystem: _WorkspaceFilesystem | None) -> _CdPreparer:
                         "stderr",
                         f"failed to change directory to {requested}: {exc}\n".encode(),
                     )
-                return _ExecutionOutcome.failed(1)
+                return ExitStatus(1)
             if metadata.kind != "directory":
                 await output.write(
                     "stderr",
                     f"Not a directory: {target}\n".encode(),
                 )
-                return _ExecutionOutcome.failed(1)
+                return ExitStatus(1)
             if context.set_cwd is None:
-                return _ExecutionOutcome.failed(1)
+                return ExitStatus(1)
 
             context.set_cwd(target)
             text = target
@@ -88,7 +90,7 @@ def _prepare_cd(filesystem: _WorkspaceFilesystem | None) -> _CdPreparer:
                     "Run `cd` to return to the workspace root."
                 )
             await output.write("stdout", text.encode())
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
 
         return _InlineExecution(execute)
 

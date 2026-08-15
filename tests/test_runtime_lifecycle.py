@@ -393,7 +393,7 @@ def test_runtime_close_terminates_running_executions(tmp_path: Path) -> None:
         kernel = next(iter(runtime._sessions.values())).kernel
         state = next(iter(kernel._executions.values()))
         for _ in range(100):
-            prepared = state.prepared_execution
+            prepared = state.handle
             if prepared is not None and prepared._process._process is not None:
                 break
             await asyncio.sleep(0.02)

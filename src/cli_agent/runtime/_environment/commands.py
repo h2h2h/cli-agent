@@ -10,13 +10,13 @@ from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionRequest,
-    _PreparedExecution,
 )
 from cli_agent.runtime._environment.handlers.cd import _prepare_cd
 from cli_agent.runtime._environment.handlers.executions import _text_execution
 from cli_agent.runtime._environment.handlers.export import _prepare_export
+from cli_agent.runtime._execution import ExecutionHandle
 
-_CommandPreparer = Callable[[_ExecutionRequest, _CommandContext], _PreparedExecution]
+_CommandPreparer = Callable[[_ExecutionRequest, _CommandContext], ExecutionHandle]
 _ParallelSafety = bool | Callable[[ShellParseResult], bool]
 
 
@@ -39,7 +39,7 @@ class _Command(ABC):
         self,
         request: _ExecutionRequest,
         context: _CommandContext,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         """Prepare an execution without starting work or mutating Session state."""
 
 
@@ -88,7 +88,7 @@ class _CustomCommand(_Command):
         self,
         request: _ExecutionRequest,
         context: _CommandContext,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         """Construct the command execution without starting it.
 
         A custom command that does not consume standard input rejects any
@@ -147,7 +147,7 @@ class _ShellCommand(_Command):
         self,
         request: _ExecutionRequest,
         context: _CommandContext,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         """Construct the Shell execution without starting it."""
 
         return self._prepare(request, context)

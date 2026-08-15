@@ -17,10 +17,12 @@ from cli_agent.runtime._backend.local import (
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.files import _FileHandler
+from cli_agent.runtime._execution import (
+    ExitStatus,
+)
 
 
 def test_apply_edits_replaces_one_exact_block() -> None:
@@ -86,7 +88,7 @@ def test_files_edit_replaces_a_single_block(tmp_path: Path) -> None:
         payload={"edits": [{"oldText": "world", "newText": "there"}]},
     )
 
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert target.read_text(encoding="utf-8") == "hello there\n"
     assert output.text("stdout") == f"replaced 1 block(s) in {target}\n"
     assert output.text("stderr") == ""
@@ -107,7 +109,7 @@ def test_files_edit_replaces_multiple_blocks_in_one_call(tmp_path: Path) -> None
         },
     )
 
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert target.read_text(encoding="utf-8") == "1 beta 3\n"
     assert output.text("stdout") == f"replaced 2 block(s) in {target}\n"
 
@@ -122,7 +124,7 @@ def test_files_edit_empty_new_text_deletes_matched_block(tmp_path: Path) -> None
         payload={"edits": [{"oldText": "remove me\n", "newText": ""}]},
     )
 
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert target.read_text(encoding="utf-8") == "keep\nkeep\n"
     assert output.text("stdout") == f"replaced 1 block(s) in {target}\n"
 
@@ -137,7 +139,7 @@ def test_files_edit_preserves_crlf_line_endings(tmp_path: Path) -> None:
         payload={"edits": [{"oldText": "line2", "newText": "line3"}]},
     )
 
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert target.read_bytes() == b"line1\r\nline3\r\n"
 
 
@@ -151,7 +153,7 @@ def test_files_edit_preserves_utf8_bom(tmp_path: Path) -> None:
         payload={"edits": [{"oldText": "content", "newText": "changed"}]},
     )
 
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert target.read_bytes() == b"\xef\xbb\xbfchanged"
 
 
@@ -196,7 +198,7 @@ def test_files_edit_rejections_leave_file_untouched(
         payload=payload,
     )
 
-    assert outcome.status == "failed"
+    assert outcome == 1
     assert message in output.text("stderr")
     assert output.text("stdout") == ""
     assert target.read_text(encoding="utf-8") == initial
@@ -212,7 +214,7 @@ def test_files_edit_rejects_invalid_utf8_file(tmp_path: Path) -> None:
         payload={"edits": [{"oldText": "x", "newText": "y"}]},
     )
 
-    assert outcome.status == "failed"
+    assert outcome == 1
     assert "not valid UTF-8" in output.text("stderr")
     assert target.read_bytes() == b"\xff\xfe\x00\x80"
 
@@ -224,14 +226,14 @@ def test_files_edit_rejects_missing_file(tmp_path: Path) -> None:
         payload={"edits": [{"oldText": "x", "newText": "y"}]},
     )
 
-    assert outcome.status == "failed"
+    assert outcome == 1
     assert "No such file" in output.text("stderr")
 
 
 def test_files_edit_without_stdin_fails_clearly(tmp_path: Path) -> None:
     outcome, output = _run(tmp_path, "files edit absent.txt")
 
-    assert outcome.status == "failed"
+    assert outcome == 1
     assert "requires payload in exec.stdin" in output.text("stderr")
     assert output.text("stdout") == ""
 
@@ -261,7 +263,7 @@ def test_files_edit_invalid_stdin_payload_is_a_usage_error(
         stdin=stdin,
     )
 
-    assert outcome.status == "failed"
+    assert outcome == 1
     assert output.text("stderr") != ""
     assert output.text("stdout") == ""
 
@@ -284,7 +286,7 @@ def test_files_edit_copies_up_in_view_lower_link(tmp_path: Path) -> None:
         view=view,
     )
 
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert not visible.is_symlink()
     assert visible.read_text(encoding="utf-8") == "VALUE = 2\n"
     assert lower.read_text(encoding="utf-8") == "VALUE = 1\n"
@@ -298,7 +300,7 @@ def _run(
     payload: dict[str, object] | None = None,
     stdin: str | None = None,
     view: _LocalCapabilityView | None = None,
-) -> tuple[_ExecutionOutcome, _RecordedOutput]:
+) -> tuple[ExitStatus, _RecordedOutput]:
     if payload is not None:
         stdin = json.dumps(payload)
     output = _RecordedOutput()

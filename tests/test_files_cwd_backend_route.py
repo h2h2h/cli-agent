@@ -28,11 +28,14 @@ from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.cd import _prepare_cd
 from cli_agent.runtime._environment.handlers.files import _FileHandler
+from cli_agent.runtime._execution import (
+    _KILLED_BEFORE_START,
+    ExitStatus,
+)
 
 
 class _RecordingFilesystem:
@@ -124,7 +127,7 @@ def test_files_write_builds_one_resolved_request(tmp_path: Path) -> None:
     )
     outcome = asyncio.run(execution.run(_RecordedOutput()))
 
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert filesystem.requests == [
         _FileWriteRequest(
             path=str(tmp_path / "notes" / "a.txt"),
@@ -151,7 +154,7 @@ def test_files_edit_builds_one_resolved_request(tmp_path: Path) -> None:
     )
     outcome = asyncio.run(execution.run(_RecordedOutput()))
 
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert filesystem.requests == [
         _FileEditRequest(
             path=str(tmp_path / "notes" / "a.txt"),
@@ -202,7 +205,7 @@ def test_cd_stats_resolved_target_and_commits_backend_cwd(tmp_path: Path) -> Non
     output = _RecordedOutput()
     outcome = asyncio.run(execution.run(output))
 
-    assert outcome == _ExecutionOutcome.exited()
+    assert outcome == ExitStatus(0)
     assert filesystem.stat_paths == [str(tmp_path / "sub")]
     assert committed == [str(tmp_path / "sub")]
     assert output.text("stdout") == str(tmp_path / "sub")
@@ -223,7 +226,7 @@ def test_cd_reports_missing_directory_from_filesystem_facts(tmp_path: Path) -> N
     output = _RecordedOutput()
     outcome = asyncio.run(execution.run(output))
 
-    assert outcome.status == "failed"
+    assert outcome == 1
     assert output.text("stderr") == (f"Directory not found: {tmp_path / 'missing'}\n")
 
 
@@ -243,7 +246,7 @@ def test_cd_rejects_non_directory_target(tmp_path: Path) -> None:
     output = _RecordedOutput()
     outcome = asyncio.run(execution.run(output))
 
-    assert outcome.status == "failed"
+    assert outcome == 1
     assert output.text("stderr") == (f"Not a directory: {tmp_path / 'plain.txt'}\n")
 
 
@@ -265,7 +268,7 @@ def test_cd_preserves_non_directory_filesystem_errors() -> None:
     output = _RecordedOutput()
     outcome = asyncio.run(execution.run(output))
 
-    assert outcome.status == "failed"
+    assert outcome == 1
     assert output.text("stderr") == (
         "failed to change directory to locked: permission denied: /workspace/locked\n"
     )
@@ -325,9 +328,9 @@ def test_filesystem_execution_cancel_before_run_has_no_side_effects(
     )
 
     async def scenario() -> None:
-        await execution.cancel()
+        await execution.kill()
         outcome = await execution.run(_RecordedOutput())
-        assert outcome == _ExecutionOutcome.killed()
+        assert outcome == ExitStatus(_KILLED_BEFORE_START)
 
     asyncio.run(scenario())
     assert filesystem.requests == []

@@ -19,8 +19,9 @@ from cli_agent.runtime._backend.local import (
     _LocalShellExecution,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
-from cli_agent.runtime._environment.handlers.base import (
-    _ExecutionOutcome,
+from cli_agent.runtime._execution import (
+    _KILLED_BEFORE_START,
+    ExitStatus,
 )
 
 
@@ -65,7 +66,7 @@ def test_prepare_is_synchronous_and_run_spawns_the_shell(tmp_path: Path) -> None
         assert not asyncio.iscoroutine(execution)
 
         output = _BufferOutput()
-        assert await execution.run(output) == _ExecutionOutcome.exited()
+        assert await execution.run(output) == ExitStatus(0)
         assert output.text("stdout") == "hi\n"
 
     asyncio.run(scenario())
@@ -80,7 +81,7 @@ def test_failed_command_reports_exit_code(tmp_path: Path) -> None:
             output
         )
 
-        assert outcome == _ExecutionOutcome.failed(3)
+        assert outcome == ExitStatus(3)
 
     asyncio.run(scenario())
 
@@ -108,7 +109,7 @@ def test_session_environment_overlays_workspace_and_host_environment(
             )
         ).run(output)
 
-        assert outcome == _ExecutionOutcome.exited()
+        assert outcome == ExitStatus(0)
         assert output.text("stdout") == "from-session|workspace|host"
 
     asyncio.run(scenario())
@@ -126,7 +127,7 @@ def test_shell_runs_in_the_request_cwd(tmp_path: Path) -> None:
             output
         )
 
-        assert outcome == _ExecutionOutcome.exited()
+        assert outcome == ExitStatus(0)
         assert output.text("stdout").strip() == str(subdirectory.resolve())
 
     asyncio.run(scenario())
@@ -137,11 +138,11 @@ def test_queued_before_run_cancel_does_not_spawn(tmp_path: Path) -> None:
         backend = _LocalBackendWorkspace(tmp_path, {})
         execution = backend.prepare_shell(_request("echo hi", cwd=tmp_path))
 
-        await execution.cancel()
+        await execution.kill()
         output = _BufferOutput()
         outcome = await execution.run(output)
 
-        assert outcome == _ExecutionOutcome.killed()
+        assert outcome == ExitStatus(_KILLED_BEFORE_START)
         assert output.chunks == []
 
     asyncio.run(scenario())
@@ -155,10 +156,10 @@ def test_cancel_terminates_a_running_shell(tmp_path: Path) -> None:
 
         task = asyncio.create_task(execution.run(output))
         await asyncio.sleep(0.2)
-        await execution.cancel()
+        await execution.kill()
         outcome = await task
 
-        assert outcome.status == "killed"
+        assert outcome == ExitStatus(143)
 
     asyncio.run(scenario())
 
@@ -181,7 +182,7 @@ def test_capability_redirect_copy_up_happens_before_spawn(tmp_path: Path) -> Non
             _request("echo changed > .workspace/tools/message.txt", cwd=workspace)
         ).run(output)
 
-        assert outcome == _ExecutionOutcome.exited()
+        assert outcome == ExitStatus(0)
         assert lower.read_text(encoding="utf-8") == "lower\n"
         assert not visible.is_symlink()
         assert visible.read_text(encoding="utf-8") == "changed\n"
@@ -198,7 +199,7 @@ def test_shell_without_input_data_inherits_host_stdin(tmp_path: Path) -> None:
             _request("python3 -c 'import sys; print(sys.stdin.isatty())'", cwd=tmp_path)
         ).run(output)
 
-        assert outcome == _ExecutionOutcome.exited()
+        assert outcome == ExitStatus(0)
         assert output.text("stdout") == f"{__import__('sys').stdin.isatty()}\n"
 
     asyncio.run(scenario())
@@ -217,7 +218,7 @@ def test_shell_with_empty_input_data_sends_immediate_eof(tmp_path: Path) -> None
             )
         ).run(output)
 
-        assert outcome == _ExecutionOutcome.exited()
+        assert outcome == ExitStatus(0)
         assert output.text("stdout") == "False\n''\n"
 
     asyncio.run(scenario())
@@ -236,7 +237,7 @@ def test_shell_receives_utf8_input_data(tmp_path: Path) -> None:
             )
         ).run(output)
 
-        assert outcome == _ExecutionOutcome.exited()
+        assert outcome == ExitStatus(0)
         assert output.text("stdout") == "héllo 世界\n"
 
     asyncio.run(scenario())
@@ -251,7 +252,7 @@ def test_shell_sequence_consumes_input_data_once(tmp_path: Path) -> None:
             _request("cat; wc -c | tr -d ' '", cwd=tmp_path, input_data=b"hello")
         ).run(output)
 
-        assert outcome == _ExecutionOutcome.exited()
+        assert outcome == ExitStatus(0)
         assert output.text("stdout") == "hello0\n"
 
     asyncio.run(scenario())
@@ -276,7 +277,7 @@ def test_large_bidirectional_shell_io_does_not_deadlock(tmp_path: Path) -> None:
             )
         ).run(output)
 
-        assert outcome == _ExecutionOutcome.exited()
+        assert outcome == ExitStatus(0)
         stdout = b"".join(data for name, data in output.chunks if name == "stdout")
         assert stdout == (b"y" * 700_000) + payload
         assert len([1 for name, _ in output.chunks if name == "stdout"]) > 1
@@ -297,7 +298,7 @@ def test_process_closing_stdin_early_does_not_hang(tmp_path: Path) -> None:
             )
         ).run(output)
 
-        assert outcome == _ExecutionOutcome.exited()
+        assert outcome == ExitStatus(0)
         assert output.text("stdout") == "aaaa"
 
     asyncio.run(scenario())
@@ -317,10 +318,10 @@ def test_cancel_with_pending_input_leaves_no_subprocess(tmp_path: Path) -> None:
 
         task = asyncio.create_task(execution.run(output))
         await asyncio.sleep(0.2)
-        await execution.cancel()
+        await execution.kill()
         outcome = await asyncio.wait_for(task, timeout=2)
 
-        assert outcome.status == "killed"
+        assert outcome == ExitStatus(143)
         assert b"".join(data for _, data in output.chunks) == b""
 
     asyncio.run(scenario())

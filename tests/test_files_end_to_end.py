@@ -19,10 +19,13 @@ from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.files import _FileHandler
+from cli_agent.runtime._execution import (
+    _KILLED_BEFORE_START,
+    ExitStatus,
+)
 
 
 def test_files_write_execution_snapshot_is_fully_observable(
@@ -134,10 +137,10 @@ def test_files_write_cancelled_before_run_creates_nothing(tmp_path: Path) -> Non
                 environment={},
             ),
         )
-        await execution.cancel()
+        await execution.kill()
         outcome = await execution.run(_DiscardOutput())
 
-        assert outcome == _ExecutionOutcome.killed()
+        assert outcome == ExitStatus(_KILLED_BEFORE_START)
         assert not (tmp_path / "partial.txt").exists()
 
     asyncio.run(scenario())

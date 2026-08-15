@@ -14,12 +14,14 @@ from cli_agent.runtime._backend import _ShellExecutionRequest
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
-    _ExecutionOutput,
     _ExecutionRequest,
-    _PreparedExecution,
 )
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
+from cli_agent.runtime._execution import (
+    ExecutionHandle,
+    ExecutionOutputSink,
+    ExitStatus,
+)
 
 
 class _RecordingBackend:
@@ -28,17 +30,17 @@ class _RecordingBackend:
     def __init__(self) -> None:
         self.requests: list[_ShellExecutionRequest] = []
 
-    def prepare_shell(self, request: _ShellExecutionRequest) -> _PreparedExecution:
+    def prepare_shell(self, request: _ShellExecutionRequest) -> ExecutionHandle:
         self.requests.append(request)
         return _SilentExecution()
 
 
 class _SilentExecution:
-    async def run(self, output: _ExecutionOutput) -> _ExecutionOutcome:
+    async def run(self, output: ExecutionOutputSink) -> ExitStatus:
         del output
-        return _ExecutionOutcome.exited()
+        return ExitStatus(0)
 
-    async def cancel(self) -> None:
+    async def kill(self) -> None:
         return
 
 

@@ -6,8 +6,8 @@ from cli_agent.runtime._backend import _BackendWorkspace, _ShellExecutionRequest
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionRequest,
-    _PreparedExecution,
 )
+from cli_agent.runtime._execution import ExecutionHandle
 
 
 class _ShellHandler:
@@ -20,7 +20,7 @@ class _ShellHandler:
         self,
         request: _ExecutionRequest,
         context: _CommandContext,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         backend = self._backend
         if backend is None:
             raise RuntimeError("Shell handler requires a Backend Workspace")

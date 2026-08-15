@@ -44,8 +44,8 @@ from cli_agent.runtime._backend.protocol import (
     _WorkspaceMCPRuntime,
 )
 from cli_agent.runtime._capability.workspace import _load_workspace_env
-from cli_agent.runtime._environment.handlers.base import _PreparedExecution
 from cli_agent.runtime._environment.handlers.executions import _text_execution
+from cli_agent.runtime._execution import ExecutionHandle
 
 
 class _LocalBackend:
@@ -146,7 +146,7 @@ class _LocalBackendWorkspace:
     def prepare_shell(
         self,
         request: _ShellExecutionRequest,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         """Prepare one Shell execution without starting a subprocess."""
 
         self._ensure_open()
@@ -164,7 +164,7 @@ class _LocalBackendWorkspace:
     def prepare_tool(
         self,
         request: _ToolExecutionRequest,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         """Prepare one Tool worker execution inside this Workspace.
 
         The worker, its venv, and the effective Tools directory come from the

@@ -3,7 +3,7 @@
 These tests pin the private Backend domain introduced by RFC-0012 issue 01:
 the contracts cover execution and filesystem (not just subprocess), every
 path and result fact is backend-neutral data, and the existing
-``_PreparedExecution`` contract is reused without modification.
+``ExecutionHandle`` contract is reused without modification.
 """
 
 import asyncio
@@ -42,12 +42,12 @@ from cli_agent.runtime._capability.command_parser import (
     ShellParseResult,
     parse_shell_ast,
 )
-from cli_agent.runtime._environment.handlers.base import (
-    _ExecutionOutcome,
-    _ExecutionOutput,
-    _PreparedExecution,
-)
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
+from cli_agent.runtime._execution import (
+    ExecutionHandle,
+    ExecutionOutputSink,
+    ExitStatus,
+)
 
 _BACKEND_NEUTRAL_FACTS = (
     _ShellExecutionRequest,
@@ -241,20 +241,20 @@ class _FakeBackendWorkspace:
     def prepare_shell(
         self,
         request: _ShellExecutionRequest,
-    ) -> _PreparedExecution:
-        async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+    ) -> ExecutionHandle:
+        async def execute(output: ExecutionOutputSink) -> ExitStatus:
             await output.write("stdout", request.command.raw_command.encode())
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
 
         return _InlineExecution(execute)
 
     def prepare_tool(
         self,
         request: _ToolExecutionRequest,
-    ) -> _PreparedExecution:
-        async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+    ) -> ExecutionHandle:
+        async def execute(output: ExecutionOutputSink) -> ExitStatus:
             await output.write("stdout", request.code.encode())
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
 
         return _InlineExecution(execute)
 
@@ -378,7 +378,7 @@ def test_prepare_is_synchronous_and_defers_resource_creation() -> None:
         )
 
         assert not asyncio.iscoroutine(execution)
-        assert await execution.run(_NullOutput()) == _ExecutionOutcome.exited()
+        assert await execution.run(_NullOutput()) == ExitStatus(0)
 
     asyncio.run(scenario())
 

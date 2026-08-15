@@ -18,14 +18,17 @@ from cli_agent.runtime._environment.commands import (
 )
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
-    _ExecutionOutput,
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.routing import (
     _ExecutionRoute,
+)
+from cli_agent.runtime._execution import (
+    _KILLED_BEFORE_START,
+    ExecutionOutputSink,
+    ExitStatus,
 )
 
 
@@ -64,7 +67,7 @@ def test_custom_command_prepares_export_and_shell_handler_prepares_process(
         assert isinstance(execution, _InlineExecution)
         assert environment == {}
         outcome = await execution.run(_BufferOutput())
-        assert outcome == _ExecutionOutcome.exited()
+        assert outcome == ExitStatus(0)
         assert environment == {"A": "1", "MESSAGE": "two words"}
 
         process_execution = _ShellHandler(_LocalBackendWorkspace(tmp_path, {})).prepare(
@@ -94,10 +97,10 @@ def test_inline_export_cancelled_before_run_does_not_mutate_session(
             ),
         )
 
-        await execution.cancel()
+        await execution.kill()
         outcome = await execution.run(_BufferOutput())
 
-        assert outcome == _ExecutionOutcome.killed()
+        assert outcome == ExitStatus(_KILLED_BEFORE_START)
         assert environment == {}
 
     asyncio.run(scenario())
@@ -113,10 +116,10 @@ def test_process_execution_cancelled_before_run_does_not_spawn() -> None:
             raise AssertionError("cancelled execution must not spawn")
 
         execution = _ProcessExecution(spawn)
-        await execution.cancel()
+        await execution.kill()
         outcome = await execution.run(_BufferOutput())
 
-        assert outcome == _ExecutionOutcome.killed()
+        assert outcome == ExitStatus(_KILLED_BEFORE_START)
         assert spawned is False
 
     asyncio.run(scenario())
@@ -143,7 +146,7 @@ def test_invalid_inline_export_reports_failure_without_mutation(
 
         outcome = await execution.run(output)
 
-        assert outcome == _ExecutionOutcome.failed(1)
+        assert outcome == ExitStatus(1)
         assert output.chunks == [
             ("stderr", b"Invalid format: BROKEN, expected KEY=VALUE\n")
         ]
@@ -157,13 +160,13 @@ class _FakeExecution:
         self.started = asyncio.Event()
         self.cancelled = asyncio.Event()
 
-    async def run(self, output: _ExecutionOutput) -> _ExecutionOutcome:
+    async def run(self, output: ExecutionOutputSink) -> ExitStatus:
         self.started.set()
         await output.write("stdout", b"driver output\n")
         await self.cancelled.wait()
-        return _ExecutionOutcome.killed()
+        return ExitStatus(_KILLED_BEFORE_START)
 
-    async def cancel(self) -> None:
+    async def kill(self) -> None:
         self.cancelled.set()
 
 
@@ -190,11 +193,11 @@ class _FailingHandler:
 
 
 class _SuccessfulExecution:
-    async def run(self, output: _ExecutionOutput) -> _ExecutionOutcome:
+    async def run(self, output: ExecutionOutputSink) -> ExitStatus:
         del output
-        return _ExecutionOutcome.exited()
+        return ExitStatus(0)
 
-    async def cancel(self) -> None:
+    async def kill(self) -> None:
         return
 
 
@@ -208,7 +211,7 @@ class _SuccessfulHandler:
         return _SuccessfulExecution()
 
 
-def test_kernel_runs_and_cancels_prepared_execution_without_branch(
+def test_kernel_runs_and_cancels_handle_without_branch(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
@@ -234,8 +237,8 @@ def test_kernel_runs_and_cancels_prepared_execution_without_branch(
             ("fake command", str(tmp_path), {"SESSION": "value"})
         ]
         assert state.status == "killed"
-        assert state.exit_code is None
-        assert state.prepared_execution is execution
+        assert state.exit_code == _KILLED_BEFORE_START
+        assert state.handle is execution
         assert state.chunks[0]["text"] == "driver output\n"
         assert state.completion_task is not None
         assert state.completion_task.done()
@@ -250,11 +253,11 @@ def test_parallel_safe_metadata_forces_an_isolated_command_context(
     async def scenario() -> None:
         prepared_context: _CommandContext | None = None
 
-        async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+        async def execute(output: ExecutionOutputSink) -> ExitStatus:
             del output
             assert prepared_context is not None
             prepared_context.environment["WORKER"] = "changed"
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
 
         def prepare(request: _ExecutionRequest, context: _CommandContext) -> _InlineExecution:
             del request

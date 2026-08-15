@@ -13,13 +13,16 @@ from cli_agent.runtime._environment.execution_state import (
 )
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
-    _ExecutionOutput,
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._environment.routing import _ExecutionRoute
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
+from cli_agent.runtime._execution import (
+    BackendExecutionError,
+    ExecutionOutputSink,
+    ExitStatus,
+)
 
 if TYPE_CHECKING:
     from cli_agent.runtime._environment.kernel import EnvironmentKernel
@@ -95,10 +98,10 @@ class _ExecutionSupervisor:
                 return
 
             state.kill_requested = True
-            execution = state.prepared_execution
+            execution = state.handle
             if execution is None:
-                raise RuntimeError("running Execution has no prepared Execution")
-            await execution.cancel()
+                raise RuntimeError("running Execution has no ExecutionHandle")
+            await execution.kill()
             if state.completion_task is not None:
                 with suppress(Exception):
                     await state.completion_task
@@ -131,33 +134,43 @@ class _ExecutionSupervisor:
             )
         except Exception:
             execution = _InlineExecution(_preparation_failed)
-        state.prepared_execution = execution
+        state.handle = execution
         state.completion_task = asyncio.create_task(self._run_execution(state))
 
     async def _run_execution(self, state: _ExecutionState) -> None:
-        execution = state.prepared_execution
+        execution = state.handle
         if execution is None:
-            raise RuntimeError("running Execution has no prepared Execution")
+            raise RuntimeError("running Execution has no ExecutionHandle")
         output = _StateOutput(
             state,
             chunk_bound=self._chunk_limit,
             byte_bound=self._byte_limit,
         )
         try:
-            outcome = await execution.run(output)
+            exit_status = await execution.run(output)
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await execution.kill()
+            raise
+        except BackendExecutionError:
+            state.status = "failed"
+            state.exit_code = None
         except Exception:
-            outcome = (
-                _ExecutionOutcome.killed()
-                if state.kill_requested
-                else _ExecutionOutcome.failed()
-            )
-        state.status = outcome.status
-        state.exit_code = outcome.exit_code
+            state.status = "killed" if state.kill_requested else "failed"
+            state.exit_code = None
+        else:
+            state.exit_code = exit_status
+            if state.kill_requested:
+                state.status = "killed"
+            elif exit_status == 0:
+                state.status = "exited"
+            else:
+                state.status = "failed"
         for runnable in self._scheduler.complete(state):
             self._start_execution(runnable)
         await _notify_changed(state)
 
 
-async def _preparation_failed(output: _ExecutionOutput) -> _ExecutionOutcome:
-    del output
-    return _ExecutionOutcome.failed()
+async def _preparation_failed(sink: ExecutionOutputSink) -> ExitStatus:
+    del sink
+    raise BackendExecutionError("command preparation failed")

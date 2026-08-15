@@ -1,7 +1,7 @@
 """Local Shell subprocess execution and worker spawner helpers.
 
-The subprocess is created only when :meth:`_LocalShellExecution.run` starts;
-cancellation before ``run`` never allocates a process. The optional
+The subprocess is created only when :meth:`_LocalShellExecution.run`
+starts; a kill before ``run`` never allocates a process. The optional
 ``mutation`` seam copies up output-redirected capability targets before the
 process spawns.
 """
@@ -17,9 +17,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from cli_agent.runtime._capability.command_parser import ShellParseResult
-from cli_agent.runtime._environment.handlers.base import (
-    _ExecutionOutcome,
-    _ExecutionOutput,
+from cli_agent.runtime._execution import (
+    _KILLED_BEFORE_START,
+    BackendExecutionError,
+    ExecutionOutputSink,
+    ExitStatus,
+    _normalized_exit_status,
 )
 
 if TYPE_CHECKING:
@@ -42,28 +45,32 @@ class _LocalShellExecution:
         self._command = command
         self._cwd = cwd
         self._mutation = mutation
-        self._cancel_requested = False
+        self._run_started = False
+        self._kill_requested = False
         self._process = _ProcessExecution(
             _shell_spawner(command.raw_command, cwd, environment, input_data),
             input_data=input_data,
         )
 
-    async def run(self, output: _ExecutionOutput) -> _ExecutionOutcome:
+    async def run(self, sink: ExecutionOutputSink) -> ExitStatus:
+        if self._run_started:
+            raise RuntimeError("ExecutionHandle.run called more than once")
+        self._run_started = True
         mutation = self._mutation
         if mutation is None:
-            return await self._process.run(output)
+            return await self._process.run(sink)
         async with mutation.prepare_shell(
             self._command,
             self._cwd,
-            cancelled=lambda: self._cancel_requested,
+            cancelled=lambda: self._kill_requested,
         ) as prepared:
             if not prepared:
-                return _ExecutionOutcome.killed()
-            return await self._process.run(output)
+                return ExitStatus(_KILLED_BEFORE_START)
+            return await self._process.run(sink)
 
-    async def cancel(self) -> None:
-        self._cancel_requested = True
-        await self._process.cancel()
+    async def kill(self) -> None:
+        self._kill_requested = True
+        await self._process.kill()
 
 
 class _ProcessExecution:
@@ -81,20 +88,22 @@ class _ProcessExecution:
         self._ready = asyncio.Event()
         self._completed = asyncio.Event()
         self._run_started = False
-        self._cancel_requested = False
+        self._kill_requested = False
 
-    async def run(self, output: _ExecutionOutput) -> _ExecutionOutcome:
+    async def run(self, sink: ExecutionOutputSink) -> ExitStatus:
+        if self._run_started:
+            raise RuntimeError("ExecutionHandle.run called more than once")
         self._run_started = True
         process: asyncio.subprocess.Process | None = None
         stdin_task: asyncio.Task[None] | None = None
         try:
-            if self._cancel_requested:
-                return _ExecutionOutcome.killed()
+            if self._kill_requested:
+                return ExitStatus(_KILLED_BEFORE_START)
 
             process = await self._spawn()
             self._process = process
             self._ready.set()
-            if self._cancel_requested:
+            if self._kill_requested:
                 _signal_process(process, force=False)
             if self._input_data is not None:
                 if process.stdin is None:
@@ -104,42 +113,42 @@ class _ProcessExecution:
                 )
 
             stdout_task = asyncio.create_task(
-                self._capture_stream(output, process.stdout, "stdout")
+                self._capture_stream(sink, process.stdout, "stdout")
             )
             stderr_task = asyncio.create_task(
-                self._capture_stream(output, process.stderr, "stderr")
+                self._capture_stream(sink, process.stderr, "stderr")
             )
             exit_code = await process.wait()
             await asyncio.gather(stdout_task, stderr_task)
             await self._finish_stdin(stdin_task)
-            if self._cancel_requested:
-                return _ExecutionOutcome.killed(exit_code)
-            if exit_code == 0:
-                return _ExecutionOutcome.exited(exit_code)
-            return _ExecutionOutcome.failed(exit_code)
+            return _normalized_exit_status(exit_code)
         except asyncio.CancelledError:
-            await self._finish_stdin(stdin_task)
-            if process is not None:
-                _signal_process(process, force=True)
-                with suppress(Exception):
-                    await process.wait()
+            await self._reap(process, stdin_task)
             raise
-        except Exception:
-            await self._finish_stdin(stdin_task)
-            if process is not None:
-                _signal_process(process, force=True)
-                with suppress(Exception):
-                    await process.wait()
-            exit_code = process.returncode if process is not None else None
-            if self._cancel_requested:
-                return _ExecutionOutcome.killed(exit_code)
-            return _ExecutionOutcome.failed(exit_code)
+        except Exception as exc:
+            await self._reap(process, stdin_task)
+            if isinstance(exc, BackendExecutionError):
+                raise
+            raise BackendExecutionError("shell process failed unexpectedly") from exc
         finally:
             self._ready.set()
             self._completed.set()
 
-    async def cancel(self) -> None:
-        self._cancel_requested = True
+    async def _reap(
+        self,
+        process: asyncio.subprocess.Process | None,
+        stdin_task: asyncio.Task[None] | None,
+    ) -> None:
+        """Release the subprocess and stdin writer after a failure."""
+
+        await self._finish_stdin(stdin_task)
+        if process is not None:
+            _signal_process(process, force=True)
+            with suppress(Exception):
+                await process.wait()
+
+    async def kill(self) -> None:
+        self._kill_requested = True
         if not self._run_started:
             return
         await self._ready.wait()
@@ -180,14 +189,14 @@ class _ProcessExecution:
 
     async def _capture_stream(
         self,
-        output: _ExecutionOutput,
+        sink: ExecutionOutputSink,
         stream: asyncio.StreamReader | None,
         stream_name: Literal["stdout", "stderr"],
     ) -> None:
         if stream is None:
             return
         while data := await stream.read(4096):
-            await output.write(stream_name, data)
+            await sink.write(stream_name, data)
 
 
 def _shell_spawner(

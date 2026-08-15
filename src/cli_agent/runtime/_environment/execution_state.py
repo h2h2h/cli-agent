@@ -9,9 +9,9 @@ from typing import Literal
 
 from cli_agent.runtime._environment.handlers.base import (
     _ExecutionRequest,
-    _PreparedExecution,
 )
 from cli_agent.runtime._environment.routing import _ExecutionRoute
+from cli_agent.runtime._execution import ExecutionHandle
 from cli_agent.runtime.model import JSONValue
 
 _TERMINAL_STATUSES = frozenset({"exited", "failed", "killed"})
@@ -29,7 +29,7 @@ class _ExecutionState:
     retained_bytes: int = 0
     truncated: bool = False
     kill_requested: bool = False
-    prepared_execution: _PreparedExecution | None = None
+    handle: ExecutionHandle | None = None
     completion_task: asyncio.Task[None] | None = None
     changed: asyncio.Condition = field(default_factory=asyncio.Condition)
     termination_lock: asyncio.Lock = field(default_factory=asyncio.Lock)

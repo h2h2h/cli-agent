@@ -13,8 +13,6 @@ from cli_agent.runtime._environment.commands import (
 )
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
-    _ExecutionOutput,
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
@@ -22,6 +20,10 @@ from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.routing import (
     _CommandRouter,
     _ExecutionRoute,
+)
+from cli_agent.runtime._execution import (
+    ExecutionOutputSink,
+    ExitStatus,
 )
 
 
@@ -33,9 +35,9 @@ class _NullOutput:
 def _successful_preparer(request, context):
     del request, context
 
-    async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+    async def execute(output: ExecutionOutputSink) -> ExitStatus:
         del output
-        return _ExecutionOutcome.exited()
+        return ExitStatus(0)
 
     return _InlineExecution(execute)
 
@@ -146,7 +148,7 @@ def test_prepare_does_not_mutate_session_before_execution(tmp_path: Path) -> Non
         )
 
         assert environment == {}
-        assert await execution.run(_NullOutput()) == _ExecutionOutcome.exited()
+        assert await execution.run(_NullOutput()) == ExitStatus(0)
         assert environment == {"KEY": "value"}
 
     asyncio.run(scenario())

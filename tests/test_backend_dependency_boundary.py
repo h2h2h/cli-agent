@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import get_type_hints
 
 from cli_agent.runtime._backend import _BackendWorkspace
-from cli_agent.runtime._environment.handlers.base import _PreparedExecution
+from cli_agent.runtime._execution import ExecutionHandle
 
 _BACKEND_PACKAGE = "cli_agent.runtime._backend"
 _FORBIDDEN_MODULES = frozenset(
@@ -50,12 +50,10 @@ def test_backend_does_not_import_kernel_router_scheduler_or_model_protocol() -> 
                     )
 
 
-def test_backend_reuses_the_existing_prepared_execution_contract() -> None:
+def test_backend_reuses_the_execution_handle_contract() -> None:
     annotations = get_type_hints(_BackendWorkspace.prepare_shell)
-    assert annotations["return"] is _PreparedExecution
-    assert (
-        _PreparedExecution.__module__ == "cli_agent.runtime._environment.handlers.base"
-    )
+    assert annotations["return"] is ExecutionHandle
+    assert ExecutionHandle.__module__ == "cli_agent.runtime._execution"
 
 
 def _imports_forbidden(name: str) -> bool:

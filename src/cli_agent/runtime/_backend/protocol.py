@@ -4,7 +4,7 @@ These private protocols are the Backend-neutral seam of RFC-0012: command
 Handlers, Capability Catalogs, and cwd validation depend on these contracts
 without reading a concrete Backend type. ``prepare_shell`` and
 ``prepare_tool`` are synchronous and free of external side effects; resource
-creation is deferred to the returned ``_PreparedExecution.run()``.
+creation is deferred to the returned ``ExecutionHandle.run()``.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from cli_agent.runtime._backend.facts import (
     _WorkspaceSource,
 )
 from cli_agent.runtime._capability.mcp.facts import MCPServerConfig
-from cli_agent.runtime._environment.handlers.base import _PreparedExecution
+from cli_agent.runtime._execution import ExecutionHandle
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 
@@ -60,14 +60,14 @@ class _BackendWorkspace(Protocol):
     def prepare_shell(
         self,
         request: _ShellExecutionRequest,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         """Prepare one Shell execution without starting work or resources."""
         ...
 
     def prepare_tool(
         self,
         request: _ToolExecutionRequest,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         """Prepare one Tool worker execution without starting work."""
         ...
 

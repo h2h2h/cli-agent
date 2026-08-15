@@ -31,12 +31,14 @@ from cli_agent.runtime._capability.command_parser import (
 )
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
-    _ExecutionOutput,
     _ExecutionRequest,
-    _PreparedExecution,
 )
 from cli_agent.runtime._environment.handlers.executions import _text_execution
+from cli_agent.runtime._execution import (
+    ExecutionHandle,
+    ExecutionOutputSink,
+    ExitStatus,
+)
 
 _MarkDirty = Callable[[str], None]
 
@@ -94,9 +96,7 @@ def _files_facts(command: SimpleCommand) -> FileCommand:
         return _invalid(f"files {operation} accepts exactly one path")
     path = command.argv[1]
     if path.value is None:
-        return _invalid(
-            f"files {operation} path must be statically known: {path.text}"
-        )
+        return _invalid(f"files {operation} path must be statically known: {path.text}")
     redirect_error = _redirect_error(operation, command.redirects)
     if redirect_error is not None:
         return _invalid(redirect_error)
@@ -129,9 +129,7 @@ def parse_edit_payload(payload: str) -> tuple[_FileEdit, ...]:
     except json.JSONDecodeError as exc:
         raise ValueError(f"files edit stdin is not valid JSON: {exc.msg}") from None
     if not isinstance(document, dict) or not isinstance(document.get("edits"), list):
-        raise ValueError(
-            "files edit stdin must be a JSON object with an edits array"
-        )
+        raise ValueError("files edit stdin must be a JSON object with an edits array")
     if not document["edits"]:
         raise ValueError("files edit edits array must not be empty")
     parsed: list[_FileEdit] = []
@@ -141,9 +139,7 @@ def parse_edit_payload(payload: str) -> tuple[_FileEdit, ...]:
         old_text = item.get("oldText")
         new_text = item.get("newText")
         if not isinstance(old_text, str) or not old_text:
-            raise ValueError(
-                f"files edit edits[{index}] requires a non-empty oldText"
-            )
+            raise ValueError(f"files edit edits[{index}] requires a non-empty oldText")
         if not isinstance(new_text, str):
             raise ValueError(f"files edit edits[{index}] requires a string newText")
         parsed.append(_FileEdit(old_text=old_text, new_text=new_text))
@@ -171,7 +167,7 @@ class _FileHandler:
         self,
         request: _ExecutionRequest,
         context: _CommandContext,
-    ) -> _PreparedExecution:
+    ) -> ExecutionHandle:
         facts = parse_files_command(request.command)
         if facts is None:
             raise RuntimeError("File handler received an ordinary command")
@@ -191,8 +187,7 @@ class _FileHandler:
         stdin = request.stdin
         if stdin is None:
             return _text_execution(
-                f"`files {facts.operation}` requires "
-                "payload in exec.stdin\n",
+                f"`files {facts.operation}` requires payload in exec.stdin\n",
                 success=False,
             )
         if facts.operation == "write":
@@ -229,7 +224,7 @@ def _write_operation(
 ) -> _FilesystemOperation:
     data = content.encode("utf-8")
 
-    async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+    async def execute(output: ExecutionOutputSink) -> ExitStatus:
         target = path
         try:
             target = filesystem.resolve(path, cwd).path
@@ -241,14 +236,14 @@ def _write_operation(
                 "stderr",
                 f"failed to write {target}: {exc}\n".encode(),
             )
-            return _ExecutionOutcome.failed(1)
+            return ExitStatus(1)
         if mark_dirty is not None:
             mark_dirty(target)
         await output.write(
             "stdout",
             f"wrote {result.bytes_written} bytes to {target}\n".encode(),
         )
-        return _ExecutionOutcome.exited()
+        return ExitStatus(0)
 
     return execute
 
@@ -260,7 +255,7 @@ def _edit_operation(
     cwd: str,
     mark_dirty: _MarkDirty | None,
 ) -> _FilesystemOperation:
-    async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+    async def execute(output: ExecutionOutputSink) -> ExitStatus:
         target = path
         try:
             target = filesystem.resolve(path, cwd).path
@@ -273,13 +268,13 @@ def _edit_operation(
                     "stderr",
                     f"failed to edit {target}: {exc}\n".encode(),
                 )
-            return _ExecutionOutcome.failed(1)
+            return ExitStatus(1)
         if mark_dirty is not None:
             mark_dirty(target)
         await output.write(
             "stdout",
             f"replaced {result.blocks_replaced} block(s) in {target}\n".encode(),
         )
-        return _ExecutionOutcome.exited()
+        return ExitStatus(0)
 
     return execute

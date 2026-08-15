@@ -5,11 +5,10 @@ from __future__ import annotations
 from cli_agent.runtime._capability.command_parser import SimpleCommand
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
-    _ExecutionOutcome,
-    _ExecutionOutput,
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
+from cli_agent.runtime._execution import ExecutionOutputSink, ExitStatus
 
 
 def _prepare_export(
@@ -25,10 +24,10 @@ def _prepare_export(
         and not command.contains_shell_composition
     )
 
-    async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+    async def execute(output: ExecutionOutputSink) -> ExitStatus:
         if not valid:
             await output.write("stderr", b"export does not support Shell composition\n")
-            return _ExecutionOutcome.failed(1)
+            return ExitStatus(1)
         if not args:
             text = "\n".join(
                 f"{key}={value}" for key, value in context.environment.items()
@@ -37,7 +36,7 @@ def _prepare_export(
                 "stdout",
                 (text or "(no custom env vars)").encode(),
             )
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
 
         assignments: list[tuple[str, str]] = []
         for item in args:
@@ -46,10 +45,10 @@ def _prepare_export(
                     "stderr",
                     f"Invalid format: {item}, expected KEY=VALUE\n".encode(),
                 )
-                return _ExecutionOutcome.failed(1)
+                return ExitStatus(1)
             assignments.append(tuple(item.split("=", 1)))
 
         context.environment.update(assignments)
-        return _ExecutionOutcome.exited()
+        return ExitStatus(0)
 
     return _InlineExecution(execute)

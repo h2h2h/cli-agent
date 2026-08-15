@@ -14,13 +14,13 @@ from cli_agent.runtime._environment.commands import (
     _CustomCommandRegistry,
 )
 from cli_agent.runtime._environment.execution_state import _ExecutionState
-from cli_agent.runtime._environment.handlers.base import (
-    _ExecutionOutcome,
-    _ExecutionOutput,
-)
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._environment.routing import _ExecutionRoute
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
+from cli_agent.runtime._execution import (
+    ExecutionOutputSink,
+    ExitStatus,
+)
 
 _INVALID_SHELL_COMMAND = {
     "ok": False,
@@ -108,9 +108,9 @@ def test_malformed_custom_command_never_reaches_custom_handler(
         del command, context
         prepared.append("prepared")
 
-        async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+        async def execute(output: ExecutionOutputSink) -> ExitStatus:
             del output
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
 
         return _InlineExecution(execute)
 
@@ -147,9 +147,9 @@ def test_malformed_tools_heredoc_no_longer_bypasses_parser(
         del command, context
         prepared.append("prepared")
 
-        async def execute(output: _ExecutionOutput) -> _ExecutionOutcome:
+        async def execute(output: ExecutionOutputSink) -> ExitStatus:
             del output
-            return _ExecutionOutcome.exited()
+            return ExitStatus(0)
 
         return _InlineExecution(execute)
 
