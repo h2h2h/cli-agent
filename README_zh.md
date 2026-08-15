@@ -107,9 +107,13 @@ cli-agent
 ```
 
 在交互式输入框首字符键入 `/` 会立即弹出 slash command 候选菜单，无需先按
-Tab。首版只提供一个内置命令：
+Tab。Session 命令也可以在普通 stdin/离线 Host 中使用：
 
 - `/exit` —— 结束当前交互会话，与 `:q` 等效，但不创建 Agent turn。
+- `/new` —— 创建并切换到一个新的 Session。
+- `/sessions` —— 列出 Session ID、Workspace、revision、更新时间和归档状态；默认不展示消息内容。
+- `/resume <session_id>` —— 恢复指定 Session。Session 必须属于当前 Workspace，不能自动迁移。
+- `/usage` —— 显示当前 Session 的累计 token 使用量。
 
 菜单交互方式：
 
@@ -121,8 +125,12 @@ Tab。首版只提供一个内置命令：
   候选，只会提交当前输入框内容。
 - `:q` 是既有退出快捷方式，不会出现在候选列表中。
 
-首版不支持命令参数补全、文件路径补全或模型名称补全，未知的 `/...` 输入会
-原样作为普通 prompt 发送给 Agent。
+命令参数目前不提供路径补全；Session ID 需要从 `/sessions` 输出中复制。未知的
+`/...` 输入会原样作为普通 prompt 发送给 Agent。正常使用 `/exit`、`:q`、EOF
+或 `Ctrl+C` 退出只会解除当前 Runtime binding，不会归档或删除 Session；之后仍可
+通过 `/resume` 恢复。Workspace 不匹配、持久化失败等错误会显示稳定
+的 `code` 和中文提示，不会展示 traceback。上一次未完成 Tool 的外部副作用状态
+可能未知，恢复后应先检查 Workspace 再决定是否重试。
 
 一次性运行一个任务：
 

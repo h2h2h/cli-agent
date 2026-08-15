@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TextIO
+from collections.abc import Sequence
+from datetime import datetime
+from typing import Protocol, TextIO
 
+from cli_agent.errors import HostFacingError
 from cli_agent.runtime import (
     ModelCompletion,
     ModelEvent,
@@ -12,6 +15,28 @@ from cli_agent.runtime import (
     TextDelta,
     ToolCallReady,
 )
+
+
+class _SessionView(Protocol):
+    """Metadata shape rendered by the Host without importing Runtime internals."""
+
+    session_id: str
+    workspace_id: str
+    revision: int
+    updated_at: datetime
+    archived_at: datetime | None
+
+_HOST_ERROR_MESSAGES = {
+    "session_not_found": "Session was not found.",
+    "session_archived": "Session is archived; unarchive it before resuming.",
+    "session_conflict": "Session state changed; reload it before retrying.",
+    "session_corrupted": "Session data is corrupted and cannot be used safely.",
+    "session_persistence_failed": "Session persistence failed; check storage and retry.",
+    "workspace_mismatch": "Session belongs to another Workspace and cannot be resumed here.",
+    "runtime_state": "The Runtime state does not allow this operation.",
+    "context_exhausted": "The Session context is exhausted and cannot continue.",
+    "internal_error": "An internal Runtime error occurred; check diagnostics.",
+}
 
 
 def render_prompt(*, stderr: TextIO) -> None:
@@ -39,6 +64,45 @@ def render_session_id(session_id: str, *, stderr: TextIO) -> None:
 
     text = f"[session] {session_id}"
     print(_styled(text, "\033[2;36m", stream=stderr), file=stderr, flush=True)
+
+
+def render_sessions(
+    sessions: Sequence[_SessionView],
+    *,
+    active_session_id: str | None,
+    stderr: TextIO,
+) -> None:
+    """Render safe Session metadata without loading conversation messages."""
+
+    if not sessions:
+        print("[sessions] none", file=stderr, flush=True)
+        return
+    for session in sessions:
+        archived = "archived" if session.archived_at is not None else "active"
+        current = " current" if session.session_id == active_session_id else ""
+        print(
+            "[session] "
+            f"id={session.session_id} "
+            f"workspace={session.workspace_id} "
+            f"revision={session.revision} "
+            f"updated_at={session.updated_at.isoformat(timespec='seconds')} "
+            f"status={archived}{current}",
+            file=stderr,
+            flush=True,
+        )
+
+
+def render_command_usage(usage: str, *, stderr: TextIO) -> None:
+    """Render stable help for a malformed slash command."""
+
+    print(f"[command] usage: {usage}", file=stderr, flush=True)
+
+
+def render_host_error(error: HostFacingError, *, stderr: TextIO) -> None:
+    """Render a classified Host error with its automation-stable code."""
+
+    message = _HOST_ERROR_MESSAGES.get(error.code, "The Host operation failed.")
+    print(f"[error] code={error.code} {message}", file=stderr, flush=True)
 
 
 def render_diagnostic(

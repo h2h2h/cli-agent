@@ -6,12 +6,16 @@ import asyncio
 from typing import TextIO
 
 from cli_agent.config import CliConfig, build_context_policy
+from cli_agent.errors import HostFacingError
 from cli_agent.presentation import (
+    render_command_usage,
     render_diagnostic,
     render_event,
+    render_host_error,
     render_prompt,
     render_session_id,
     render_session_usage,
+    render_sessions,
 )
 from cli_agent.runtime import (
     AgentRuntime,
@@ -23,7 +27,7 @@ from cli_agent.runtime import (
     UserMessage,
     UserQuestion,
 )
-from cli_agent.slash_commands import CommandAction, resolve, specs
+from cli_agent.slash_commands import CommandAction, CommandInvocation, parse, specs
 from cli_agent.tui import TuiSession
 
 
@@ -46,33 +50,42 @@ async def run_agent(
     )
 
     try:
+        interaction = _TerminalUserInteraction(
+            stdin=stdin,
+            stderr=stderr,
+            tui_session=tui_session,
+        )
         async with await AgentRuntime.open(
             workspace=config.workspace,
             repertoire=config.repertoire,
             provider=provider,
             execution_policy=execution_policy,
             context_policy=build_context_policy(config),
-            user_interaction=_TerminalUserInteraction(
-                stdin=stdin,
-                stderr=stderr,
-                tui_session=tui_session,
-            ),
+            user_interaction=interaction,
             on_diagnostic=lambda diagnostic: render_diagnostic(
                 diagnostic,
                 stderr=stderr,
             ),
         ) as runtime:
             try:
-                session = await runtime.new_session()
+                try:
+                    session = await runtime.new_session()
+                except HostFacingError as exc:
+                    render_host_error(exc, stderr=stderr)
+                    return 1
                 session_id = session.session_id
                 if config.task is not None:
-                    completed, _ = await _run_turn(
-                        runtime,
-                        config.task,
-                        stdout=stdout,
-                        stderr=stderr,
-                        separate_diagnostics=False,
-                    )
+                    try:
+                        completed, _ = await _run_turn(
+                            runtime,
+                            config.task,
+                            stdout=stdout,
+                            stderr=stderr,
+                            separate_diagnostics=False,
+                        )
+                    except HostFacingError as exc:
+                        render_host_error(exc, stderr=stderr)
+                        return 1
                     return _turn_exit_code(completed, stderr=stderr)
 
                 while True:
@@ -83,24 +96,45 @@ async def run_agent(
                     )
                     if task is None:
                         return 0
-                    if tui_session is not None:
-                        action = resolve(task)
-                        if action is CommandAction.EXIT:
+                    command = parse(task)
+                    if command is not None and not command.valid and command.action in {
+                        CommandAction.EXIT,
+                        CommandAction.USAGE,
+                    }:
+                        command = None
+                    if command is not None:
+                        if not command.valid:
+                            render_command_usage(command.usage, stderr=stderr)
+                            continue
+                        if command.action is CommandAction.EXIT:
                             return 0
-                        if action is CommandAction.USAGE:
-                            render_session_usage(
-                                runtime.session_usage(),
+                        try:
+                            session_id = await _dispatch_command(
+                                runtime,
+                                command,
+                                active_session_id=session_id,
                                 stderr=stderr,
                             )
-                            continue
+                        except HostFacingError as exc:
+                            if command.action in {
+                                CommandAction.NEW,
+                                CommandAction.RESUME,
+                            }:
+                                session_id = None
+                            render_host_error(exc, stderr=stderr)
+                        continue
 
-                    completed, needs_newline = await _run_turn(
-                        runtime,
-                        task,
-                        stdout=stdout,
-                        stderr=stderr,
-                        separate_diagnostics=True,
-                    )
+                    try:
+                        completed, needs_newline = await _run_turn(
+                            runtime,
+                            task,
+                            stdout=stdout,
+                            stderr=stderr,
+                            separate_diagnostics=True,
+                        )
+                    except HostFacingError as exc:
+                        render_host_error(exc, stderr=stderr)
+                        return 1
                     if needs_newline:
                         print(file=stdout, flush=True)
                     exit_code = _turn_exit_code(completed, stderr=stderr)
@@ -113,6 +147,38 @@ async def run_agent(
             await tui_session.close()
         if session_id is not None:
             render_session_id(session_id, stderr=stderr)
+
+
+async def _dispatch_command(
+    runtime: AgentRuntime,
+    command: CommandInvocation,
+    *,
+    active_session_id: str | None,
+    stderr: TextIO,
+) -> str | None:
+    """Dispatch one validated slash command through Runtime lifecycle APIs."""
+
+    action = command.action
+    if action is CommandAction.USAGE:
+        render_session_usage(runtime.session_usage(), stderr=stderr)
+        return active_session_id
+    if action is CommandAction.NEW:
+        session = await runtime.new_session()
+        return session.session_id
+    if action is CommandAction.SESSIONS:
+        sessions = await runtime.list_session_metadata(include_archived=True)
+        render_sessions(
+            sessions,
+            active_session_id=active_session_id,
+            stderr=stderr,
+        )
+        return active_session_id
+
+    if action is CommandAction.RESUME:
+        session_id = command.arguments[0]
+        session = await runtime.resume_session(session_id)
+        return session.session_id
+    raise AssertionError(f"unhandled command action: {action!r}")
 
 
 async def _run_turn(

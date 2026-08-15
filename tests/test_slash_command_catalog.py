@@ -7,11 +7,17 @@ from pathlib import Path
 
 import pytest
 
-from cli_agent.slash_commands import CommandAction, CommandSpec, resolve, specs
+from cli_agent.slash_commands import (
+    CommandAction,
+    CommandSpec,
+    parse,
+    resolve,
+    specs,
+)
 
 
 def test_catalog_contains_exit_and_usage_with_display_metadata() -> None:
-    assert len(specs) == 2
+    assert len(specs) == 5
     exit_spec = specs[0]
     assert exit_spec.name == "exit"
     assert exit_spec.description
@@ -20,6 +26,7 @@ def test_catalog_contains_exit_and_usage_with_display_metadata() -> None:
     assert usage_spec.name == "usage"
     assert usage_spec.description
     assert usage_spec.action is CommandAction.USAGE
+    assert [spec.name for spec in specs[2:]] == ["new", "sessions", "resume"]
 
 
 def test_specs_is_read_only_stable_sequence() -> None:
@@ -61,11 +68,27 @@ def test_resolve_passes_through_unknown_or_modified_input(text: str) -> None:
 
 
 def test_dispatch_names_derive_from_spec_names() -> None:
-    expected = {f"/{spec.name}" for spec in specs}
-    for name in expected:
-        assert resolve(name) is not CommandAction.PASS
+    for spec in specs:
+        name = f"/{spec.name}"
+        if spec.argument_count:
+            name += " session-1"
+        assert resolve(name) is spec.action
     assert resolve("exit") is CommandAction.PASS
     assert resolve("/") is CommandAction.PASS
+
+
+def test_parse_validates_session_command_arguments() -> None:
+    invocation = parse("/resume session-1")
+    assert invocation is not None
+    assert invocation.action is CommandAction.RESUME
+    assert invocation.valid
+    assert invocation.arguments == ("session-1",)
+    assert invocation.usage == "/resume <session_id>"
+
+    malformed = parse("/resume")
+    assert malformed is not None
+    assert not malformed.valid
+    assert resolve("/resume") is CommandAction.PASS
 
 
 def test_slash_commands_package_does_not_import_tui_or_runtime_types() -> None:

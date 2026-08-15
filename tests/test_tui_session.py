@@ -199,8 +199,14 @@ def _completions(text: str) -> list:
 
 def test_completer_suggests_exit_and_usage_for_bare_slash() -> None:
     completions = _completions("/")
-    assert [c.text for c in completions] == ["/exit", "/usage"]
-    assert [c.start_position for c in completions] == [-1, -1]
+    assert [c.text for c in completions] == [
+        "/exit",
+        "/usage",
+        "/new",
+        "/sessions",
+        "/resume",
+    ]
+    assert [c.start_position for c in completions] == [-1] * 5
     assert completions[0].display_text == "/exit"
     assert completions[0].display_meta_text == specs[0].description
     assert completions[1].display_text == "/usage"

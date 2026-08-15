@@ -919,18 +919,8 @@ def test_tty_slash_usage_accumulates_completions_within_one_turn(
     provider.assert_exhausted()
 
 
-def test_non_tty_slash_usage_runs_as_regular_task(tmp_path: Path) -> None:
-    provider = ScriptedModelProvider(
-        script=(
-            (
-                TextDelta(text="Done."),
-                ModelCompletion(
-                    message=AssistantMessage.text("Done."),
-                    finish_reason="stop",
-                ),
-            ),
-        )
-    )
+def test_non_tty_slash_usage_is_a_host_command(tmp_path: Path) -> None:
+    provider = ScriptedModelProvider(script=())
     stdout = StringIO()
     stderr = StringIO()
 
@@ -945,10 +935,9 @@ def test_non_tty_slash_usage_runs_as_regular_task(tmp_path: Path) -> None:
     )
 
     assert exit_code == 0
-    assert stdout.getvalue() == "Done.\n"
-    assert "[usage]" not in stderr.getvalue()
-    assert len(provider.requests) == 1
-    assert provider.requests[0].messages[-1] == UserMessage.text("/usage")
+    assert stdout.getvalue() == ""
+    assert "[usage] input:0, output:0" in stderr.getvalue()
+    assert provider.requests == ()
     provider.assert_exhausted()
 
 
@@ -999,18 +988,8 @@ def test_one_shot_task_value_slash_exit_runs_as_regular_task(
     provider.assert_exhausted()
 
 
-def test_non_tty_slash_exit_runs_as_regular_task(tmp_path: Path) -> None:
-    provider = ScriptedModelProvider(
-        script=(
-            (
-                TextDelta(text="Done."),
-                ModelCompletion(
-                    message=AssistantMessage.text("Done."),
-                    finish_reason="stop",
-                ),
-            ),
-        )
-    )
+def test_non_tty_slash_exit_is_a_host_command(tmp_path: Path) -> None:
+    provider = ScriptedModelProvider(script=())
     stdout = StringIO()
     stderr = StringIO()
 
@@ -1025,9 +1004,8 @@ def test_non_tty_slash_exit_runs_as_regular_task(tmp_path: Path) -> None:
     )
 
     assert exit_code == 0
-    assert stdout.getvalue() == "Done.\n"
-    assert len(provider.requests) == 1
-    assert provider.requests[0].messages[-1] == UserMessage.text("/exit")
+    assert stdout.getvalue() == ""
+    assert provider.requests == ()
     provider.assert_exhausted()
 
 

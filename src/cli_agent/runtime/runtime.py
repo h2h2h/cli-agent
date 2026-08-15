@@ -421,6 +421,24 @@ class AgentRuntime:
             await self._detach_if_active(session_id, action="delete_session")
             self._resources.session_store.delete(session_id)
 
+    async def list_session_metadata(
+        self,
+        *,
+        include_archived: bool = True,
+    ) -> tuple[Session, ...]:
+        """List durable Session metadata without exposing journal contents.
+
+        Listing is a Host management operation. It is serialized with other
+        lifecycle operations so the returned metadata reflects one coherent
+        Store read, while it never binds or detaches a Session.
+        """
+
+        async with self._lifecycle_op_lock:
+            self._ensure_open()
+            return self._resources.session_store.list(
+                include_archived=include_archived,
+            )
+
     async def close(self) -> None:
         """Close all Runtime-owned resources idempotently.
 

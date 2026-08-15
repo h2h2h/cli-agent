@@ -11,6 +11,8 @@ from cli_agent.config import (
     build_provider,
     parse_cli_config,
 )
+from cli_agent.errors import HostFacingError
+from cli_agent.presentation import render_host_error
 from cli_agent.runner import run_agent
 
 
@@ -37,6 +39,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("cli-agent: interrupted", file=sys.stderr)
         return 130
+    except HostFacingError as exc:
+        render_host_error(exc, stderr=sys.stderr)
+        return 1
     except Exception as exc:
         print(f"cli-agent: {exc}", file=sys.stderr)
         return 1
