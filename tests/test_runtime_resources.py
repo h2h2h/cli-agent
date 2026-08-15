@@ -6,6 +6,7 @@ import asyncio
 import inspect
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,10 @@ import cli_agent.runtime._resources as resources_module
 import cli_agent.runtime._workspace as workspace_module
 from cli_agent.runtime._backend import _BackendWorkspace, _BoundCapabilityView
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
+from cli_agent.runtime._capability.provider import (
+    CAPABILITY_SCHEMA_VERSION,
+    CapabilitySnapshot,
+)
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._project_instructions import _ProjectInstructions
@@ -54,10 +59,10 @@ def test_reconcile_returns_complete_resource_aggregate(tmp_path: Path) -> None:
         assert isinstance(resources.base_env, Mapping)
         assert dict(resources.base_env) == {"TOKEN": "secret"}
         assert isinstance(resources.capability_view, _BoundCapabilityView)
-        assert resources.project_instructions is None
-        assert isinstance(resources.tool_catalog, _ToolCatalog)
-        assert isinstance(resources.skill_catalog, _SkillCatalog)
-        assert isinstance(resources.library_catalog, _LibraryCatalog)
+        assert resources.snapshot.project_instructions is None
+        assert isinstance(resources.snapshot.tools, _ToolCatalog)
+        assert isinstance(resources.snapshot.skills, _SkillCatalog)
+        assert isinstance(resources.snapshot.library, _LibraryCatalog)
 
     asyncio.run(scenario())
 
@@ -75,11 +80,11 @@ def test_reconcile_loads_workspace_agents_md_snapshot(tmp_path: Path) -> None:
             on_diagnostic=None,
         )
 
-        assert isinstance(resources.project_instructions, _ProjectInstructions)
-        assert resources.project_instructions.source == str(
+        assert isinstance(resources.snapshot.project_instructions, _ProjectInstructions)
+        assert resources.snapshot.project_instructions.source == str(
             workspace.resolve() / "AGENTS.md"
         )
-        assert resources.project_instructions.text == content
+        assert resources.snapshot.project_instructions.text == content
 
     asyncio.run(scenario())
 
@@ -122,7 +127,7 @@ def test_reconcile_runs_steps_in_documented_order(
 
     class _FakeBackendWorkspace:
         workspace_environment = {"TOKEN": "secret"}
-        capabilities = object()
+        capabilities = SimpleNamespace(root="fake-root")
         filesystem = object()
 
         @staticmethod
@@ -149,45 +154,39 @@ def test_reconcile_runs_steps_in_documented_order(
             order.append("backend_open")
             return _FakeBackendWorkspace()
 
-    async def load_project_instructions(
-        filesystem: object,
-        workspace: str,
-    ) -> None:
-        del filesystem, workspace
-        order.append("project_instructions")
-        return None
+    class _FakeSnapshot:
+        def __init__(self, library: object | None) -> None:
+            self.library = library
+            self.tools = object()
+            self.skills = object()
+
+        def with_library(self, library: object) -> _FakeSnapshot:
+            return _FakeSnapshot(library)
+
+    class _FakeCapabilityProvider:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        async def discover_mcp_configs(self) -> tuple[object, ...]:
+            order.append("mcp_configs")
+            return ()
+
+        async def discover(self, *, mcp_configs: object = None) -> _FakeSnapshot:
+            del mcp_configs
+            order.append("snapshot")
+            return _FakeSnapshot(None)
 
     class _FakeMCPCatalog:
         @staticmethod
         async def reconcile(
             backend: object,
-            *,
             on_diagnostic: object = None,
+            *,
+            configs: object = None,
         ) -> None:
-            del backend, on_diagnostic
+            del backend, on_diagnostic, configs
             order.append("mcp")
             return None
-
-    class _FakeToolCatalog:
-        @staticmethod
-        async def reconcile(
-            capability_view: object,
-            filesystem: object,
-            on_diagnostic: object = None,
-        ) -> object:
-            del capability_view, filesystem, on_diagnostic
-            order.append("tool_catalog")
-            return object()
-
-    class _FakeSkillCatalog:
-        @staticmethod
-        async def reconcile(
-            capability_view: object,
-            filesystem: object,
-        ) -> object:
-            del capability_view, filesystem
-            order.append("skill_catalog")
-            return object()
 
     class _FakeStateDatabase:
         @staticmethod
@@ -248,16 +247,20 @@ def test_reconcile_runs_steps_in_documented_order(
     monkeypatch.setattr(workspace_module, "_LocalBackend", _FakeLocalBackend)
     monkeypatch.setattr(
         resources_module,
-        "_load_project_instructions",
-        load_project_instructions,
+        "CapabilityProvider",
+        _FakeCapabilityProvider,
     )
     monkeypatch.setattr(resources_module, "_StateDatabase", _FakeStateDatabase)
     monkeypatch.setattr(resources_module, "_SummaryCache", _FakeSummaryCache)
     monkeypatch.setattr(resources_module, "SessionStore", _FakeSessionStore)
     monkeypatch.setattr(resources_module, "_MCPCatalog", _FakeMCPCatalog)
-    monkeypatch.setattr(resources_module, "_ToolCatalog", _FakeToolCatalog)
-    monkeypatch.setattr(resources_module, "_SkillCatalog", _FakeSkillCatalog)
     monkeypatch.setattr(resources_module, "_LibraryCatalog", _FakeLibraryCatalog)
+
+    async def write_indexes(**kwargs: object) -> None:
+        del kwargs
+        order.append("write_indexes")
+
+    monkeypatch.setattr(resources_module, "write_catalog_indexes", write_indexes)
 
     async def scenario() -> None:
         resources = await _reconcile_runtime_resources(
@@ -271,14 +274,14 @@ def test_reconcile_runs_steps_in_documented_order(
             "workspace_identity",
             "prepare_capability_source",
             "backend_open",
-            "project_instructions",
+            "mcp_configs",
+            "mcp",
+            "snapshot",
+            "write_indexes",
+            "tool_runtime",
             "state_database",
             "summary_cache",
             "session_store",
-            "mcp",
-            "tool_catalog",
-            "tool_runtime",
-            "skill_catalog",
             "library_catalog",
         ]
         assert resources.workspace.root == str(_FakePaths.root)
@@ -306,10 +309,7 @@ def test_mcp_projection_result_is_not_retained_in_aggregate(
             "backend",
             "base_env",
             "capability_view",
-            "project_instructions",
-            "tool_catalog",
-            "skill_catalog",
-            "library_catalog",
+            "snapshot",
             "session_store",
         }
 
@@ -414,7 +414,7 @@ class _TrackingWorkspace:
     ) -> None:
         self.order = order
         self.workspace_environment = {"TOKEN": "secret"}
-        self.capabilities = object()
+        self.capabilities = SimpleNamespace(root="fake-root")
         self.filesystem = object()
         self._tool_runtime_failure = tool_runtime_failure
 
@@ -466,14 +466,6 @@ class _TrackingStateDatabase:
         self.order.append("db.close")
 
 
-async def _noop_load_project_instructions(
-    filesystem: object,
-    workspace: str,
-) -> None:
-    del filesystem, workspace
-    return None
-
-
 class _NoopSummaryCache:
     def __init__(self, database: object) -> None:
         del database
@@ -484,36 +476,38 @@ class _NoopSessionStore:
         del database
 
 
+class _NoopSnapshot:
+    def __init__(self, library: object | None = None) -> None:
+        self.library = library
+        self.tools = object()
+        self.skills = object()
+
+    def with_library(self, library: object) -> _NoopSnapshot:
+        return _NoopSnapshot(library)
+
+
+class _NoopCapabilityProvider:
+    def __init__(self, **kwargs: object) -> None:
+        del kwargs
+
+    async def discover_mcp_configs(self) -> tuple[object, ...]:
+        return ()
+
+    async def discover(self, *, mcp_configs: object = None) -> _NoopSnapshot:
+        del mcp_configs
+        return _NoopSnapshot()
+
+
 class _NoopMCPCatalog:
     @staticmethod
     async def reconcile(
         backend: object,
+        on_diagnostic: object = None,
         *,
-        on_diagnostic: object = None,
+        configs: object = None,
     ) -> None:
-        del backend, on_diagnostic
+        del backend, on_diagnostic, configs
         return None
-
-
-class _NoopToolCatalog:
-    @staticmethod
-    async def reconcile(
-        capability_view: object,
-        filesystem: object,
-        on_diagnostic: object = None,
-    ) -> object:
-        del capability_view, filesystem, on_diagnostic
-        return object()
-
-
-class _NoopSkillCatalog:
-    @staticmethod
-    async def reconcile(
-        capability_view: object,
-        filesystem: object,
-    ) -> object:
-        del capability_view, filesystem
-        return object()
 
 
 class _NoopLibraryCatalog:
@@ -535,16 +529,19 @@ def _install_noop_reconcile_fakes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(workspace_module, "_LocalBackend", _TrackingLocalBackend)
     monkeypatch.setattr(
         resources_module,
-        "_load_project_instructions",
-        _noop_load_project_instructions,
+        "CapabilityProvider",
+        _NoopCapabilityProvider,
     )
     monkeypatch.setattr(resources_module, "_StateDatabase", _TrackingStateDatabase)
     monkeypatch.setattr(resources_module, "_SummaryCache", _NoopSummaryCache)
     monkeypatch.setattr(resources_module, "SessionStore", _NoopSessionStore)
     monkeypatch.setattr(resources_module, "_MCPCatalog", _NoopMCPCatalog)
-    monkeypatch.setattr(resources_module, "_ToolCatalog", _NoopToolCatalog)
-    monkeypatch.setattr(resources_module, "_SkillCatalog", _NoopSkillCatalog)
     monkeypatch.setattr(resources_module, "_LibraryCatalog", _NoopLibraryCatalog)
+
+    async def write_indexes(**kwargs: object) -> None:
+        del kwargs
+
+    monkeypatch.setattr(resources_module, "write_catalog_indexes", write_indexes)
     return order
 
 
@@ -556,10 +553,11 @@ def test_reconcile_failure_closes_opened_resources_in_reverse_order(
         @staticmethod
         async def reconcile(
             backend: object,
-            *,
             on_diagnostic: object = None,
+            *,
+            configs: object = None,
         ) -> None:
-            del backend, on_diagnostic
+            del backend, on_diagnostic, configs
             raise RuntimeError("mcp discovery exploded")
 
     order = _install_noop_reconcile_fakes(monkeypatch)
@@ -574,7 +572,7 @@ def test_reconcile_failure_closes_opened_resources_in_reverse_order(
             )
         )
 
-    assert order == ["backend_open", "db.open", "db.close", "backend.close"]
+    assert order == ["backend_open", "backend.close"]
 
 
 def test_reconcile_failure_at_tool_runtime_closes_opened_resources(
@@ -595,9 +593,7 @@ def test_reconcile_failure_at_tool_runtime_closes_opened_resources(
 
     assert order == [
         "backend_open",
-        "db.open",
         "tool_runtime",
-        "db.close",
         "backend.close",
     ]
 
@@ -606,15 +602,22 @@ def test_project_instruction_load_failure_closes_opened_resources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def failing_load(filesystem: object, workspace: str) -> object:
-        del filesystem, workspace
-        raise ValueError("AGENTS.md is not valid UTF-8")
-
     order = _install_noop_reconcile_fakes(monkeypatch)
     monkeypatch.setattr(
         resources_module,
-        "_load_project_instructions",
-        failing_load,
+        "_LibraryCatalog",
+        _NoopLibraryCatalog,
+    )
+
+    class _RaisingSnapshotProvider(_NoopCapabilityProvider):
+        async def discover(self, *, mcp_configs: object = None) -> _NoopSnapshot:
+            del mcp_configs
+            raise ValueError("AGENTS.md is not valid UTF-8")
+
+    monkeypatch.setattr(
+        resources_module,
+        "CapabilityProvider",
+        _RaisingSnapshotProvider,
     )
 
     with pytest.raises(ValueError, match="not valid UTF-8"):
@@ -694,10 +697,7 @@ def test_aggregate_close_follows_reverse_dependency_order(tmp_path: Path) -> Non
         backend=backend,  # type: ignore[arg-type]
         base_env={},
         capability_view=object(),
-        project_instructions=None,
-        tool_catalog=object(),
-        skill_catalog=object(),
-        library_catalog=FakeLibraryCatalog(),  # type: ignore[arg-type]
+        snapshot=_fake_snapshot(FakeLibraryCatalog()),  # type: ignore[arg-type]
         session_store=object(),
     )
 
@@ -737,10 +737,7 @@ def test_aggregate_close_attempts_every_step_and_surfaces_failure(
         backend=backend,  # type: ignore[arg-type]
         base_env={},
         capability_view=object(),
-        project_instructions=None,
-        tool_catalog=object(),
-        skill_catalog=object(),
-        library_catalog=FakeLibraryCatalog(),  # type: ignore[arg-type]
+        snapshot=_fake_snapshot(FakeLibraryCatalog()),  # type: ignore[arg-type]
         session_store=object(),
     )
 
@@ -748,3 +745,15 @@ def test_aggregate_close_attempts_every_step_and_surfaces_failure(
         asyncio.run(resources.close())
 
     assert backend.closed
+
+
+def _fake_snapshot(library: object) -> CapabilitySnapshot:
+    return CapabilitySnapshot(
+        revision="test-revision",
+        schema_version=CAPABILITY_SCHEMA_VERSION,
+        tools=_ToolCatalog(()),
+        skills=_SkillCatalog(()),
+        mcp_servers=(),
+        project_instructions=None,
+        library=library,
+    )

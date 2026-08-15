@@ -1,21 +1,15 @@
-"""Runtime-open Skill Catalog derived from the Bound Capability View."""
+"""Runtime-open Skill Catalog discovered from logical capability source."""
 
 from __future__ import annotations
 
-import posixpath
-
-from cli_agent.runtime._backend import (
-    _BoundCapabilityView,
-    _FilesystemError,
-    _FileWriteRequest,
-    _WorkspaceFilesystem,
-)
+from cli_agent.runtime._capability.facts import _FilesystemError
 from cli_agent.runtime._capability.skills.facts import SkillEntry
 from cli_agent.runtime._capability.skills.parser import (
     SkillParseError,
     parse_frontmatter,
     validate_skill,
 )
+from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 
 _SKILL_MD_FILENAME = "SKILL.md"
 
@@ -30,16 +24,14 @@ class _SkillCatalog:
         self._by_name = {entry.name: entry for entry in entries}
 
     @classmethod
-    async def reconcile(
+    async def discover(
         cls,
-        capability_view: _BoundCapabilityView,
-        filesystem: _WorkspaceFilesystem,
+        capability_view: _LogicalCapabilityView,
     ) -> _SkillCatalog:
-        """Build trusted entries and atomically refresh the derived index.
+        """Build trusted entries from one logical capability view.
 
-        Discovery, validation, provenance and the ``index.md`` projection use
-        only the Bound Capability View and the Workspace Filesystem; no Host
-        Path is read or written.
+        Discovery and validation only read the view; no projection is
+        written and no process or resource is created.
         """
 
         listing = await capability_view.list("skills")
@@ -51,14 +43,7 @@ class _SkillCatalog:
             entry = await _inspect_skill(capability_view, name)
             if entry is not None:
                 entries.append(entry)
-        catalog = cls(tuple(entries))
-        await filesystem.write(
-            _FileWriteRequest(
-                path=posixpath.join(capability_view.root, "skills/index.md"),
-                content=catalog.render_index().encode("utf-8"),
-            )
-        )
-        return catalog
+        return cls(tuple(entries))
 
     def get(self, name: str) -> SkillEntry | None:
         """Return the entry for one skill name, or None if absent."""
@@ -131,7 +116,7 @@ class _SkillCatalog:
 
 
 async def _inspect_skill(
-    capability_view: _BoundCapabilityView,
+    capability_view: _LogicalCapabilityView,
     name: str,
 ) -> SkillEntry | None:
     """Build one SkillEntry from a candidate directory, or None if whiteouted."""
@@ -173,7 +158,7 @@ async def _inspect_skill(
 
 
 async def _validate_skill_view(
-    capability_view: _BoundCapabilityView,
+    capability_view: _LogicalCapabilityView,
     name: str,
 ) -> str | None:
     """Return the aggregated Skill validation error, or None when valid."""
@@ -197,7 +182,7 @@ async def _validate_skill_view(
 
 
 async def _read_description(
-    capability_view: _BoundCapabilityView,
+    capability_view: _LogicalCapabilityView,
     name: str,
 ) -> str | None:
     """Read the frontmatter description, or None when unavailable."""

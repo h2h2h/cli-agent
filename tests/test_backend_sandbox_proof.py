@@ -725,9 +725,9 @@ def test_full_runtime_runs_on_the_sandbox_backend(
             context_policy=_context_policy,
         )
         assert isinstance(runtime._resources.backend, _SandboxBackendWorkspace)
-        assert runtime._resources.tool_catalog.get("marker") is not None
-        assert runtime._resources.tool_catalog.get("marker").valid
-        assert runtime._resources.skill_catalog.get("review") is not None
+        assert runtime._resources.snapshot.tools.get("marker") is not None
+        assert runtime._resources.snapshot.tools.get("marker").valid
+        assert runtime._resources.snapshot.skills.get("review") is not None
 
         async for _ in runtime.run_turn("session-a", UserMessage.text("hi")):
             pass

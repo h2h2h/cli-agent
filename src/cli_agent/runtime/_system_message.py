@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
-from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime._capability.provider import CapabilitySnapshot
 from cli_agent.runtime._project_instructions import _ProjectInstructions
 from cli_agent.runtime.model import SystemMessage
 
@@ -14,9 +13,7 @@ def assemble_system_message(
     workspace: Path,
     system_instruction: str | None,
     *,
-    tool_catalog: _ToolCatalog | None = None,
-    skill_catalog: _SkillCatalog | None = None,
-    project_instructions: _ProjectInstructions | None = None,
+    snapshot: CapabilitySnapshot | None = None,
 ) -> SystemMessage:
     """Build the stable instruction snapshot for a new Agent Session.
 
@@ -25,19 +22,11 @@ def assemble_system_message(
             The bound Workspace root.
         system_instruction (`str | None`):
             Optional Host instruction appended to the canonical message.
-        tool_catalog (`_ToolCatalog | None`):
-            Optional Runtime-open Tool Catalog; when present, a compact
-            Tools section advertises discovered Tools by name, status, summary,
-            and parallel-safe fact without embedding any full Tool file body.
-        skill_catalog (`_SkillCatalog | None`):
-            Optional Runtime-open Skill Catalog; when present, a compact
-            Skills section advertises discovered Skills by name, status, and
-            summary without embedding any full SKILL.md body.
-        project_instructions (`_ProjectInstructions | None`):
-            Optional Runtime-open Workspace instruction snapshot; when
-            present, a Workspace section between Skills and the Host
-            instruction states the source, scope, and conflict priority and
-            embeds the unmodified AGENTS.md Markdown.
+        snapshot (`CapabilitySnapshot | None`):
+            Optional CapabilityProvider snapshot; when present, compact
+            Tools, Skills, and Workspace instruction sections advertise the
+            discovered capability metadata without embedding any full
+            source file body.
     """
 
     sections = [
@@ -94,19 +83,18 @@ Run every Runtime custom command as the entire command of a standalone `exec` ca
 - Skills: discovered Skills are advertised below. When a Skill matches the task, read its complete `.workspace/skills/<name>/SKILL.md` before following it; there is no `skills` command.
 - Never edit generated `index.md` files or Runtime internals under `.workspace/.capability-view` and `.workspace/.tool-environment`. Changes to Tools, Skills, MCP configurations, dependencies, and `.workspace/env` take effect after reopening the Runtime; Library source changes are reconciled during the active Runtime. Workspace instructions are loaded from the Workspace root `AGENTS.md` when the Runtime opens and stay fixed for every Session until the Runtime is reopened.""",
     ]
-    if tool_catalog is not None:
-        sections.append(_render_tools_section(tool_catalog))
-    if skill_catalog is not None:
-        sections.append(_render_skills_section(skill_catalog))
-    if project_instructions is not None:
-        sections.append(_render_workspace_section(project_instructions))
+    if snapshot is not None:
+        sections.append(_render_tools_section(snapshot.tools))
+        sections.append(_render_skills_section(snapshot.skills))
+        if snapshot.project_instructions is not None:
+            sections.append(_render_workspace_section(snapshot.project_instructions))
     if system_instruction is not None:
         sections.append(f"Host instruction\n{system_instruction}")
 
     return SystemMessage.text("\n\n".join(sections))
 
 
-def _render_tools_section(tool_catalog: _ToolCatalog) -> str:
+def _render_tools_section(tool_catalog) -> str:
     lines = [
         "**Available Python Tools**",
         (
@@ -139,7 +127,7 @@ def _render_tools_section(tool_catalog: _ToolCatalog) -> str:
     return "\n".join(lines)
 
 
-def _render_skills_section(skill_catalog: _SkillCatalog) -> str:
+def _render_skills_section(skill_catalog) -> str:
     lines = [
         "**Available Skills**",
         (

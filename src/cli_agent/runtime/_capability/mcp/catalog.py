@@ -10,7 +10,6 @@ holds a transport stream, client, or subprocess, and never reads env values.
 
 from __future__ import annotations
 
-import json
 import keyword
 import posixpath
 import re
@@ -18,16 +17,12 @@ from collections.abc import Callable, Mapping
 
 from cli_agent.runtime._backend import (
     _BackendWorkspace,
-    _BoundCapabilityView,
-    _FilesystemError,
     _FileWriteRequest,
     _MCPToolFacts,
 )
-from cli_agent.runtime._capability.mcp.facts import (
-    MCPServerConfig,
-    parse_server_config,
-)
-from cli_agent.runtime._capability.source import _MCP_DIRECTORY
+from cli_agent.runtime._capability.facts import _FilesystemError
+from cli_agent.runtime._capability.mcp.config import discover_configs
+from cli_agent.runtime._capability.mcp.facts import MCPServerConfig
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 _MCP_STUB_PREFIX = "mcp_"
@@ -65,23 +60,28 @@ class _MCPCatalog:
         cls,
         backend: _BackendWorkspace,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+        *,
+        configs: tuple[MCPServerConfig, ...] | None = None,
     ) -> _MCPCatalog:
         """Align ``_mcp`` descriptions with generated Tools by full rebuild.
 
         Args:
             backend (`_BackendWorkspace`):
-                The live Backend Workspace; its Bound Capability View holds
-                the ``_mcp`` descriptions, its MCP Runtime performs discovery
-                and materializes the invocation binding, and its Filesystem
-                receives the stub projection.
+                The live Backend Workspace; its MCP Runtime performs
+                discovery and materializes the invocation binding and its
+                Filesystem receives the stub projection.
             on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
                 Optional Host callback for non-blocking reconcile notices.
+            configs (`tuple[MCPServerConfig, ...] | None`):
+                Optional pre-discovered configs; when omitted they are
+                discovered from the Bound Capability View.
 
         Returns:
             A catalog naming the servers successfully projected this run.
         """
 
-        configs = await _valid_configs(backend.capabilities, on_diagnostic)
+        if configs is None:
+            configs = await discover_configs(backend.capabilities, on_diagnostic)
         discovered = {
             fact.name: fact
             for fact in await backend.mcp.discover(configs, on_diagnostic)
@@ -139,67 +139,6 @@ async def _remove_stale_stubs(backend: _BackendWorkspace) -> None:
     for entry in listing:
         if entry.name.startswith(_MCP_STUB_PREFIX) and entry.name.endswith(".py"):
             await backend.filesystem.remove(posixpath.join(tools_directory, entry.name))
-
-
-async def _valid_configs(
-    capability_view: _BoundCapabilityView,
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
-) -> tuple[MCPServerConfig, ...]:
-    """Read and validate every ``_mcp/<server>/config.json``, skipping bad ones.
-
-    Servers are read from the Bound Capability View so Repertoire descriptions
-    and real Workspace overrides both project. A whiteouted server is disabled
-    without a diagnostic; a missing or structurally invalid config is reported
-    through ``on_diagnostic`` and produces no projection.
-    """
-
-    try:
-        listing = await capability_view.list(_MCP_DIRECTORY)
-    except _FilesystemError:
-        return ()
-    configs: list[MCPServerConfig] = []
-    for entry in sorted(listing, key=lambda entry: entry.name):
-        if entry.metadata.kind != "directory":
-            continue
-        server_name = entry.name
-        relative = f"{_MCP_DIRECTORY}/{server_name}/config.json"
-        try:
-            inspection = await capability_view.inspect(relative)
-        except ValueError:
-            continue
-        if inspection.provenance == "whiteout":
-            continue
-        try:
-            content = await capability_view.read(relative)
-        except _FilesystemError:
-            _emit(
-                on_diagnostic,
-                "mcp.config_missing",
-                f"MCP server {server_name} has no config.json",
-                {"server": server_name},
-            )
-            continue
-        try:
-            raw = json.loads(content.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            _emit(
-                on_diagnostic,
-                "mcp.config_invalid",
-                f"MCP server {server_name} config is invalid",
-                {"server": server_name, "errors": (f"not readable JSON: {exc}",)},
-            )
-            continue
-        config, errors = parse_server_config(raw, directory_name=server_name)
-        if config is None:
-            _emit(
-                on_diagnostic,
-                "mcp.config_invalid",
-                f"MCP server {server_name} config is invalid",
-                {"server": server_name, "errors": errors},
-            )
-            continue
-        configs.append(config)
-    return tuple(configs)
 
 
 def _render_stub(

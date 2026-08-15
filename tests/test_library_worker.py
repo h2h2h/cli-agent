@@ -407,7 +407,7 @@ def test_runtime_open_does_not_wait_for_summaries(tmp_path: Path) -> None:
             context_policy=_context_policy,
         )
 
-        assert runtime._resources.library_catalog.get("doc.md").status == "pending"  # type: ignore[union-attr]
+        assert runtime._resources.snapshot.library.get("doc.md").status == "pending"  # type: ignore[union-attr]
         assert (
             "| doc.md | pending | repertoire | no | Summary generation pending. |"
             in _index(tmp_path)
@@ -439,7 +439,7 @@ def test_internal_summaries_stay_out_of_session_history(tmp_path: Path) -> None:
             user_interaction=_user_interaction,
             context_policy=_context_policy,
         )
-        await runtime._resources.library_catalog._queue.join()  # type: ignore[union-attr]
+        await runtime._resources.snapshot.library._queue.join()  # type: ignore[union-attr]
         events = tuple(
             [event async for event in runtime.run_turn("s", UserMessage.text("Hello"))]
         )

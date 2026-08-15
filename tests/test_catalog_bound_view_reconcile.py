@@ -21,6 +21,10 @@ from cli_agent.runtime._backend import (
     _FilesystemError,
     _FileWriteRequest,
 )
+from cli_agent.runtime._capability.projections import (
+    write_skill_index,
+    write_tool_index,
+)
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 
@@ -169,7 +173,7 @@ def test_tool_catalog_reconciles_against_in_memory_bound_view() -> None:
     filesystem = _InMemoryFilesystem()
 
     async def scenario() -> None:
-        catalog = await _ToolCatalog.reconcile(view, filesystem)
+        catalog = await _reconcile_tools(view, filesystem)
 
         assert isinstance(view, _BoundCapabilityView)
         math = catalog.get("math")
@@ -207,7 +211,7 @@ def test_skill_catalog_reconciles_against_in_memory_bound_view() -> None:
     filesystem = _InMemoryFilesystem()
 
     async def scenario() -> None:
-        catalog = await _SkillCatalog.reconcile(view, filesystem)
+        catalog = await _reconcile_skills(view, filesystem)
 
         review = catalog.get("review")
         assert review is not None
@@ -273,3 +277,15 @@ def test_catalog_entries_hold_only_logical_path_facts() -> None:
     assert isinstance(skill.skill_md, str)
     assert not Path(tool.path).is_absolute()
     assert not Path(skill.path).is_absolute()
+
+
+async def _reconcile_tools(view, filesystem, on_diagnostic=None):
+    catalog = await _ToolCatalog.discover(view, on_diagnostic)
+    await write_tool_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    return catalog
+
+
+async def _reconcile_skills(view, filesystem):
+    catalog = await _SkillCatalog.discover(view)
+    await write_skill_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    return catalog

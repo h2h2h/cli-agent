@@ -23,6 +23,7 @@ from cli_agent.runtime._backend.local import (
     _LocalCapabilityView,
 )
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
+from cli_agent.runtime._capability.projections import write_tool_index
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -72,7 +73,7 @@ async def _kernel(workspace: Path, repertoire: Path) -> EnvironmentKernel:
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     backend = _LocalBackendWorkspace(workspace, {}, view)
     await _MCPCatalog.reconcile(backend)
-    catalog = await _ToolCatalog.reconcile(view, backend.filesystem)
+    catalog = await _reconcile_tools(view, backend.filesystem)
     status = await backend.reconcile_tool_runtime()
     assert status.available, status.error
     return EnvironmentKernel(
@@ -188,7 +189,7 @@ def test_mcp_integration_keeps_model_visible_surface_and_public_exports(
         ) as runtime:
             assert (workspace / ".workspace" / "tools" / "mcp_math.py").is_file()
             assert received == []
-            mcp_tool = runtime._resources.tool_catalog.get("mcp_math")
+            mcp_tool = runtime._resources.snapshot.tools.get("mcp_math")
             assert mcp_tool is not None
             assert mcp_tool.parallel_safe is False
 
@@ -219,10 +220,10 @@ def test_additional_sessions_do_not_reconcile_mcp_again(
     calls = 0
     original = _MCPCatalog.reconcile
 
-    async def counting_reconcile(capability_view, on_diagnostic=None):
+    async def counting_reconcile(backend, on_diagnostic=None, *, configs=None):
         nonlocal calls
         calls += 1
-        return await original(capability_view, on_diagnostic)
+        return await original(backend, on_diagnostic, configs=configs)
 
     monkeypatch.setattr(_MCPCatalog, "reconcile", counting_reconcile)
 
@@ -289,3 +290,9 @@ def _text(snapshot: dict[str, object], stream: str) -> str:
         for chunk in chunks
         if isinstance(chunk, dict) and chunk.get("stream") == stream
     )
+
+
+async def _reconcile_tools(view, filesystem, on_diagnostic=None):
+    catalog = await _ToolCatalog.discover(view, on_diagnostic)
+    await write_tool_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    return catalog

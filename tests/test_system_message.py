@@ -2,6 +2,10 @@
 
 from pathlib import Path
 
+from cli_agent.runtime._capability.provider import (
+    CAPABILITY_SCHEMA_VERSION,
+    CapabilitySnapshot,
+)
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._project_instructions import _ProjectInstructions
@@ -281,12 +285,18 @@ def _assemble_text(
     skill_catalog: _SkillCatalog | None = None,
     project_instructions: _ProjectInstructions | None = None,
 ) -> str:
+    snapshot = CapabilitySnapshot(
+        revision="test-revision",
+        schema_version=CAPABILITY_SCHEMA_VERSION,
+        tools=_ToolCatalog(()) if tool_catalog is None else tool_catalog,
+        skills=_SkillCatalog(()) if skill_catalog is None else skill_catalog,
+        mcp_servers=(),
+        project_instructions=project_instructions,
+    )
     message = assemble_system_message(
         workspace,
         system_instruction,
-        tool_catalog=tool_catalog,
-        skill_catalog=skill_catalog,
-        project_instructions=project_instructions,
+        snapshot=snapshot,
     )
     return "\n".join(block.text for block in message.content)
 
@@ -308,9 +318,7 @@ def _shell_reads_text(workspace: Path) -> str:
 
 
 def _file_mutations_text(workspace: Path) -> str:
-    return _section(
-        _system_message_text(workspace), "File mutations", "Python Tools"
-    )
+    return _section(_system_message_text(workspace), "File mutations", "Python Tools")
 
 
 def _environment_text(workspace: Path) -> str:

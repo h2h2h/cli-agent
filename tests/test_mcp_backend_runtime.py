@@ -26,6 +26,7 @@ from cli_agent.runtime._backend.local import (
 from cli_agent.runtime._backend.local import mcp_runtime as mcp_runtime_module
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.mcp.facts import parse_server_config
+from cli_agent.runtime._capability.projections import write_tool_index
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
@@ -261,7 +262,7 @@ def test_mcp_tools_flow_through_the_ordinary_tool_catalog(tmp_path: Path) -> Non
 
     async def scenario() -> None:
         await _MCPCatalog.reconcile(backend)
-        catalog = await _ToolCatalog.reconcile(backend.capabilities, backend.filesystem)
+        catalog = await _reconcile_tools(backend.capabilities, backend.filesystem)
 
         entry = catalog.get("mcp_math")
         assert entry is not None
@@ -331,7 +332,13 @@ def test_runtime_open_uses_the_backend_mcp_runtime(tmp_path: Path) -> None:
             binding = workspace / ".workspace" / ".tool-environment" / "mcp_binding.py"
             assert binding.is_file()
             assert "'math':" in binding.read_text(encoding="utf-8")
-            tool = runtime._resources.tool_catalog.get("mcp_math")
+            tool = runtime._resources.snapshot.tools.get("mcp_math")
             assert tool is not None and tool.valid
 
     asyncio.run(scenario())
+
+
+async def _reconcile_tools(view, filesystem, on_diagnostic=None):
+    catalog = await _ToolCatalog.discover(view, on_diagnostic)
+    await write_tool_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    return catalog

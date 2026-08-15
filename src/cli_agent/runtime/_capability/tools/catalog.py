@@ -1,19 +1,16 @@
-"""Runtime-open Tool Catalog derived from the Bound Capability View."""
+"""Runtime-open Tool Catalog discovered from logical capability source."""
 
 from __future__ import annotations
 
 import ast
 import keyword
-import posixpath
 from collections.abc import Callable
 
-from cli_agent.runtime._backend import (
-    _BoundCapabilityView,
+from cli_agent.runtime._capability.facts import (
     _DirectoryEntry,
     _FilesystemError,
-    _FileWriteRequest,
-    _WorkspaceFilesystem,
 )
+from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._capability.tools.facts import ToolEntry
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
@@ -29,23 +26,19 @@ class _ToolCatalog:
         self._by_name = {entry.name: entry for entry in entries}
 
     @classmethod
-    async def reconcile(
+    async def discover(
         cls,
-        capability_view: _BoundCapabilityView,
-        filesystem: _WorkspaceFilesystem,
+        capability_view: _LogicalCapabilityView,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> _ToolCatalog:
-        """Build trusted entries and atomically refresh the derived index.
+        """Build trusted entries from one logical capability view.
 
-        Discovery, validation, provenance and the ``index.md`` projection use
-        only the Bound Capability View and the Workspace Filesystem; no Host
-        Path is read or written.
+        Discovery and validation only read the view; no projection is
+        written and no process or resource is created.
 
         Args:
-            capability_view (`_BoundCapabilityView`):
+            capability_view (`_LogicalCapabilityView`):
                 Effective Runtime-open capability files to inspect.
-            filesystem (`_WorkspaceFilesystem`):
-                Workspace Filesystem receiving the atomic projection write.
             on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
                 Optional callback for non-blocking metadata parse notices.
 
@@ -68,14 +61,7 @@ class _ToolCatalog:
                     on_diagnostic,
                 )
             )
-        catalog = cls(tuple(inspected))
-        await filesystem.write(
-            _FileWriteRequest(
-                path=posixpath.join(capability_view.root, "tools/index.md"),
-                content=catalog.render_index().encode("utf-8"),
-            )
-        )
-        return catalog
+        return cls(tuple(inspected))
 
     def get(self, name: str) -> ToolEntry | None:
         return self._by_name.get(name)
@@ -150,7 +136,7 @@ class _ToolCatalog:
 
 
 async def _inspect_tool(
-    capability_view: _BoundCapabilityView,
+    capability_view: _LogicalCapabilityView,
     entry: _DirectoryEntry,
     listing: tuple[_DirectoryEntry, ...],
     on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
@@ -374,7 +360,7 @@ def _emit_parallel_safe_diagnostic(
 
 
 async def _read_companion_documentation(
-    capability_view: _BoundCapabilityView,
+    capability_view: _LogicalCapabilityView,
     name: str,
     listing: tuple[_DirectoryEntry, ...],
 ) -> str | None:

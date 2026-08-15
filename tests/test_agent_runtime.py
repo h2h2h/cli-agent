@@ -540,8 +540,8 @@ def test_runtime_holds_single_resource_aggregate(tmp_path: Path) -> None:
         assert resources.workspace.id.startswith("local:")
         assert isinstance(resources.backend, _BackendWorkspace)
         assert isinstance(resources.capability_view, _BoundCapabilityView)
-        assert isinstance(resources.tool_catalog, _ToolCatalog)
-        assert isinstance(resources.skill_catalog, _SkillCatalog)
+        assert isinstance(resources.snapshot.tools, _ToolCatalog)
+        assert isinstance(resources.snapshot.skills, _SkillCatalog)
         assert not hasattr(runtime, "_workspace")
         assert not hasattr(runtime, "_backend")
         assert not hasattr(runtime, "_capability_view")
@@ -588,8 +588,8 @@ def test_sessions_borrow_the_same_workspace_resources(
         assert second.backend is resources.backend
         assert first.backend.capabilities is resources.capability_view
         assert second.backend.capabilities is resources.capability_view
-        assert first.tool_catalog is resources.tool_catalog
-        assert second.tool_catalog is resources.tool_catalog
+        assert first.tool_catalog is resources.snapshot.tools
+        assert second.tool_catalog is resources.snapshot.tools
         await runtime.close()
 
     asyncio.run(scenario())
@@ -678,8 +678,8 @@ def test_runtime_close_only_closes_session_owned_state(
         assert resources.workspace.root == str(tmp_path.resolve())
         assert resources.base_env == {}
         assert resources.capability_view is runtime._resources.capability_view
-        assert resources.tool_catalog is runtime._resources.tool_catalog
-        assert resources.skill_catalog is runtime._resources.skill_catalog
+        assert resources.snapshot.tools is runtime._resources.snapshot.tools
+        assert resources.snapshot.skills is runtime._resources.snapshot.skills
 
     asyncio.run(scenario())
 

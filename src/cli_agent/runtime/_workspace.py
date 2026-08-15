@@ -23,6 +23,7 @@ from cli_agent.runtime._backend import (
 )
 from cli_agent.runtime._backend.local import _LocalBackend
 from cli_agent.runtime._capability.source import _prepare_capability_source
+from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 
 _IDENTITY_PATTERN = re.compile(r"local:[0-9a-f]{32}")
@@ -35,6 +36,7 @@ class Workspace(Protocol):
     root: str
     filesystem: _WorkspaceFilesystem
     backend: _BackendWorkspace
+    capability_source: _LogicalCapabilityView
 
     async def close(self) -> None:
         """Flush and close the bound Backend; later use fails closed."""
@@ -106,8 +108,10 @@ class _LocalWorkspace:
     ) -> None:
         self.id = workspace_id
         self.root = str(root)
+        self.root_path = root
         self.filesystem = backend.filesystem
         self.backend = backend
+        self.capability_source = backend.capabilities
 
     async def close(self) -> None:
         """Close the bound Backend idempotently.

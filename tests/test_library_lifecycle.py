@@ -58,7 +58,7 @@ def _completion(text: str) -> ModelCompletion:
 
 
 def _catalog(runtime: AgentRuntime) -> _LibraryCatalog:
-    return runtime._resources.library_catalog
+    return runtime._resources.snapshot.library
 
 
 async def _drain(catalog: _LibraryCatalog) -> None:

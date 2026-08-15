@@ -106,7 +106,7 @@ def test_runtime_close_follows_rfc_close_order(tmp_path: Path, monkeypatch) -> N
         async for _ in runtime.run_turn("session-a", UserMessage.text("A")):
             pass
         order: list[str] = []
-        library = runtime._resources.library_catalog
+        library = runtime._resources.snapshot.library
         backend = runtime._resources.backend
 
         async def record_kernel_close() -> None:
@@ -171,7 +171,7 @@ def test_kernel_close_failure_does_not_leak_resources(
             pass
 
         closed: list[str] = []
-        library = runtime._resources.library_catalog
+        library = runtime._resources.snapshot.library
         backend = runtime._resources.backend
 
         async def failing_kernel_close() -> None:
@@ -415,7 +415,7 @@ def test_runtime_close_cancels_library_worker(tmp_path: Path) -> None:
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
         )
-        catalog = runtime._resources.library_catalog
+        catalog = runtime._resources.snapshot.library
         assert catalog._worker_task is not None
 
         await runtime.close()

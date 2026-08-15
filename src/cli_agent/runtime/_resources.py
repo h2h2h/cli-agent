@@ -9,15 +9,14 @@ from pathlib import Path
 from cli_agent.runtime._backend import _BackendWorkspace, _BoundCapabilityView
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
-from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
-from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
+from cli_agent.runtime._capability.projections import write_catalog_indexes
+from cli_agent.runtime._capability.provider import (
+    CapabilityProvider,
+    CapabilitySnapshot,
+)
 from cli_agent.runtime._database.session_store import SessionStore
 from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime._database.summary_cache import _SummaryCache
-from cli_agent.runtime._project_instructions import (
-    _load_project_instructions,
-    _ProjectInstructions,
-)
 from cli_agent.runtime._workspace import Workspace, _LocalWorkspaceFactory
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
@@ -37,10 +36,7 @@ class _RuntimeResources:
     backend: _BackendWorkspace
     base_env: Mapping[str, str] = field(repr=False)
     capability_view: _BoundCapabilityView
-    project_instructions: _ProjectInstructions | None
-    tool_catalog: _ToolCatalog
-    skill_catalog: _SkillCatalog
-    library_catalog: _LibraryCatalog
+    snapshot: CapabilitySnapshot
     session_store: SessionStore
 
     async def close(self) -> None:
@@ -53,10 +49,12 @@ class _RuntimeResources:
         """
 
         errors: list[Exception] = []
-        try:
-            await self.library_catalog.close()
-        except Exception as exc:
-            errors.append(exc)
+        library = self.snapshot.library
+        if library is not None:
+            try:
+                await library.close()
+            except Exception as exc:
+                errors.append(exc)
         try:
             await self.backend.flush()
         except Exception as exc:
@@ -102,10 +100,11 @@ async def _reconcile_runtime_resources(
     """Reconcile Workspace-lifetime resources in the established order.
 
     The RFC-0012 open order is fixed: Workspace identity, Host sources,
-    Backend Workspace and Bound View, Workspace project instructions,
-    Workspace MCP, Tool Catalog, Backend Tool Runtime, Skill Catalog,
-    Library Catalog. Any failure rolls back every already-opened resource
-    in reverse order and re-raises the original failure.
+    Backend Workspace and Bound View, MCP config discovery and stub
+    projection, Capability snapshot discovery, catalog index projections,
+    Backend Tool Runtime, and the Library Catalog. Any failure rolls back
+    every already-opened resource in reverse order and re-raises the
+    original failure.
 
     Args:
         workspace (`str | Path`):
@@ -130,42 +129,40 @@ async def _reconcile_runtime_resources(
         )
         opened.add(opened_workspace.close)
         backend = opened_workspace.backend
-        project_instructions = await _load_project_instructions(
-            backend.filesystem,
-            opened_workspace.root,
+        provider = CapabilityProvider(
+            view=opened_workspace.capability_source,
+            workspace=opened_workspace.root_path,
+            on_diagnostic=on_diagnostic,
         )
+        mcp_configs = await provider.discover_mcp_configs()
+        await _MCPCatalog.reconcile(
+            backend,
+            on_diagnostic,
+            configs=mcp_configs,
+        )
+        snapshot = await provider.discover(mcp_configs=mcp_configs)
+        await write_catalog_indexes(
+            view_root=backend.capabilities.root,
+            filesystem=backend.filesystem,
+            snapshot=snapshot,
+        )
+        await backend.reconcile_tool_runtime()
         state_database = _StateDatabase.open()
         opened.add(lambda: _close_database(state_database))
         summary_cache = _SummaryCache(state_database)
         session_store = SessionStore(state_database)
-        await _MCPCatalog.reconcile(
-            backend,
-            on_diagnostic=on_diagnostic,
-        )
-        tool_catalog = await _ToolCatalog.reconcile(
-            backend.capabilities,
-            backend.filesystem,
-            on_diagnostic=on_diagnostic,
-        )
-        await backend.reconcile_tool_runtime()
-        skill_catalog = await _SkillCatalog.reconcile(
-            backend.capabilities,
-            backend.filesystem,
-        )
         library_catalog = await _LibraryCatalog.reconcile(
             backend.capabilities,
             backend.filesystem,
             summary_cache,
         )
+        snapshot = snapshot.with_library(library_catalog)
         return _RuntimeResources(
             workspace=opened_workspace,
             backend=backend,
             base_env=backend.workspace_environment,
             capability_view=backend.capabilities,
-            project_instructions=project_instructions,
-            tool_catalog=tool_catalog,
-            skill_catalog=skill_catalog,
-            library_catalog=library_catalog,
+            snapshot=snapshot,
             session_store=session_store,
         )
     except BaseException:

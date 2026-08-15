@@ -11,24 +11,29 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from cli_agent.runtime._capability.command_parser import ShellParseResult
+from cli_agent.runtime._capability.facts import (
+    _CapabilityInspection,
+    _DirectoryEntry,
+    _FileKind,
+    _FileMetadata,
+    _filesystem_error,
+    _FilesystemError,
+    _FilesystemErrorKind,
+    _Provenance,
+)
 
-_FileKind = Literal["file", "directory", "symlink", "other"]
-_Provenance = Literal["repertoire", "workspace", "whiteout"]
-_FilesystemErrorKind = Literal[
-    "not_found",
-    "not_a_directory",
-    "is_directory",
-    "permission_denied",
-    "invalid_path",
-    "invalid_content",
-    "already_exists",
-    "edit_failed",
-    "unsupported",
-    "internal",
-]
+__all__ = (
+    "_CapabilityInspection",
+    "_DirectoryEntry",
+    "_FileKind",
+    "_FileMetadata",
+    "_FilesystemError",
+    "_FilesystemErrorKind",
+    "_Provenance",
+    "_filesystem_error",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,29 +87,11 @@ class _ToolExecutionRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class _FileMetadata:
-    """Backend-neutral facts for one Workspace filesystem path."""
-
-    kind: _FileKind
-    size: int
-    mtime_ns: int
-    mode: int
-
-
-@dataclass(frozen=True, slots=True)
 class _ResolvedPath:
     """One Backend-native path resolved against a Session cwd."""
 
     path: str
     within_workspace: bool
-
-
-@dataclass(frozen=True, slots=True)
-class _DirectoryEntry:
-    """One named entry returned by a Workspace directory listing."""
-
-    name: str
-    metadata: _FileMetadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,17 +135,6 @@ class _FileEditResult:
 
 
 @dataclass(frozen=True, slots=True)
-class _CapabilityInspection:
-    """Trusted provenance and shadow facts for one managed capability path."""
-
-    relative_path: str
-    provenance: _Provenance | None
-    shadows_repertoire: bool
-    valid: bool
-    validation_error: str | None
-
-
-@dataclass(frozen=True, slots=True)
 class _MCPToolFacts:
     """Provider-neutral facts for one discovered Workspace MCP tool."""
 
@@ -181,11 +157,3 @@ class _ToolRuntimeStatus:
 
     available: bool
     error: str | None
-
-
-class _FilesystemError(Exception):
-    """Backend-neutral failure raised by one Workspace Filesystem operation."""
-
-    def __init__(self, kind: _FilesystemErrorKind, message: str) -> None:
-        super().__init__(message)
-        self.kind = kind

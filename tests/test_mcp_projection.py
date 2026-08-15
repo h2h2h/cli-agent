@@ -315,7 +315,7 @@ def test_runtime_open_projects_mcp_stub_without_diagnostics(
             stub = workspace / ".workspace" / "tools" / "mcp_math.py"
             assert stub.is_file()
             assert received == []
-            tool = runtime._resources.tool_catalog.get("mcp_math")
+            tool = runtime._resources.snapshot.tools.get("mcp_math")
             assert tool is not None and tool.valid
 
     asyncio.run(scenario())
@@ -344,7 +344,7 @@ def test_discovery_failure_keeps_runtime_open_without_partial_stub(
             context_policy=_context_policy,
         ) as runtime:
             assert not (workspace / ".workspace" / "tools" / "mcp_broken.py").exists()
-            assert runtime._resources.tool_catalog.get("mcp_broken") is None
+            assert runtime._resources.snapshot.tools.get("mcp_broken") is None
             assert any(
                 diagnostic.kind == "mcp.discovery_failed" for diagnostic in received
             )
@@ -463,7 +463,7 @@ def test_runtime_open_reports_invalid_config_without_blocking(
             on_diagnostic=received.append,
             context_policy=_context_policy,
         ) as runtime:
-            assert runtime._resources.tool_catalog.get("mcp_bad") is None
+            assert runtime._resources.snapshot.tools.get("mcp_bad") is None
             assert not (workspace / ".workspace" / "tools" / "mcp_bad.py").exists()
             assert any(
                 diagnostic.kind == "mcp.config_invalid" for diagnostic in received

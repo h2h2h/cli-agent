@@ -19,6 +19,7 @@ from cli_agent.runtime._backend.local import (
     _LocalCapabilityView,
     _ProcessExecution,
 )
+from cli_agent.runtime._capability.projections import write_tool_index
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -97,7 +98,7 @@ def test_worker_environment_composes_backend_base_and_session_overlay(
         {"WS_KEY": "from-workspace"},
         view,
     )
-    catalog = asyncio.run(_ToolCatalog.reconcile(view, backend.filesystem))
+    catalog = asyncio.run(_reconcile_tools(view, backend.filesystem))
 
     async def scenario() -> None:
         status = await backend.reconcile_tool_runtime()
@@ -168,7 +169,7 @@ def test_tool_worker_shares_backend_workspace_cwd_with_shell_and_files(
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
     backend = _LocalBackendWorkspace(tmp_path, {}, view)
-    catalog = asyncio.run(_ToolCatalog.reconcile(view, backend.filesystem))
+    catalog = asyncio.run(_reconcile_tools(view, backend.filesystem))
 
     async def scenario() -> None:
         status = await backend.reconcile_tool_runtime()
@@ -264,3 +265,9 @@ def _text(snapshot: dict[str, object], stream: str) -> str:
         for chunk in chunks
         if isinstance(chunk, dict) and chunk.get("stream") == stream
     )
+
+
+async def _reconcile_tools(view, filesystem, on_diagnostic=None):
+    catalog = await _ToolCatalog.discover(view, on_diagnostic)
+    await write_tool_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    return catalog

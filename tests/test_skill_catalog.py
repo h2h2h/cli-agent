@@ -6,7 +6,13 @@ from cli_agent.runtime._backend.local import (
     _LocalCapabilityView,
     _LocalWorkspaceFilesystem,
 )
+from cli_agent.runtime._capability.projections import write_skill_index
+from cli_agent.runtime._capability.provider import (
+    CAPABILITY_SCHEMA_VERSION,
+    CapabilitySnapshot,
+)
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._system_message import assemble_system_message
 
@@ -42,7 +48,7 @@ def test_catalog_generates_index_and_reports_actual_provenance(
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
     _skill(Path(view.root) / "skills" / "local-skill", "local-skill", "Local skill.")
 
-    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_skills(view, _filesystem(tmp_path, view)))
 
     assert catalog.get("lower-skill").provenance == "repertoire"  # type: ignore[union-attr]
     assert catalog.get("local-skill").provenance == "workspace"  # type: ignore[union-attr]
@@ -77,7 +83,7 @@ def test_catalog_reports_structural_validation_errors(tmp_path: Path) -> None:
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
 
-    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_skills(view, _filesystem(tmp_path, view)))
 
     wrong = catalog.get("wrong-name")
     assert wrong is not None
@@ -125,7 +131,7 @@ def test_catalog_skips_whiteouted_skills_and_ignores_non_directories(
     (Path(view.root) / "skills" / "gone-skill" / "SKILL.md").unlink()
     (Path(view.root) / "skills" / "not-a-skill.py").write_text("VALUE = 1\n")
 
-    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_skills(view, _filesystem(tmp_path, view)))
 
     assert catalog.get("gone-skill") is None
     assert catalog.get("not-a-skill.py") is None
@@ -146,7 +152,7 @@ def test_catalog_reports_mixed_directory_provenance_from_skill_md(
         "workspace note\n"
     )
 
-    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_skills(view, _filesystem(tmp_path, view)))
 
     entry = catalog.get("mixed-skill")
     assert entry is not None
@@ -171,7 +177,7 @@ def test_catalog_reports_workspace_override_shadowing_repertoire(
         encoding="utf-8",
     )
 
-    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_skills(view, _filesystem(tmp_path, view)))
 
     entry = catalog.get("override-skill")
     assert entry is not None
@@ -191,16 +197,16 @@ def test_catalog_index_is_reproducible_and_never_authority(tmp_path: Path) -> No
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
     first = asyncio.run(
-        _SkillCatalog.reconcile(view, _filesystem(tmp_path, view))
+        _reconcile_skills(view, _filesystem(tmp_path, view))
     ).render_index()
     second = asyncio.run(
-        _SkillCatalog.reconcile(view, _filesystem(tmp_path, view))
+        _reconcile_skills(view, _filesystem(tmp_path, view))
     ).render_index()
 
     assert first == second
     authored = Path(view.root) / "skills" / "index.md"
     authored.write_text("model-authored index\n")
-    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_skills(view, _filesystem(tmp_path, view)))
     assert catalog.get("first-skill") is not None
     assert authored.read_text() != "model-authored index\n"
 
@@ -212,7 +218,7 @@ def test_catalog_get_and_valid_entries(tmp_path: Path) -> None:
 
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_skills(view, _filesystem(tmp_path, view)))
 
     assert catalog.get("ok-skill").valid is True  # type: ignore[union-attr]
     assert catalog.get("bad-name").valid is False  # type: ignore[union-attr]
@@ -225,7 +231,7 @@ def test_catalog_render_info_reports_missing_skill(tmp_path: Path) -> None:
     repertoire = _repertoire(tmp_path)
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_skills(view, _filesystem(tmp_path, view)))
 
     text, found = catalog.render_info("missing")
     assert found is False
@@ -241,9 +247,11 @@ def test_system_message_embeds_only_compact_skills_catalog(
 
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    catalog = asyncio.run(_SkillCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_skills(view, _filesystem(tmp_path, view)))
 
-    message = assemble_system_message(tmp_path, None, skill_catalog=catalog)
+    message = assemble_system_message(
+        tmp_path, None, snapshot=_snapshot(skills=catalog)
+    )
     body = "\n".join(block.text for block in message.content)
 
     assert "Skills" in body
@@ -262,3 +270,20 @@ def test_system_message_skill_section_omitted_without_catalog(
 
     assert "\n\n**Skills**\n" not in body
     assert "No Skills are currently discovered." not in body
+
+
+async def _reconcile_skills(view, filesystem):
+    catalog = await _SkillCatalog.discover(view)
+    await write_skill_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    return catalog
+
+
+def _snapshot(*, tools=None, skills=None):
+    return CapabilitySnapshot(
+        revision="test-revision",
+        schema_version=CAPABILITY_SCHEMA_VERSION,
+        tools=_ToolCatalog(()) if tools is None else tools,
+        skills=_SkillCatalog(()) if skills is None else skills,
+        mcp_servers=(),
+        project_instructions=None,
+    )

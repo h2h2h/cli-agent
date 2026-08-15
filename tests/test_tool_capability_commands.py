@@ -20,6 +20,12 @@ from cli_agent.runtime._backend.local import (
     _LocalWorkspaceFilesystem,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
+from cli_agent.runtime._capability.projections import write_tool_index
+from cli_agent.runtime._capability.provider import (
+    CAPABILITY_SCHEMA_VERSION,
+    CapabilitySnapshot,
+)
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.facts import ToolCommand
 from cli_agent.runtime._capability.tools.grammar import parse_tool_command
@@ -53,7 +59,7 @@ def test_catalog_generates_index_and_reports_actual_provenance(
     keyword_name = Path(view.root) / "tools" / "class.py"
     keyword_name.write_text("VALUE = 1\n")
 
-    catalog = asyncio.run(_ToolCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_tools(view, _filesystem(tmp_path, view)))
 
     assert catalog.get("lower").provenance == "repertoire"  # type: ignore[union-attr]
     assert catalog.get("local").provenance == "workspace"  # type: ignore[union-attr]
@@ -86,7 +92,7 @@ def test_catalog_uses_tool_declarations_and_regular_tool_default(
 
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    catalog = asyncio.run(_ToolCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_tools(view, _filesystem(tmp_path, view)))
 
     assert catalog.get("defaulted").parallel_safe is True  # type: ignore[union-attr]
     assert catalog.get("serial").parallel_safe is False  # type: ignore[union-attr]
@@ -114,7 +120,7 @@ def test_catalog_falls_back_and_reports_invalid_parallel_metadata(
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
     diagnostics: list[RuntimeDiagnostic] = []
     catalog = asyncio.run(
-        _ToolCatalog.reconcile(view, _filesystem(tmp_path, view), diagnostics.append)
+        _reconcile_tools(view, _filesystem(tmp_path, view), diagnostics.append)
     )
 
     assert catalog.get("invalid").valid is True  # type: ignore[union-attr]
@@ -144,7 +150,7 @@ def test_workspace_tool_override_controls_parallel_metadata(tmp_path: Path) -> N
     override.write_text("PARALLEL_SAFE = True\nVALUE = 2\n")
 
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    catalog = asyncio.run(_ToolCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_tools(view, _filesystem(tmp_path, view)))
     entry = catalog.get("shared")
 
     assert entry is not None
@@ -169,8 +175,12 @@ def test_system_message_embeds_only_compact_tools_catalog(
     broken = Path(view.root) / "tools" / "broken.py"
     broken.write_text("def broken(:\n")
 
-    catalog = asyncio.run(_ToolCatalog.reconcile(view, _filesystem(tmp_path, view)))
-    message = assemble_system_message(tmp_path, None, tool_catalog=catalog)
+    catalog = asyncio.run(_reconcile_tools(view, _filesystem(tmp_path, view)))
+    message = assemble_system_message(
+        tmp_path,
+        None,
+        snapshot=_snapshot(tools=catalog),
+    )
     body = "\n".join(block.text for block in message.content)
 
     assert "Tools" in body
@@ -201,7 +211,7 @@ def test_every_reserved_tool_form_evaluates_through_the_same_policy_hook(
     (repertoire / "tools" / "echo.py").write_text("def value():\n    return 'ok'\n")
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    catalog = asyncio.run(_ToolCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_tools(view, _filesystem(tmp_path, view)))
 
     async def scenario() -> None:
         policy = _AllowAllPolicy()
@@ -254,7 +264,7 @@ def test_reserved_tool_grammar_cannot_fall_through_to_shell(
     repertoire = _repertoire(tmp_path)
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    catalog = asyncio.run(_ToolCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_tools(view, _filesystem(tmp_path, view)))
 
     command = parse_shell_ast(raw)
     facts = parse_tool_command(command, catalog)
@@ -281,7 +291,7 @@ def test_tool_grammar_rejects_unsupported_ast_shapes(
     repertoire = _repertoire(tmp_path)
     _prepare_workspace(tmp_path)
     catalog = asyncio.run(
-        _ToolCatalog.reconcile(
+        _reconcile_tools(
             _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire),
             _filesystem(
                 tmp_path,
@@ -302,7 +312,7 @@ def test_tool_run_extracts_quoted_and_heredoc_payloads_from_ast(
     repertoire = _repertoire(tmp_path)
     _prepare_workspace(tmp_path)
     catalog = asyncio.run(
-        _ToolCatalog.reconcile(
+        _reconcile_tools(
             _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire),
             _filesystem(
                 tmp_path,
@@ -528,7 +538,7 @@ def test_tool_grammar_facts_stay_out_of_policy(
     (repertoire / "tools" / "invalid_tool.py").write_text("VALUE =\n")
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    catalog = asyncio.run(_ToolCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_tools(view, _filesystem(tmp_path, view)))
 
     class RecordingPolicy:
         def __init__(self) -> None:
@@ -578,7 +588,7 @@ def test_unavailable_tool_runtime_fails_run_without_host_fallback(
     (repertoire / "tools" / "example.py").write_text("VALUE = 1\n")
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    catalog = asyncio.run(_ToolCatalog.reconcile(view, _filesystem(tmp_path, view)))
+    catalog = asyncio.run(_reconcile_tools(view, _filesystem(tmp_path, view)))
 
     async def fail_sync(
         *,
@@ -781,7 +791,7 @@ def test_dependency_sync_failure_is_fail_soft_for_catalog_operations(
     async def scenario() -> None:
         backend = _LocalBackendWorkspace(tmp_path, {}, view)
         status = await backend.reconcile_tool_runtime()
-        catalog = await _ToolCatalog.reconcile(view, backend.filesystem)
+        catalog = await _reconcile_tools(view, backend.filesystem)
         assert status.available is False
         assert "package manager failed" in status.error
 
@@ -1029,7 +1039,7 @@ async def _kernel(
     _prepare_workspace(workspace)
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     backend = _LocalBackendWorkspace(workspace, {}, view)
-    catalog = await _ToolCatalog.reconcile(view, backend.filesystem)
+    catalog = await _reconcile_tools(view, backend.filesystem)
     status = await backend.reconcile_tool_runtime()
     assert status.available, status.error
     return EnvironmentKernel(
@@ -1116,3 +1126,20 @@ async def _wait_for_path(path: Path) -> None:
             return
         await asyncio.sleep(0.01)
     raise AssertionError(f"path did not appear: {path}")
+
+
+async def _reconcile_tools(view, filesystem, on_diagnostic=None):
+    catalog = await _ToolCatalog.discover(view, on_diagnostic)
+    await write_tool_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    return catalog
+
+
+def _snapshot(*, tools=None, skills=None):
+    return CapabilitySnapshot(
+        revision="test-revision",
+        schema_version=CAPABILITY_SCHEMA_VERSION,
+        tools=_ToolCatalog(()) if tools is None else tools,
+        skills=_SkillCatalog(()) if skills is None else skills,
+        mcp_servers=(),
+        project_instructions=None,
+    )

@@ -176,7 +176,9 @@ class AgentRuntime:
                 on_diagnostic=on_diagnostic,
                 context_policy=context_policy,
             )
-            resources.library_catalog.start(provider, on_diagnostic)
+            snapshot_library = resources.snapshot.library
+            if snapshot_library is not None:
+                snapshot_library.start(provider, on_diagnostic)
         except BaseException:
             with suppress(Exception):
                 await resources.close()
@@ -261,9 +263,7 @@ class AgentRuntime:
             system = assemble_system_message(
                 Path(workspace.root),
                 self._instruction,
-                tool_catalog=self._resources.tool_catalog,
-                skill_catalog=self._resources.skill_catalog,
-                project_instructions=self._resources.project_instructions,
+                snapshot=self._resources.snapshot,
             )
             try:
                 self._resources.session_store.create(
@@ -388,8 +388,8 @@ class AgentRuntime:
         return EnvironmentKernel(
             self._resources.workspace.root,
             backend=self._resources.backend,
-            library_catalog=self._resources.library_catalog,
-            tool_catalog=self._resources.tool_catalog,
+            library_catalog=self._resources.snapshot.library,
+            tool_catalog=self._resources.snapshot.tools,
             base_env=self._resources.base_env,
             policy=self._policy,
             user_interaction=self._user_interaction,
