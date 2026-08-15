@@ -106,16 +106,14 @@ async def _open_runtime(
 
 async def _run_turn(
     runtime: AgentRuntime,
-    session_id: str,
     text: str,
 ) -> tuple[ModelEvent, ...]:
+    if runtime._binding is None:
+        await runtime.new_session()
     return tuple(
         [
             event
-            async for event in runtime.run_turn(
-                session_id,
-                UserMessage.text(text),
-            )
+            async for event in runtime.run_turn(UserMessage.text(text))
         ]
     )
 
@@ -160,19 +158,21 @@ def test_run_turn_persists_session_trace_in_order(
 
     async def scenario() -> None:
         async with await _open_runtime(tmp_path, provider) as runtime:
-            await _run_turn(runtime, "s1", "hello")
+            session = await runtime.new_session()
+            await _run_turn(runtime, "hello")
+            session_id = session.session_id
 
-        (session,) = _sessions(tmp_path / "state.sqlite3")
-        session_id, workspace_id, config, created_at, updated_at, archived_at = session
-        assert session_id == "s1"
+        (stored,) = _sessions(tmp_path / "state.sqlite3")
+        stored_id, workspace_id, config, created_at, updated_at, archived_at = stored
+        assert stored_id == session_id
         assert workspace_id == runtime._resources.workspace.id
         assert workspace_id.startswith("local:")
-        assert json.loads(_session_config_prompt(session))["blocks"][0][
+        assert json.loads(_session_config_prompt(stored))["blocks"][0][
             "text"
         ].startswith("You are cli-agent")
         assert json.loads(config)["schema_version"] == 1
         assert archived_at is None
-        rows = _messages(tmp_path / "state.sqlite3", "s1")
+        rows = _messages(tmp_path / "state.sqlite3", session_id)
         assert [(row[0], row[1]) for row in rows] == [
             (1, "user"),
             (2, "assistant"),
@@ -218,7 +218,7 @@ def test_system_prompt_persists_final_workspace_instructions_section(
 
     async def scenario() -> None:
         async with await _open_runtime(tmp_path, provider) as runtime:
-            await _run_turn(runtime, "s1", "hello")
+            await _run_turn(runtime, "hello")
 
         (session,) = _sessions(tmp_path / "state.sqlite3")
         system_prompt = json.loads(_session_config_prompt(session))["blocks"][0]["text"]
@@ -252,11 +252,12 @@ def test_tier3_summary_stays_out_of_session_journal(
 
     async def scenario() -> None:
         async with await _open_runtime(tmp_path, provider) as runtime:
-            await _run_turn(runtime, "s1", "First old discussion")
-            await _run_turn(runtime, "s1", "Second recent discussion")
-            await _run_turn(runtime, "s1", "Wrap up")
+            session = await runtime.new_session()
+            await _run_turn(runtime, "First old discussion")
+            await _run_turn(runtime, "Second recent discussion")
+            await _run_turn(runtime, "Wrap up")
 
-        rows = _messages(tmp_path / "state.sqlite3", "s1")
+        rows = _messages(tmp_path / "state.sqlite3", session.session_id)
         assert [(row[1]) for row in rows] == [
             "user",
             "assistant",
@@ -291,9 +292,10 @@ def test_reduced_tool_result_keeps_original_payload_in_database(
 
     async def scenario() -> None:
         async with await _open_runtime(tmp_path, provider) as runtime:
-            await _run_turn(runtime, "s1", "Inspect the old workspace")
-            await _run_turn(runtime, "s1", "Inspect the recent marker")
-            await _run_turn(runtime, "s1", "Summarize the state")
+            session = await runtime.new_session()
+            await _run_turn(runtime, "Inspect the old workspace")
+            await _run_turn(runtime, "Inspect the recent marker")
+            await _run_turn(runtime, "Summarize the state")
 
         final_request = provider.requests[4]
         old_result = next(
@@ -305,7 +307,7 @@ def test_reduced_tool_result_keeps_original_payload_in_database(
         assert isinstance(output, dict)
         assert output.get("reclaimed", {}).get("state") == "snipped"
 
-        rows = _messages(tmp_path / "state.sqlite3", "s1")
+        rows = _messages(tmp_path / "state.sqlite3", session.session_id)
         tool_results = [row for row in rows if row[1] == "tool_result"]
         assert len(tool_results) == 2
         old_payload = json.loads(tool_results[0][2])["results"][0]
@@ -340,17 +342,14 @@ def test_unwritable_database_prevents_session_creation(
         runtime = await _open_runtime(tmp_path, provider, received)
         try:
             with pytest.raises(HostFacingError) as raised:
-                await _run_turn(runtime, "s1", "First turn")
-            await runtime.close_session("s1")
+                await _run_turn(runtime, "First turn")
+            await runtime.detach_session()
         finally:
             await runtime.close()
 
         assert raised.value.code == "session_persistence_failed"
-        assert raised.value.details == {
-            "operation": "create",
-            "session_id": "s1",
-            "exception_type": "OperationalError",
-        }
+        assert raised.value.details["operation"] == "create"
+        assert raised.value.details["exception_type"] == "OperationalError"
         assert received == []
         provider.assert_exhausted()
 
@@ -364,11 +363,11 @@ def test_close_session_persists_no_lifecycle_state(tmp_path: Path, monkeypatch) 
     async def scenario() -> None:
         runtime = await _open_runtime(tmp_path, provider)
         try:
-            await _run_turn(runtime, "s1", "hello")
+            await _run_turn(runtime, "hello")
             (session,) = _sessions(tmp_path / "state.sqlite3")
             before = (session[4], session[5])
 
-            await runtime.close_session("s1")
+            await runtime.detach_session()
 
             (closed_session,) = _sessions(tmp_path / "state.sqlite3")
             assert (closed_session[4], closed_session[5]) == before
@@ -379,28 +378,31 @@ def test_close_session_persists_no_lifecycle_state(tmp_path: Path, monkeypatch) 
     asyncio.run(scenario())
 
 
-def test_existing_session_id_requires_resume_after_runtime_restart(
+def test_existing_session_resumes_after_runtime_restart(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     _install_test_state_database(monkeypatch, tmp_path)
     first_provider = ScriptedModelProvider(script=(_plain_step("done"),))
-    reopened_provider = ScriptedModelProvider(script=())
+    reopened_provider = ScriptedModelProvider(script=(_plain_step("resumed done"),))
 
     async def scenario() -> None:
         async with await _open_runtime(tmp_path, first_provider) as runtime:
-            await _run_turn(runtime, "s1", "hello")
+            session = await runtime.new_session()
+            await _run_turn(runtime, "hello")
 
         async with await _open_runtime(tmp_path, reopened_provider) as reopened:
-            with pytest.raises(HostFacingError) as raised:
-                await _run_turn(reopened, "s1", "must resume")
+            restored = await reopened.resume_session(session.session_id)
+            assert restored.session_id == session.session_id
+            assert restored.revision == 2
+            await _run_turn(reopened, "must resume")
 
-        assert raised.value.code == "session_already_exists"
-        assert raised.value.details == {"session_id": "s1"}
-        rows = _messages(tmp_path / "state.sqlite3", "s1")
+        rows = _messages(tmp_path / "state.sqlite3", session.session_id)
         assert [(row[0], row[1]) for row in rows] == [
             (1, "user"),
             (2, "assistant"),
+            (3, "user"),
+            (4, "assistant"),
         ]
         first_provider.assert_exhausted()
         reopened_provider.assert_exhausted()

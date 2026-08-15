@@ -22,7 +22,7 @@ _context_policy = ContextPolicy(
 )
 
 
-def test_sessions_own_isolated_copies_of_runtime_open_environment(
+def test_bindings_own_isolated_copies_of_runtime_open_environment(
     tmp_path: Path,
 ) -> None:
     environment = tmp_path / ".workspace" / "env"
@@ -35,7 +35,7 @@ def test_sessions_own_isolated_copies_of_runtime_open_environment(
                     message=AssistantMessage.text(text), finish_reason="stop"
                 ),
             )
-            for text in ("first a", "first b", "second a", "fresh a")
+            for text in ("first a", "second a", "first b", "fresh a")
         )
     )
 
@@ -47,42 +47,38 @@ def test_sessions_own_isolated_copies_of_runtime_open_environment(
             context_policy=_context_policy,
         )
 
-        await _collect_turn(runtime, "session-a", "first a")
-        await _collect_turn(runtime, "session-b", "first b")
-        session_a = _session_kernel(runtime, "session-a")
-        session_b = _session_kernel(runtime, "session-b")
-
+        await runtime.new_session()
+        await _collect_turn(runtime, "first a")
+        session_a = runtime._binding.kernel
         assert session_a._env == {"VALUE": "workspace"}
-        assert session_b._env == {"VALUE": "workspace"}
-        assert session_a._env is not session_b._env
 
         session_a._env["VALUE"] = "session-a"
         session_a._env["SESSION_ONLY"] = "present"
-        await _collect_turn(runtime, "session-a", "second a")
-
-        assert _session_kernel(runtime, "session-a") is session_a
+        await _collect_turn(runtime, "second a")
+        assert runtime._binding.kernel is session_a
         assert session_a._env == {
             "SESSION_ONLY": "present",
             "VALUE": "session-a",
         }
-        assert session_b._env == {"VALUE": "workspace"}
 
-        environment.write_text(
-            "VALUE=later edit\nLATER=not loaded\n",
-            encoding="utf-8",
-        )
-        await runtime.close_session("session-a")
+        await runtime.detach_session()
         assert session_a._env == {}
 
-        await _collect_turn(runtime, "session-fresh", "fresh a")
-        fresh_session_a = _session_kernel(runtime, "session-fresh")
-        assert fresh_session_a is not session_a
-        assert fresh_session_a._env == {"VALUE": "workspace"}
+        await runtime.new_session()
+        await _collect_turn(runtime, "first b")
+        session_b = runtime._binding.kernel
         assert session_b._env == {"VALUE": "workspace"}
+        assert session_b._env is not session_a._env
+        session_b._env["SESSION_ONLY"] = "present-b"
+
+        await runtime.new_session()
+        await _collect_turn(runtime, "fresh a")
+        fresh = runtime._binding.kernel
+        assert fresh is not session_b
+        assert fresh._env == {"VALUE": "workspace"}
 
         await runtime.close()
-        assert fresh_session_a._env == {}
-        assert session_b._env == {}
+        assert fresh._env == {}
         provider.assert_exhausted()
 
     asyncio.run(scenario())
@@ -90,22 +86,17 @@ def test_sessions_own_isolated_copies_of_runtime_open_environment(
 
 async def _collect_turn(
     runtime: AgentRuntime,
-    session_id: str,
     text: str,
 ) -> tuple[ModelEvent, ...]:
     return tuple(
         [
             event
-            async for event in runtime.run_turn(
-                session_id,
-                UserMessage.text(text),
-            )
+            async for event in runtime.run_turn(UserMessage.text(text))
         ]
     )
 
 
-def _session_kernel(
-    runtime: AgentRuntime,
-    session_id: str,
-) -> EnvironmentKernel:
-    return runtime._sessions[session_id].kernel
+def _session_kernel(runtime: AgentRuntime) -> EnvironmentKernel:
+    binding = runtime._binding
+    assert binding is not None
+    return binding.kernel

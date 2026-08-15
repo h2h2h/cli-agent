@@ -258,7 +258,7 @@ def test_session_usage_returns_none_for_unknown_session(tmp_path: Path) -> None:
             context_policy=_context_policy,
         )
 
-        assert runtime.session_usage("unknown") is None
+        assert runtime.session_usage() is None
         await runtime.close()
 
     asyncio.run(scenario())
@@ -289,16 +289,16 @@ def test_session_usage_accumulates_across_turns(tmp_path: Path) -> None:
             provider=provider,
             context_policy=_context_policy,
         )
-        await _collect_turn(runtime, "session-a", UserMessage.text("one"))
+        await _collect_turn(runtime, UserMessage.text("one"))
 
-        assert runtime.session_usage("session-a") == SessionUsage(
+        assert runtime.session_usage() == SessionUsage(
             input_tokens=10,
             output_tokens=20,
         )
 
-        await _collect_turn(runtime, "session-a", UserMessage.text("two"))
+        await _collect_turn(runtime, UserMessage.text("two"))
 
-        assert runtime.session_usage("session-a") == SessionUsage(
+        assert runtime.session_usage() == SessionUsage(
             input_tokens=13,
             output_tokens=25,
         )
@@ -327,12 +327,12 @@ def test_session_usage_returns_none_after_session_close(tmp_path: Path) -> None:
             provider=provider,
             context_policy=_context_policy,
         )
-        await _collect_turn(runtime, "session-a", UserMessage.text("one"))
+        await _collect_turn(runtime, UserMessage.text("one"))
 
-        assert runtime.session_usage("session-a") is not None
-        await runtime.close_session("session-a")
+        assert runtime.session_usage() is not None
+        await runtime.detach_session()
 
-        assert runtime.session_usage("session-a") is None
+        assert runtime.session_usage() is None
         await runtime.close()
 
     asyncio.run(scenario())
@@ -341,7 +341,8 @@ def test_session_usage_returns_none_after_session_close(tmp_path: Path) -> None:
 
 async def _collect_turn(
     runtime: AgentRuntime,
-    session_id: str,
     message: UserMessage,
 ) -> tuple[object, ...]:
-    return tuple([event async for event in runtime.run_turn(session_id, message)])
+    if runtime._binding is None:
+        await runtime.new_session()
+    return tuple([event async for event in runtime.run_turn(message)])

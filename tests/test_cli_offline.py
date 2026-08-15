@@ -154,23 +154,30 @@ def test_proves_cli_agent_offline_through_real_provider_adapter(
 
     lifecycle: list[str] = []
     session_ids: list[str] = []
-    original_close_session = AgentRuntime.close_session
+    original_new_session = AgentRuntime.new_session
+    original_detach_session = AgentRuntime.detach_session
     original_close = AgentRuntime.close
 
-    async def tracking_close_session(
+    async def tracking_new_session(
         runtime: AgentRuntime,
-        session_id: str,
-    ) -> None:
+        *,
+        provider: object = None,
+    ) -> object:
+        session = await original_new_session(runtime, provider=provider)
+        session_ids.append(session.session_id)
+        return session
+
+    async def tracking_detach_session(runtime: AgentRuntime) -> None:
         lifecycle.append("session")
-        session_ids.append(session_id)
-        await original_close_session(runtime, session_id)
+        await original_detach_session(runtime)
 
     async def tracking_close(runtime: AgentRuntime) -> None:
         lifecycle.append("runtime")
         await original_close(runtime)
 
     monkeypatch.setattr(cli_module, "build_provider", build_offline_provider)
-    monkeypatch.setattr(AgentRuntime, "close_session", tracking_close_session)
+    monkeypatch.setattr(AgentRuntime, "new_session", tracking_new_session)
+    monkeypatch.setattr(AgentRuntime, "detach_session", tracking_detach_session)
     monkeypatch.setattr(AgentRuntime, "close", tracking_close)
     monkeypatch.setenv(MODEL_ENV, "test-model")
     monkeypatch.setenv(BASE_URL_ENV, "https://models.invalid/v1")

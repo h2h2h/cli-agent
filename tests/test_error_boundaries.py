@@ -318,7 +318,9 @@ class _OverflowTwiceProvider:
 def _collect_turn(runtime: AgentRuntime, message: str) -> list[object]:
     async def scenario() -> list[object]:
         events: list[object] = []
-        async for event in runtime.run_turn("session-a", UserMessage.text(message)):
+        if runtime._binding is None:
+            await runtime.new_session()
+        async for event in runtime.run_turn(UserMessage.text(message)):
             events.append(event)
         return events
 
@@ -338,7 +340,8 @@ def test_run_turn_boundary_wraps_unexpected_exceptions(tmp_path: Path) -> None:
         )
         try:
             with pytest.raises(InternalRuntimeError) as raised:
-                async for _ in runtime.run_turn("session-a", UserMessage.text("Hi")):
+                await runtime.new_session()
+                async for _ in runtime.run_turn(UserMessage.text("Hi")):
                     pass
         finally:
             await runtime.close()
@@ -366,13 +369,14 @@ def test_run_turn_classifies_second_overflow_as_host_error(tmp_path: Path) -> No
             context_policy=_context_policy,
         )
         try:
+            session = await runtime.new_session()
             with pytest.raises(ContextExhaustedError) as raised:
-                async for _ in runtime.run_turn("session-a", UserMessage.text("Hi")):
+                async for _ in runtime.run_turn(UserMessage.text("Hi")):
                     pass
         finally:
             await runtime.close()
 
         assert raised.value.code == "context_exhausted"
-        assert raised.value.details["session_id"] == "session-a"
+        assert raised.value.details["session_id"] == session.session_id
 
     asyncio.run(scenario())

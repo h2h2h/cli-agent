@@ -80,7 +80,7 @@ def test_policy_none_runs_end_to_end_without_interaction(tmp_path: Path) -> None
             context_policy=_context_policy,
         )
         try:
-            await _collect_turn(runtime, "session", "Run it")
+            await _collect_turn(runtime, "Run it")
         finally:
             await runtime.close()
 
@@ -114,7 +114,7 @@ def test_configured_policy_paths_end_to_end(tmp_path: Path) -> None:
             context_policy=_context_policy,
         )
         try:
-            await _collect_turn(deny_runtime, "deny-session", "Deny it")
+            await _collect_turn(deny_runtime, "Deny it")
         finally:
             await deny_runtime.close()
 
@@ -133,7 +133,7 @@ def test_configured_policy_paths_end_to_end(tmp_path: Path) -> None:
             context_policy=_context_policy,
         )
         try:
-            await _collect_turn(allow_runtime, "allow-session", "Allow it")
+            await _collect_turn(allow_runtime, "Allow it")
         finally:
             await allow_runtime.close()
 
@@ -165,7 +165,7 @@ def test_ask_interaction_allow_once_and_deny_end_to_end(tmp_path: Path) -> None:
             context_policy=_context_policy,
         )
         try:
-            await _collect_turn(allow_runtime, "allow-session", "Allow it")
+            await _collect_turn(allow_runtime, "Allow it")
         finally:
             await allow_runtime.close()
 
@@ -184,7 +184,7 @@ def test_ask_interaction_allow_once_and_deny_end_to_end(tmp_path: Path) -> None:
             context_policy=_context_policy,
         )
         try:
-            await _collect_turn(deny_runtime, "deny-session", "Deny it")
+            await _collect_turn(deny_runtime, "Deny it")
         finally:
             await deny_runtime.close()
 
@@ -225,7 +225,7 @@ def test_parse_failure_through_public_runtime_creates_no_execution(
             context_policy=_context_policy,
         )
         try:
-            await _collect_turn(runtime, "malformed-session", "Run it")
+            await _collect_turn(runtime, "Run it")
         finally:
             await runtime.close()
 
@@ -259,7 +259,7 @@ def test_runtime_close_cancels_pending_ask_without_closing_interaction(
             context_policy=_context_policy,
         )
         turn = asyncio.create_task(
-            _collect_turn(runtime, "pending-session", "Ask for approval")
+            _collect_turn(runtime, "Ask for approval")
         )
         await interaction.entered.wait()
         await runtime.close()
@@ -328,8 +328,8 @@ def test_session_remains_usable_after_denial(tmp_path: Path) -> None:
             context_policy=_context_policy,
         )
         try:
-            await _collect_turn(runtime, "persistent-session", "Deny it")
-            await _collect_turn(runtime, "persistent-session", "Run later work")
+            await _collect_turn(runtime, "Deny it")
+            await _collect_turn(runtime, "Run later work")
         finally:
             await runtime.close()
 
@@ -383,16 +383,14 @@ def _last_tool_error(
 
 async def _collect_turn(
     runtime: AgentRuntime,
-    session_id: str,
     text: str,
 ) -> tuple[ModelEvent, ...]:
+    if runtime._binding is None:
+        await runtime.new_session()
     return tuple(
         [
             event
-            async for event in runtime.run_turn(
-                session_id,
-                UserMessage.text(text),
-            )
+            async for event in runtime.run_turn(UserMessage.text(text))
         ]
     )
 

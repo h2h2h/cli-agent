@@ -47,11 +47,11 @@ async def _open_runtime(
 
 async def _run_turn(
     runtime: AgentRuntime,
-    session_id: str,
     text: str = "go",
 ) -> tuple[ModelEvent, ...]:
+    await runtime.new_session()
     return tuple(
-        [event async for event in runtime.run_turn(session_id, UserMessage.text(text))]
+        [event async for event in runtime.run_turn(UserMessage.text(text))]
     )
 
 
@@ -69,7 +69,7 @@ def test_first_model_request_contains_workspace_instructions(
 
     async def scenario() -> None:
         async with await _open_runtime(tmp_path, provider) as runtime:
-            await _run_turn(runtime, "session-a")
+            await _run_turn(runtime)
 
         body = _system_text(provider.requests[0])
         assert "**Workspace instructions**" in body
@@ -89,7 +89,7 @@ def test_absent_agents_md_keeps_system_message_unchanged(tmp_path: Path) -> None
 
     async def scenario() -> None:
         async with await _open_runtime(tmp_path, provider) as runtime:
-            await _run_turn(runtime, "session-a")
+            await _run_turn(runtime)
 
         assert "**Workspace instructions**" not in _system_text(provider.requests[0])
         provider.assert_exhausted()
@@ -114,11 +114,11 @@ def test_sessions_share_snapshot_and_file_change_does_not_hot_reload(
     async def scenario() -> None:
         runtime = await _open_runtime(tmp_path, provider)
         try:
-            await _run_turn(runtime, "session-a")
-            await _run_turn(runtime, "session-b")
+            await _run_turn(runtime)
+            await _run_turn(runtime)
 
             agents_md.write_text(_RULES_V2, encoding="utf-8")
-            await _run_turn(runtime, "session-c")
+            await _run_turn(runtime)
 
             bodies = tuple(_system_text(request) for request in provider.requests[:3])
             assert all(_RULES_V1 in body for body in bodies)
@@ -127,7 +127,7 @@ def test_sessions_share_snapshot_and_file_change_does_not_hot_reload(
             await runtime.close()
 
         async with await _open_runtime(tmp_path, provider) as reopened:
-            await _run_turn(reopened, "session-d")
+            await _run_turn(reopened)
 
         body = _system_text(provider.requests[3])
         assert _RULES_V2 in body

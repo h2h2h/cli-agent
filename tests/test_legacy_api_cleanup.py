@@ -1,8 +1,10 @@
 import importlib
+import inspect
 from pathlib import Path
 
 from cli_agent.runtime._backend import _BackendWorkspace
 from cli_agent.runtime._backend import protocol as backend_protocol
+from cli_agent.runtime.runtime import AgentRuntime
 
 _RUNTIME_SOURCE = Path(__file__).parents[1] / "src" / "cli_agent" / "runtime"
 
@@ -70,3 +72,31 @@ def test_backend_contract_has_no_tool_execution_members() -> None:
         importlib.import_module("cli_agent.runtime._backend.local.backend").__file__
     ).read_text(encoding="utf-8")
     assert "prepare_tool" not in local_backend_source
+
+
+def test_runtime_has_a_single_active_session_api() -> None:
+    runtime_source = Path(
+        importlib.import_module("cli_agent.runtime.runtime").__file__
+    ).read_text(encoding="utf-8")
+    for symbol in ("_sessions", "close_session", "active_task"):
+        assert symbol not in runtime_source, (
+            f"legacy Runtime member remains: {symbol}"
+        )
+
+    run_turn_parameters = inspect.signature(AgentRuntime.run_turn).parameters
+    assert "session_id" not in run_turn_parameters
+    assert "provider" not in run_turn_parameters
+
+    usage_parameters = inspect.signature(AgentRuntime.session_usage).parameters
+    assert "session_id" not in usage_parameters
+
+    assert not hasattr(AgentRuntime, "close_session")
+    for method in (
+        "new_session",
+        "resume_session",
+        "detach_session",
+        "archive_session",
+        "unarchive_session",
+        "delete_session",
+    ):
+        assert hasattr(AgentRuntime, method)

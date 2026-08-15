@@ -95,7 +95,6 @@ def test_runs_the_smallest_deterministic_agent_loop(
         ) as runtime:
             first_events = await _collect_turn(
                 runtime,
-                "session-a",
                 first_user,
             )
 
@@ -130,7 +129,7 @@ def test_runs_the_smallest_deterministic_agent_loop(
             assert _execution_status(result_message.content[1]) == "exited"
             assert _stdout(result_message.content[1]) == "written-first\n"
 
-            await _collect_turn(runtime, "session-a", history_user)
+            await _collect_turn(runtime, history_user)
 
             assert provider.requests[2].messages == (
                 system_message,
@@ -141,8 +140,8 @@ def test_runs_the_smallest_deterministic_agent_loop(
                 history_user,
             )
 
-            await runtime.close_session("session-a")
-            await _collect_turn(runtime, "session-fresh", fresh_user)
+            await runtime.detach_session()
+            await _collect_turn(runtime, fresh_user)
 
             fresh_system_message = provider.requests[3].messages[0]
             assert isinstance(fresh_system_message, SystemMessage)
@@ -151,8 +150,8 @@ def test_runs_the_smallest_deterministic_agent_loop(
                 fresh_system_message,
                 fresh_user,
             )
-            await runtime.close_session("session-fresh")
-            await runtime.close_session("session-fresh")
+            await runtime.detach_session()
+            await runtime.detach_session()
             assert not runtime.closed
 
         assert runtime.closed
@@ -223,7 +222,6 @@ def test_skill_is_discoverable_and_loaded_on_demand(
         ) as runtime:
             events = await _collect_turn(
                 runtime,
-                "session-skill",
                 UserMessage.text("Load the banner skill"),
             )
             assert events == (
@@ -250,7 +248,7 @@ def test_skill_is_discoverable_and_loaded_on_demand(
                 "# Banner skill\n\nRun `print('BANNER')` to add a proof banner.\n",
             )
 
-            await runtime.close_session("session-skill")
+            await runtime.detach_session()
 
         assert runtime.closed
         for request in provider.requests:
@@ -286,7 +284,6 @@ def test_skill_is_discoverable_and_loaded_on_demand(
         ) as runtime:
             await _collect_turn(
                 runtime,
-                "session-skills",
                 UserMessage.text("List skills"),
             )
 
@@ -412,16 +409,14 @@ def _stdout(result: ToolResult) -> str:
 
 async def _collect_turn(
     runtime: AgentRuntime,
-    session_id: str,
     message: UserMessage,
 ) -> tuple[ModelEvent, ...]:
+    if runtime._binding is None:
+        await runtime.new_session()
     return tuple(
         [
             event
-            async for event in runtime.run_turn(
-                session_id,
-                message,
-            )
+            async for event in runtime.run_turn(message)
         ]
     )
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from typing import TextIO
-from uuid import uuid4
 
 from cli_agent.config import CliConfig, build_context_policy
 from cli_agent.presentation import (
@@ -39,7 +38,7 @@ async def run_agent(
 ) -> int:
     """Run and present one-shot or interactive Agent turns."""
 
-    session_id = uuid4().hex
+    session_id: str | None = None
     tui_session = _create_tui_session(
         config=config,
         stdin=stdin,
@@ -64,10 +63,11 @@ async def run_agent(
             ),
         ) as runtime:
             try:
+                session = await runtime.new_session()
+                session_id = session.session_id
                 if config.task is not None:
                     completed, _ = await _run_turn(
                         runtime,
-                        session_id,
                         config.task,
                         stdout=stdout,
                         stderr=stderr,
@@ -89,14 +89,13 @@ async def run_agent(
                             return 0
                         if action is CommandAction.USAGE:
                             render_session_usage(
-                                runtime.session_usage(session_id),
+                                runtime.session_usage(),
                                 stderr=stderr,
                             )
                             continue
 
                     completed, needs_newline = await _run_turn(
                         runtime,
-                        session_id,
                         task,
                         stdout=stdout,
                         stderr=stderr,
@@ -108,16 +107,16 @@ async def run_agent(
                     if exit_code != 0:
                         return exit_code
             finally:
-                await runtime.close_session(session_id)
+                await runtime.detach_session()
     finally:
         if tui_session is not None:
             await tui_session.close()
-        render_session_id(session_id, stderr=stderr)
+        if session_id is not None:
+            render_session_id(session_id, stderr=stderr)
 
 
 async def _run_turn(
     runtime: AgentRuntime,
-    session_id: str,
     task: str,
     *,
     stdout: TextIO,
@@ -127,10 +126,7 @@ async def _run_turn(
     completed = False
     last_text_has_newline = True
 
-    async for event in runtime.run_turn(
-        session_id,
-        UserMessage.text(task),
-    ):
+    async for event in runtime.run_turn(UserMessage.text(task)):
         if (
             separate_diagnostics
             and not isinstance(event, TextDelta)

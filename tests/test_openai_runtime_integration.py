@@ -181,10 +181,9 @@ def test_runs_an_openai_compatible_tool_round_trip(
             provider=provider,
             context_policy=_context_policy,
         ) as runtime:
-            events = await _collect_turn(runtime, "session-a", user_message)
+            events = await _collect_turn(runtime, user_message)
             follow_up_events = await _collect_turn(
                 runtime,
-                "session-a",
                 follow_up,
             )
 
@@ -289,16 +288,14 @@ def _stdout(result: dict[str, object]) -> str:
 
 async def _collect_turn(
     runtime: AgentRuntime,
-    session_id: str,
     message: UserMessage,
 ) -> tuple[ModelEvent, ...]:
+    if runtime._binding is None:
+        await runtime.new_session()
     return tuple(
         [
             event
-            async for event in runtime.run_turn(
-                session_id,
-                message,
-            )
+            async for event in runtime.run_turn(message)
         ]
     )
 

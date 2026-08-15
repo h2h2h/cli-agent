@@ -80,22 +80,29 @@ def test_runs_and_presents_one_agent_turn(
     stderr = StringIO()
     lifecycle: list[str] = []
     session_ids: list[str] = []
-    original_close_session = AgentRuntime.close_session
+    original_new_session = AgentRuntime.new_session
+    original_detach_session = AgentRuntime.detach_session
     original_close = AgentRuntime.close
 
-    async def tracking_close_session(
+    async def tracking_new_session(
         runtime: AgentRuntime,
-        session_id: str,
-    ) -> None:
+        *,
+        provider: object = None,
+    ) -> object:
+        session = await original_new_session(runtime, provider=provider)
+        session_ids.append(session.session_id)
+        return session
+
+    async def tracking_detach_session(runtime: AgentRuntime) -> None:
         lifecycle.append("session")
-        session_ids.append(session_id)
-        await original_close_session(runtime, session_id)
+        await original_detach_session(runtime)
 
     async def tracking_close(runtime: AgentRuntime) -> None:
         lifecycle.append("runtime")
         await original_close(runtime)
 
-    monkeypatch.setattr(AgentRuntime, "close_session", tracking_close_session)
+    monkeypatch.setattr(AgentRuntime, "new_session", tracking_new_session)
+    monkeypatch.setattr(AgentRuntime, "detach_session", tracking_detach_session)
     monkeypatch.setattr(AgentRuntime, "close", tracking_close)
 
     exit_code = asyncio.run(
@@ -294,22 +301,29 @@ def test_runs_multiple_interactive_turns_in_one_session(
     stderr = StringIO()
     lifecycle: list[str] = []
     session_ids: list[str] = []
-    original_close_session = AgentRuntime.close_session
+    original_new_session = AgentRuntime.new_session
+    original_detach_session = AgentRuntime.detach_session
     original_close = AgentRuntime.close
 
-    async def tracking_close_session(
+    async def tracking_new_session(
         runtime: AgentRuntime,
-        session_id: str,
-    ) -> None:
+        *,
+        provider: object = None,
+    ) -> object:
+        session = await original_new_session(runtime, provider=provider)
+        session_ids.append(session.session_id)
+        return session
+
+    async def tracking_detach_session(runtime: AgentRuntime) -> None:
         lifecycle.append("session")
-        session_ids.append(session_id)
-        await original_close_session(runtime, session_id)
+        await original_detach_session(runtime)
 
     async def tracking_close(runtime: AgentRuntime) -> None:
         lifecycle.append("runtime")
         await original_close(runtime)
 
-    monkeypatch.setattr(AgentRuntime, "close_session", tracking_close_session)
+    monkeypatch.setattr(AgentRuntime, "new_session", tracking_new_session)
+    monkeypatch.setattr(AgentRuntime, "detach_session", tracking_detach_session)
     monkeypatch.setattr(AgentRuntime, "close", tracking_close)
 
     exit_code = asyncio.run(
@@ -1120,21 +1134,18 @@ def test_interactive_interrupt_closes_session_and_runtime(
 
     provider = ScriptedModelProvider(script=())
     lifecycle: list[str] = []
-    original_close_session = AgentRuntime.close_session
+    original_detach_session = AgentRuntime.detach_session
     original_close = AgentRuntime.close
 
-    async def tracking_close_session(
-        runtime: AgentRuntime,
-        session_id: str,
-    ) -> None:
+    async def tracking_detach_session(runtime: AgentRuntime) -> None:
         lifecycle.append("session")
-        await original_close_session(runtime, session_id)
+        await original_detach_session(runtime)
 
     async def tracking_close(runtime: AgentRuntime) -> None:
         lifecycle.append("runtime")
         await original_close(runtime)
 
-    monkeypatch.setattr(AgentRuntime, "close_session", tracking_close_session)
+    monkeypatch.setattr(AgentRuntime, "detach_session", tracking_detach_session)
     monkeypatch.setattr(AgentRuntime, "close", tracking_close)
 
     with pytest.raises(KeyboardInterrupt):
@@ -1277,16 +1288,18 @@ class _TerminalOutput(StringIO):
 
 def _install_session_capture(monkeypatch) -> list[str]:
     sessions: list[str] = []
-    original_close_session = AgentRuntime.close_session
+    original_new_session = AgentRuntime.new_session
 
-    async def tracking_close_session(
+    async def tracking_new_session(
         runtime: AgentRuntime,
-        session_id: str,
-    ) -> None:
-        sessions.append(session_id)
-        await original_close_session(runtime, session_id)
+        *,
+        provider: object = None,
+    ) -> object:
+        session = await original_new_session(runtime, provider=provider)
+        sessions.append(session.session_id)
+        return session
 
-    monkeypatch.setattr(AgentRuntime, "close_session", tracking_close_session)
+    monkeypatch.setattr(AgentRuntime, "new_session", tracking_new_session)
     return sessions
 
 

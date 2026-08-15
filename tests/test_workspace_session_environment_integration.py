@@ -14,7 +14,6 @@ from cli_agent.runtime import (
     ContextPolicy,
     ModelCompletion,
     ModelEvent,
-    ModelProvider,
     ScriptedModelProvider,
     ToolCall,
     ToolCallReady,
@@ -71,7 +70,7 @@ def test_public_runtime_combines_workspace_session_and_host_environment(
             provider=provider_a,
             context_policy=_context_policy,
         )
-        await _collect_turn(runtime, "session-a", "export and inspect")
+        await _collect_turn(runtime, "export and inspect")
         assert _load_json(tmp_path / "a-first.json") == {
             "CLI_AGENT_API_KEY": "provider-secret",
             "M5_COLLISION": "session-collision",
@@ -85,13 +84,9 @@ def test_public_runtime_combines_workspace_session_and_host_environment(
             encoding="utf-8",
         )
         monkeypatch.setenv("M5_HOST", "host-later")
-        await _collect_turn(runtime, "session-a", "inspect again")
-        await _collect_turn(
-            runtime,
-            "session-b",
-            "inspect independently",
-            provider=provider_b,
-        )
+        await _collect_turn(runtime, "inspect again")
+        await runtime.new_session(provider=provider_b)
+        await _collect_turn(runtime, "inspect independently")
 
         assert _load_json(tmp_path / "a-second.json") == {
             "CLI_AGENT_API_KEY": "provider-secret",
@@ -108,13 +103,9 @@ def test_public_runtime_combines_workspace_session_and_host_environment(
         }
         assert _load_json(tmp_path / "b-first.json") == expected_workspace_session
 
-        await runtime.close_session("session-a")
-        await _collect_turn(
-            runtime,
-            "session-fresh",
-            "inspect fresh",
-            provider=fresh_provider,
-        )
+        await runtime.detach_session()
+        await runtime.new_session(provider=fresh_provider)
+        await _collect_turn(runtime, "inspect fresh")
         assert _load_json(tmp_path / "a-fresh.json") == expected_workspace_session
         assert os.environ["M5_COLLISION"] == "host-collision"
         assert "M5_SESSION" not in os.environ
@@ -133,7 +124,8 @@ def test_public_runtime_combines_workspace_session_and_host_environment(
             provider=later_provider,
             context_policy=_context_policy,
         )
-        await _collect_turn(later_runtime, "session-later", "inspect later Runtime")
+        await later_runtime.new_session()
+        await _collect_turn(later_runtime, "inspect later Runtime")
         assert _load_json(tmp_path / "later-runtime.json") == {
             "CLI_AGENT_API_KEY": "provider-secret",
             "M5_COLLISION": "workspace-collision",
@@ -209,19 +201,14 @@ def _scripted_provider(
 
 async def _collect_turn(
     runtime: AgentRuntime,
-    session_id: str,
     text: str,
-    *,
-    provider: ModelProvider | None = None,
 ) -> tuple[ModelEvent, ...]:
+    if runtime._binding is None:
+        await runtime.new_session()
     return tuple(
         [
             event
-            async for event in runtime.run_turn(
-                session_id,
-                UserMessage.text(text),
-                provider=provider,
-            )
+            async for event in runtime.run_turn(UserMessage.text(text))
         ]
     )
 

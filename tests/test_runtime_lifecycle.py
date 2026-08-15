@@ -105,7 +105,8 @@ def test_runtime_close_follows_rfc_close_order(tmp_path: Path, monkeypatch) -> N
             provider=provider,
             context_policy=_context_policy,
         )
-        async for _ in runtime.run_turn("session-a", UserMessage.text("A")):
+        await runtime.new_session()
+        async for _ in runtime.run_turn(UserMessage.text("A")):
             pass
         order: list[str] = []
         library = runtime._resources.snapshot.library
@@ -169,7 +170,8 @@ def test_kernel_close_failure_does_not_leak_resources(
             context_policy=_context_policy,
             on_diagnostic=received.append,
         )
-        async for _ in runtime.run_turn("session-a", UserMessage.text("A")):
+        await runtime.new_session()
+        async for _ in runtime.run_turn(UserMessage.text("A")):
             pass
 
         closed: list[str] = []
@@ -223,7 +225,7 @@ def test_runtime_close_rejects_new_turns_and_stays_idempotent(
 
         assert runtime.closed
         with pytest.raises(RuntimeClosedError, match="AgentRuntime is closed"):
-            async for _ in runtime.run_turn("session-a", UserMessage.text("late")):
+            async for _ in runtime.run_turn(UserMessage.text("late")):
                 pass
 
     asyncio.run(scenario())
@@ -253,11 +255,10 @@ def test_runtime_close_cancels_active_turn_before_closing_backend(
         )
         events: list[object] = []
 
+        await runtime.new_session()
+
         async def consume_turn() -> None:
-            async for event in runtime.run_turn(
-                "session-a",
-                UserMessage.text("wait"),
-            ):
+            async for event in runtime.run_turn(UserMessage.text("wait")):
                 events.append(event)
 
         turn_task = asyncio.create_task(consume_turn())
@@ -285,7 +286,8 @@ def test_runtime_close_from_turn_consumer_does_not_wait_on_itself(
             ),
             context_policy=_context_policy,
         )
-        turn = runtime.run_turn("session-a", UserMessage.text("close"))
+        await runtime.new_session()
+        turn = runtime.run_turn(UserMessage.text("close"))
 
         assert isinstance(await anext(turn), ModelCompletion)
         await asyncio.wait_for(runtime.close(), timeout=1)
@@ -389,10 +391,11 @@ def test_runtime_close_terminates_running_executions(tmp_path: Path) -> None:
             provider=provider,
             context_policy=_context_policy,
         )
-        async for _ in runtime.run_turn("session-a", UserMessage.text("run long")):
+        await runtime.new_session()
+        async for _ in runtime.run_turn(UserMessage.text("run long")):
             pass
 
-        kernel = next(iter(runtime._sessions.values())).kernel
+        kernel = runtime._binding.kernel
         state = next(iter(kernel._executions.values()))
         for _ in range(100):
             prepared = state.handle

@@ -440,12 +440,13 @@ def test_internal_summaries_stay_out_of_session_history(tmp_path: Path) -> None:
             context_policy=_context_policy,
         )
         await runtime._resources.snapshot.library._queue.join()  # type: ignore[union-attr]
+        await runtime.new_session()
         events = tuple(
-            [event async for event in runtime.run_turn("s", UserMessage.text("Hello"))]
+            [event async for event in runtime.run_turn(UserMessage.text("Hello"))]
         )
         assert len(events) == 1
 
-        history = runtime._sessions["s"].loop.history
+        history = runtime._binding.loop.history
         session_text = "\n".join(
             block.text
             for message in history

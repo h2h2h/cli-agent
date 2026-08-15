@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
-from cli_agent.errors import HostFacingError
 from cli_agent.errors.workspace import WorkspaceMismatchError
 from cli_agent.runtime import (
     AgentRuntime,
@@ -156,13 +155,12 @@ def _completion(message: AssistantMessage) -> ModelCompletion:
 
 async def _collect_turn(
     runtime: AgentRuntime,
-    session_id: str,
     message: str,
 ) -> tuple[object, ...]:
     return tuple(
         [
             event
-            async for event in runtime.run_turn(session_id, UserMessage.text(message))
+            async for event in runtime.run_turn(UserMessage.text(message))
         ]
     )
 
@@ -185,7 +183,8 @@ def test_workspace_mismatch_fails_closed_before_provider_or_tools(
             user_interaction=_user_interaction,
             context_policy=_context_policy,
         )
-        await _collect_turn(runtime_a, "session-x", "hello")
+        session = await runtime_a.new_session()
+        await _collect_turn(runtime_a, "hello")
         await runtime_a.close()
 
         runtime_b = await AgentRuntime.open(
@@ -196,13 +195,13 @@ def test_workspace_mismatch_fails_closed_before_provider_or_tools(
         )
         try:
             with pytest.raises(WorkspaceMismatchError) as raised:
-                await _collect_turn(runtime_b, "session-x", "hello")
+                await runtime_b.resume_session(session.session_id)
         finally:
             await runtime_b.close()
 
         assert raised.value.code == "workspace_mismatch"
         assert raised.value.details == {
-            "session_id": "session-x",
+            "session_id": session.session_id,
             "workspace_id": runtime_a._resources.workspace.id,
             "expected_workspace_id": runtime_b._resources.workspace.id,
         }
@@ -215,21 +214,17 @@ def test_workspace_mismatch_fails_closed_before_provider_or_tools(
     assert len(provider.requests) == 1
 
 
-def test_same_workspace_existing_session_still_requires_resume(
+def test_same_workspace_existing_session_resumes_explicitly(
     tmp_path: Path,
 ) -> None:
-    provider = ScriptedModelProvider(
-        script=((_completion(AssistantMessage.text("done")),),)
-    )
-
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
             workspace=tmp_path,
-            provider=provider,
+            provider=ScriptedModelProvider(script=()),
             user_interaction=_user_interaction,
             context_policy=_context_policy,
         )
-        await _collect_turn(runtime, "session-x", "hello")
+        session = await runtime.new_session()
         await runtime.close()
 
         resumed = await AgentRuntime.open(
@@ -239,11 +234,11 @@ def test_same_workspace_existing_session_still_requires_resume(
             context_policy=_context_policy,
         )
         try:
-            with pytest.raises(HostFacingError) as raised:
-                await _collect_turn(resumed, "session-x", "hello")
+            fresh = await resumed.new_session()
+            assert fresh.session_id != session.session_id
+            restored = await resumed.resume_session(session.session_id)
+            assert restored.session_id == session.session_id
         finally:
             await resumed.close()
-
-        assert raised.value.code == "session_already_exists"
 
     asyncio.run(scenario())

@@ -26,7 +26,6 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._environment.records import ExecutionRecord
 
 _user_interaction = _ScriptedInteraction("deny")
 _context_policy = ContextPolicy(
@@ -37,20 +36,13 @@ _context_policy = ContextPolicy(
 
 
 class _CoordinatedProvider:
-    def __init__(
-        self,
-        role: str,
-        first_calls: tuple[ToolCall, ...],
-    ) -> None:
-        self.role = role
-        self.first_calls = first_calls
-        self.peer: _CoordinatedProvider | None = None
+    """Serve one tool-call turn, capture results, then wait for release."""
+
+    def __init__(self, calls: tuple[ToolCall, ...]) -> None:
+        self.calls = calls
         self.initial_results_ready = asyncio.Event()
-        self.ready_for_close = asyncio.Event()
         self.finish_allowed = asyncio.Event()
         self.initial_results: tuple[ToolResult, ...] | None = None
-        self.foreign_calls: tuple[ToolCall, ...] = ()
-        self.foreign_results: tuple[ToolResult, ...] | None = None
         self._requests: list[ModelRequest] = []
 
     @property
@@ -64,65 +56,22 @@ class _CoordinatedProvider:
         stage = len(self._requests)
         self._requests.append(request)
         if stage == 0:
-            async for event in _tool_completion(self.first_calls):
+            async for event in _tool_completion(self.calls):
                 yield event
             return
 
         if stage == 1:
             self.initial_results = _last_tool_results(request)
             self.initial_results_ready.set()
-            if self.role == "session-b":
-                await self.finish_allowed.wait()
-                async for event in _text_completion("Session B completed."):
-                    yield event
-                return
-
-            if self.peer is None:
-                raise AssertionError("Session A provider has no peer")
-            await self.peer.initial_results_ready.wait()
-            if self.peer.initial_results is None:
-                raise AssertionError("Session B results were not captured")
-            foreign_exec_id = str(
-                _result_output(self.peer.initial_results[0])["exec_id"]
-            )
-            self.foreign_calls = (
-                ToolCall(
-                    call_id="a_output_foreign",
-                    name="output",
-                    arguments={"exec_id": foreign_exec_id},
-                ),
-                ToolCall(
-                    call_id="a_output_missing",
-                    name="output",
-                    arguments={"exec_id": "missing-execution"},
-                ),
-                ToolCall(
-                    call_id="a_kill_foreign",
-                    name="kill",
-                    arguments={"exec_id": foreign_exec_id},
-                ),
-                ToolCall(
-                    call_id="a_kill_missing",
-                    name="kill",
-                    arguments={"exec_id": "missing-execution"},
-                ),
-            )
-            async for event in _tool_completion(self.foreign_calls):
-                yield event
-            return
-
-        if self.role == "session-a" and stage == 2:
-            self.foreign_results = _last_tool_results(request)
-            self.ready_for_close.set()
             await self.finish_allowed.wait()
-            async for event in _text_completion("Old Session A completed."):
+            async for event in _text_completion("Session completed."):
                 yield event
             return
 
-        raise AssertionError(f"unexpected {self.role} provider stage: {stage}")
+        raise AssertionError(f"unexpected provider stage: {stage}")
 
 
-def test_public_runtime_proves_concurrent_session_scheduling(
+def test_public_runtime_proves_single_active_binding_isolation(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -135,9 +84,6 @@ def test_public_runtime_proves_concurrent_session_scheduling(
         a_release = tmp_path / "runtime-a-release"
         a_queued = tmp_path / "runtime-a-queued"
         a_overflow = tmp_path / "runtime-a-overflow"
-        b_started = tmp_path / "runtime-b-started"
-        b_release = tmp_path / "runtime-b-release"
-        b_queued = tmp_path / "runtime-b-queued"
         fresh_proof = tmp_path / "runtime-a-fresh"
         calls_a = (
             ToolCall(
@@ -164,25 +110,7 @@ def test_public_runtime_proves_concurrent_session_scheduling(
                 arguments={"command": "rm denied-proof", "wait_ms": 0},
             ),
         )
-        calls_b = (
-            ToolCall(
-                call_id="b_exec_running",
-                name="exec",
-                arguments={
-                    "command": _blocking_command(b_started, b_release),
-                    "wait_ms": 0,
-                },
-            ),
-            ToolCall(
-                call_id="b_exec_queued",
-                name="exec",
-                arguments={"command": _touch_command(b_queued), "wait_ms": 0},
-            ),
-        )
-        provider_a = _CoordinatedProvider("session-a", calls_a)
-        provider_b = _CoordinatedProvider("session-b", calls_b)
-        provider_a.peer = provider_b
-        provider_b.peer = provider_a
+        provider_a = _CoordinatedProvider(calls_a)
         default_provider = ScriptedModelProvider(script=())
         runtime = await AgentRuntime.open(
             user_interaction=_user_interaction,
@@ -196,129 +124,56 @@ def test_public_runtime_proves_concurrent_session_scheduling(
             context_policy=_context_policy,
         )
         turn_a: asyncio.Task[tuple[ModelEvent, ...]] | None = None
-        turn_b: asyncio.Task[tuple[ModelEvent, ...]] | None = None
         try:
-            user_a = UserMessage.text("Run coordinated Session A work")
-            user_b = UserMessage.text("Run coordinated Session B work")
-            turn_a = asyncio.create_task(
-                _collect_turn(
-                    runtime,
-                    "session-a",
-                    user_a,
-                    provider=provider_a,
-                )
-            )
-            turn_b = asyncio.create_task(
-                _collect_turn(
-                    runtime,
-                    "session-b",
-                    user_b,
-                    provider=provider_b,
-                )
-            )
+            await runtime.new_session(provider=provider_a)
+            user_a = UserMessage.text("Run coordinated Session work")
+            turn_a = asyncio.create_task(_collect_turn(runtime, user_a))
 
-            await asyncio.wait_for(provider_a.ready_for_close.wait(), timeout=2)
+            await asyncio.wait_for(provider_a.initial_results_ready.wait(), timeout=2)
             await _wait_for_path(a_started)
-            await _wait_for_path(b_started)
-            assert not a_release.exists() and not b_release.exists()
-            assert not a_queued.exists() and not b_queued.exists()
-            assert not a_overflow.exists()
+            assert not a_release.exists()
+            assert not a_queued.exists() and not a_overflow.exists()
 
             if provider_a.initial_results is None:
-                raise AssertionError("Session A initial results were not captured")
-            if provider_b.initial_results is None:
-                raise AssertionError("Session B initial results were not captured")
-            if provider_a.foreign_results is None:
-                raise AssertionError("Session A foreign results were not captured")
-            initial_a = provider_a.initial_results
-            initial_b = provider_b.initial_results
-            foreign_a = provider_a.foreign_results
+                raise AssertionError("initial results were not captured")
+            initial = provider_a.initial_results
 
-            assert [_result_status(result) for result in initial_a[:3]] == [
+            assert [_result_status(result) for result in initial[:3]] == [
                 "running",
                 "queued",
                 "queued",
             ]
-            assert _result_error_code(initial_a[3]) == "policy_denied"
-            assert [_result_status(result) for result in initial_b] == [
-                "running",
-                "queued",
-            ]
-            assert [result.call_id for result in foreign_a] == [
-                call.call_id for call in provider_a.foreign_calls
-            ]
-            assert [_result_error(result) for result in foreign_a] == [
-                {
-                    "ok": False,
-                    "code": "unknown_execution",
-                    "message": "execution not found",
-                }
-            ] * 4
-
-            _assert_request_isolation(
-                provider_a.requests,
-                own_user=user_a,
-                foreign_user=user_b,
-            )
-            _assert_request_isolation(
-                provider_b.requests,
-                own_user=user_b,
-                foreign_user=user_a,
-            )
+            assert _result_error_code(initial[3]) == "policy_denied"
             assert _tool_result_ids(provider_a.requests[1]) == [
                 call.call_id for call in calls_a
             ]
-            assert _tool_result_ids(provider_a.requests[2]) == [
-                call.call_id for call in provider_a.foreign_calls
-            ]
-            assert _tool_result_ids(provider_b.requests[1]) == [
-                call.call_id for call in calls_b
-            ]
+            _assert_request_isolation(provider_a.requests, own_user=user_a)
             system_a = provider_a.requests[0].messages[0]
-            system_b = provider_b.requests[0].messages[0]
             assert isinstance(system_a, SystemMessage)
-            assert isinstance(system_b, SystemMessage)
-            assert system_a is not system_b
 
-            old_session_a = runtime._sessions["session-a"]
-            old_kernel_a = old_session_a.kernel
+            old_kernel_a = runtime._binding.kernel
             old_states_a = tuple(old_kernel_a._executions.values())
             old_handles_a = tuple(state.exec_id for state in old_states_a)
-            session_b = runtime._sessions["session-b"]
-            kernel_b = session_b.kernel
-            running_b_id = str(_result_output(initial_b[0])["exec_id"])
-            assert kernel_b._executions[running_b_id].status == "running"
+            running_a_id = str(_result_output(initial[0])["exec_id"])
+            assert old_kernel_a._executions[running_a_id].status == "running"
 
-            await runtime.close_session("session-a")
+            await runtime.detach_session()
             assert old_kernel_a._closed is True
             assert old_kernel_a._executions == {}
             assert all(
-                state.status in {"killed", "exited", "failed"} for state in old_states_a
+                state.status in {"killed", "exited", "failed"}
+                for state in old_states_a
             )
             assert all(
                 state.completion_task is None or state.completion_task.done()
                 for state in old_states_a
             )
             assert not a_queued.exists() and not a_overflow.exists()
-            assert kernel_b._executions[running_b_id].status == "running"
 
             assert turn_a.cancelled()
             with pytest.raises(asyncio.CancelledError):
                 await turn_a
-
-            b_release.touch()
-            await _wait_for_path(b_queued)
-            for result in initial_b:
-                await _wait_for_terminal_state(
-                    kernel_b._executions[str(_result_output(result)["exec_id"])]
-                )
-            provider_b.finish_allowed.set()
-            events_b = await asyncio.wait_for(turn_b, timeout=0.5)
-            assert isinstance(events_b[-1], ModelCompletion)
-            assert [
-                kernel_b._executions[str(_result_output(result)["exec_id"])].status
-                for result in initial_b
-            ] == ["exited", "exited"]
+            turn_a = None
 
             old_handle = old_handles_a[0]
             fresh_calls = (
@@ -333,13 +188,18 @@ def test_public_runtime_proves_concurrent_session_scheduling(
                     arguments={"exec_id": "missing-execution"},
                 ),
                 ToolCall(
+                    call_id="fresh_kill_old",
+                    name="kill",
+                    arguments={"exec_id": old_handle},
+                ),
+                ToolCall(
                     call_id="fresh_exec",
                     name="exec",
                     arguments={"command": _touch_command(fresh_proof)},
                 ),
             )
             fresh_tool_message = AssistantMessage(content=fresh_calls)
-            fresh_final = AssistantMessage.text("Fresh Session A completed.")
+            fresh_final = AssistantMessage.text("Fresh Session completed.")
             fresh_provider = ScriptedModelProvider(
                 script=(
                     (
@@ -350,7 +210,7 @@ def test_public_runtime_proves_concurrent_session_scheduling(
                         ),
                     ),
                     (
-                        TextDelta(text="Fresh Session A completed."),
+                        TextDelta(text="Fresh Session completed."),
                         ModelCompletion(
                             message=fresh_final,
                             finish_reason="stop",
@@ -358,13 +218,9 @@ def test_public_runtime_proves_concurrent_session_scheduling(
                     ),
                 )
             )
-            fresh_user = UserMessage.text("Start a fresh Session A")
-            fresh_events = await _collect_turn(
-                runtime,
-                "session-a-fresh",
-                fresh_user,
-                provider=fresh_provider,
-            )
+            fresh_user = UserMessage.text("Start a fresh Session")
+            await runtime.new_session(provider=fresh_provider)
+            fresh_events = await _collect_turn(runtime, fresh_user)
             fresh_results = _last_tool_results(fresh_provider.requests[1])
 
             assert isinstance(fresh_events[-1], ModelCompletion)
@@ -376,58 +232,52 @@ def test_public_runtime_proves_concurrent_session_scheduling(
                 fresh_system,
                 fresh_user,
             )
-            assert [_result_error(result) for result in fresh_results[:2]] == [
+            assert [_result_error(result) for result in fresh_results[:3]] == [
                 {
                     "ok": False,
                     "code": "unknown_execution",
                     "message": "execution not found",
                 }
-            ] * 2
-            assert _result_status(fresh_results[2]) == "exited"
-            fresh_exec_id = str(_result_output(fresh_results[2])["exec_id"])
+            ] * 3
+            assert _result_status(fresh_results[3]) == "exited"
+            fresh_exec_id = str(_result_output(fresh_results[3])["exec_id"])
             assert fresh_exec_id not in old_handles_a
             assert fresh_proof.exists()
-            fresh_session = runtime._sessions["session-a-fresh"]
-            assert fresh_session is not old_session_a
-            assert fresh_session.kernel is not old_kernel_a
+            fresh_kernel = runtime._binding.kernel
+            assert fresh_kernel is not old_kernel_a
             assert (
-                fresh_session.kernel._executions[fresh_exec_id].submission_sequence == 0
+                fresh_kernel._executions[fresh_exec_id].submission_sequence == 0
             )
             fresh_provider.assert_exhausted()
             default_provider.assert_exhausted()
 
-            all_requests = (
-                *provider_a.requests,
-                *provider_b.requests,
-                *fresh_provider.requests,
-            )
-            for request in all_requests:
+            for request in provider_a.requests:
+                assert [tool.name for tool in request.tools] == [
+                    "exec",
+                    "output",
+                    "kill",
+                ]
+            for request in fresh_provider.requests:
                 assert [tool.name for tool in request.tools] == [
                     "exec",
                     "output",
                     "kill",
                 ]
 
-            active_sessions = tuple(runtime._sessions.values())
-            active_kernels = tuple(session.kernel for session in active_sessions)
             await runtime.close()
 
             assert runtime.closed
-            assert runtime._sessions == {}
-            assert all(kernel._closed for kernel in active_kernels)
-            assert all(not kernel._executions for kernel in active_kernels)
+            assert runtime._binding is None
+            assert fresh_kernel._closed
+            assert not fresh_kernel._executions
         finally:
             provider_a.finish_allowed.set()
-            provider_b.finish_allowed.set()
             a_release.touch(exist_ok=True)
-            b_release.touch(exist_ok=True)
-            for turn in (turn_a, turn_b):
-                if turn is not None and not turn.done():
-                    turn.cancel()
-            for turn in (turn_a, turn_b):
-                if turn is not None:
-                    with suppress(asyncio.CancelledError, Exception):
-                        await turn
+            if turn_a is not None and not turn_a.done():
+                turn_a.cancel()
+            if turn_a is not None:
+                with suppress(asyncio.CancelledError, Exception):
+                    await turn_a
             await runtime.close()
 
     asyncio.run(scenario())
@@ -454,19 +304,12 @@ async def _text_completion(text: str) -> AsyncIterator[ModelEvent]:
 
 async def _collect_turn(
     runtime: AgentRuntime,
-    session_id: str,
     message: UserMessage,
-    *,
-    provider=None,
 ) -> tuple[ModelEvent, ...]:
     return tuple(
         [
             event
-            async for event in runtime.run_turn(
-                session_id,
-                message,
-                provider=provider,
-            )
+            async for event in runtime.run_turn(message)
         ]
     )
 
@@ -506,11 +349,9 @@ def _assert_request_isolation(
     requests: tuple[ModelRequest, ...],
     *,
     own_user: UserMessage,
-    foreign_user: UserMessage,
 ) -> None:
     for request in requests:
         assert own_user in request.messages
-        assert foreign_user not in request.messages
 
 
 def _python_command(source: str) -> str:
@@ -539,16 +380,6 @@ async def _wait_for_path(path: Path) -> None:
             return
         await asyncio.sleep(0.01)
     raise AssertionError(f"{path} was not created")
-
-
-async def _wait_for_terminal_state(
-    state: ExecutionRecord,
-) -> None:
-    for _ in range(100):
-        if state.is_terminal:
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"Execution {state.exec_id} did not terminate")
 
 
 def _deny_network(*args: object, **kwargs: object) -> None:

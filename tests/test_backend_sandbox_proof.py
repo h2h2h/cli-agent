@@ -787,9 +787,10 @@ def test_full_runtime_runs_on_the_sandbox_backend(
         assert runtime._resources.snapshot.tools.get("marker").valid
         assert runtime._resources.snapshot.skills.get("review") is not None
 
-        async for _ in runtime.run_turn("session-a", UserMessage.text("hi")):
+        await runtime.new_session()
+        async for _ in runtime.run_turn(UserMessage.text("hi")):
             pass
-        kernel = next(iter(runtime._sessions.values())).kernel
+        kernel = runtime._binding.kernel
         files = runtime._resources.backend._files
         try:
             shell = _output(

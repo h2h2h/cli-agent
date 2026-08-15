@@ -280,9 +280,10 @@ def test_additional_sessions_do_not_reconcile_mcp_again(
             context_policy=_context_policy,
         ) as runtime:
             assert calls == 1
-            async for _ in runtime.run_turn("session-a", UserMessage.text("hello")):
+            await runtime.new_session()
+            async for _ in runtime.run_turn(UserMessage.text("hello")):
                 pass
-            async for _ in runtime.run_turn("session-b", UserMessage.text("hello")):
+            async for _ in runtime.run_turn(UserMessage.text("hello")):
                 pass
             assert calls == 1
             provider.assert_exhausted()

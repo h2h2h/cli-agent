@@ -1,10 +1,11 @@
 """Runtime ownership tests for one shared Local Backend Workspace.
 
-These tests prove RFC-0012 issue 02 acceptance: one ``AgentRuntime`` owns
-exactly one Local Backend Workspace, every Session Kernel borrows the same
-instance without any BackendSession, Workspace files are shared across
-Sessions while cwd stays independent, and Backend open failure fails closed
-without creating a Runtime or attempting any fallback.
+These tests prove the RFC-0018 active-binding semantics: one
+``AgentRuntime`` owns exactly one Local Backend Workspace, every Session
+binding borrows the same Backend instance without any BackendSession,
+Workspace files are shared across bindings while cwd stays per-binding
+(resume starts from the Workspace root), and Backend open failure fails
+closed without creating a Runtime or attempting any fallback.
 """
 
 import asyncio
@@ -55,7 +56,7 @@ def test_runtime_owns_exactly_one_local_backend_workspace(tmp_path: Path) -> Non
     asyncio.run(scenario())
 
 
-def test_multiple_kernels_borrow_the_same_backend_workspace(tmp_path: Path) -> None:
+def test_each_binding_borrows_the_same_backend_workspace(tmp_path: Path) -> None:
     provider = ScriptedModelProvider(
         script=(
             (_completion(AssistantMessage.text("A")),),
@@ -71,20 +72,27 @@ def test_multiple_kernels_borrow_the_same_backend_workspace(tmp_path: Path) -> N
             context_policy=_context_policy,
         )
         try:
-            await _collect_turn(runtime, "session-a", "A")
-            await _collect_turn(runtime, "session-b", "B")
+            await _new_session(runtime)
+            await _collect_turn(runtime, "A")
+            first_kernel = runtime._binding.kernel
+            await runtime.detach_session()
+
+            await _new_session(runtime)
+            await _collect_turn(runtime, "B")
+            second_kernel = runtime._binding.kernel
 
             backend = runtime._resources.backend
-            assert len(runtime._sessions) == 2
-            assert runtime._sessions["session-a"].kernel._backend is backend
-            assert runtime._sessions["session-b"].kernel._backend is backend
+            assert first_kernel._backend is backend
+            assert second_kernel._backend is backend
+            assert runtime._binding is not None
+            assert runtime._binding.kernel is second_kernel
         finally:
             await runtime.close()
 
     asyncio.run(scenario())
 
 
-def test_sessions_share_workspace_files_but_keep_independent_cwd(
+def test_bindings_share_workspace_files_but_cwd_is_per_binding(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "sub").mkdir()
@@ -93,7 +101,7 @@ def test_sessions_share_workspace_files_but_keep_independent_cwd(
         _exec_call("pwd-b", "pwd"),
         _exec_call("write", "echo hi > shared.txt"),
         _exec_call("pwd-a", "pwd"),
-        _exec_call("cat", "cat ../shared.txt"),
+        _exec_call("cat", "cat shared.txt"),
     )
     provider = ScriptedModelProvider(
         script=tuple(entry for call in calls for entry in _call_script(call))
@@ -107,15 +115,22 @@ def test_sessions_share_workspace_files_but_keep_independent_cwd(
             context_policy=_context_policy,
         )
         try:
-            await _collect_turn(runtime, "session-a", "Enter sub")
-            await _collect_turn(runtime, "session-b", "Show cwd")
-            await _collect_turn(runtime, "session-b", "Write shared file")
-            await _collect_turn(runtime, "session-a", "Show cwd")
-            await _collect_turn(runtime, "session-a", "Read shared file")
+            first = await runtime.new_session()
+            await _collect_turn(runtime, "Enter sub")
+            await runtime.detach_session()
+
+            await runtime.new_session()
+            await _collect_turn(runtime, "Show cwd")
+            await _collect_turn(runtime, "Write shared file")
+            await runtime.detach_session()
+
+            await runtime.resume_session(first.session_id)
+            await _collect_turn(runtime, "Show cwd")
+            await _collect_turn(runtime, "Read shared file")
         finally:
             await runtime.close()
 
-        assert _stdout(provider, "pwd-a") == str(tmp_path / "sub")
+        assert _stdout(provider, "pwd-a") == str(tmp_path)
         assert _stdout(provider, "pwd-b") == str(tmp_path)
         assert _stdout(provider, "cat") == "hi"
         assert (tmp_path / "shared.txt").exists()
@@ -196,10 +211,13 @@ def _stdout(provider: ScriptedModelProvider, call_id: str) -> str:
     raise AssertionError(f"no stdout recorded for call: {call_id}")
 
 
+async def _new_session(runtime: AgentRuntime) -> None:
+    await runtime.new_session()
+
+
 async def _collect_turn(
     runtime: AgentRuntime,
-    session_id: str,
     message: str,
 ) -> None:
-    async for _ in runtime.run_turn(session_id, UserMessage.text(message)):
+    async for _ in runtime.run_turn(UserMessage.text(message)):
         pass

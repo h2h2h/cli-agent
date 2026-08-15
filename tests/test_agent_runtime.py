@@ -7,7 +7,7 @@ from interaction_fakes import _ScriptedInteraction
 from policy_fakes import _DenyExecutablePolicy
 
 import cli_agent.runtime.runtime as runtime_module
-from cli_agent.errors import HostFacingError
+from cli_agent.errors import RuntimeStateError
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -139,7 +139,8 @@ def test_host_configures_runtime_lifetime_executable_deny_set(
             ),
             context_policy=_context_policy,
         ) as runtime:
-            await _collect_turn(runtime, "session", UserMessage.text("Run echo"))
+            await _new_session(runtime)
+            await _collect_turn(runtime, UserMessage.text("Run echo"))
 
         result_message = provider.requests[1].messages[-1]
         assert isinstance(result_message, ToolResultMessage)
@@ -195,23 +196,20 @@ def test_passes_parallel_command_authorization_to_kernel(
             parallel_commands=frozenset({"cat", "rg"}),
             context_policy=_context_policy,
         )
-        await _collect_turn(
-            default_runtime,
-            "default",
-            UserMessage.text("default"),
-        )
-        await _collect_turn(
-            configured_runtime,
-            "configured",
-            UserMessage.text("configured"),
-        )
+        await _new_session(default_runtime)
+        await _collect_turn(default_runtime, UserMessage.text("default"))
+        await _new_session(configured_runtime)
+        await _collect_turn(configured_runtime, UserMessage.text("configured"))
 
         assert [
             kernel.parallel_commands for kernel in _TrackingEnvironmentKernel.instances
         ] == [frozenset(), frozenset({"cat", "rg"})]
         assert [
             kernel.session_id for kernel in _TrackingEnvironmentKernel.instances
-        ] == ["default", "configured"]
+        ] != ["default", "configured"]
+        assert len(
+            {kernel.session_id for kernel in _TrackingEnvironmentKernel.instances}
+        ) == 2
 
         await default_runtime.close()
         await configured_runtime.close()
@@ -276,13 +274,9 @@ def test_closes_new_kernel_when_agent_loop_construction_fails(
         )
 
         with pytest.raises(OpenFailure):
-            await _collect_turn(
-                runtime,
-                "session-a",
-                UserMessage.text("fail during Session construction"),
-            )
+            await runtime.new_session()
 
-        assert runtime._sessions == {}
+        assert runtime._binding is None
         assert len(_TrackingEnvironmentKernel.instances) == 1
         assert _TrackingEnvironmentKernel.instances[0].close_count == 1
         await runtime.close()
@@ -311,18 +305,9 @@ def test_reuses_session_history_and_bound_provider(tmp_path: Path) -> None:
             context_policy=_context_policy,
         )
 
-        first_events = await _collect_turn(
-            runtime,
-            "session-a",
-            first_user,
-            provider=session_provider,
-        )
-        second_events = await _collect_turn(
-            runtime,
-            "session-a",
-            second_user,
-            provider=default_provider,
-        )
+        await _new_session(runtime, provider=session_provider)
+        first_events = await _collect_turn(runtime, first_user)
+        second_events = await _collect_turn(runtime, second_user)
 
         assert first_events == (_completion(first_assistant),)
         assert second_events == (_completion(second_assistant),)
@@ -347,7 +332,7 @@ def test_reuses_session_history_and_bound_provider(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_serializes_concurrent_turns_on_the_same_session(tmp_path: Path) -> None:
+def test_second_concurrent_turn_is_rejected_while_running(tmp_path: Path) -> None:
     class PausingProvider:
         def __init__(self) -> None:
             self.entered = asyncio.Event()
@@ -376,43 +361,46 @@ def test_serializes_concurrent_turns_on_the_same_session(tmp_path: Path) -> None
             user_interaction=_user_interaction,
             context_policy=_context_policy,
         )
+        await _new_session(runtime)
         first_turn = asyncio.create_task(
-            _collect_turn(runtime, "session-a", UserMessage.text("First"))
+            _collect_turn(runtime, UserMessage.text("First"))
         )
         await provider.entered.wait()
-        second_turn = asyncio.create_task(
-            _collect_turn(runtime, "session-a", UserMessage.text("Second"))
-        )
-        await asyncio.sleep(0)
+        with pytest.raises(RuntimeStateError) as raised:
+            await _collect_turn(runtime, UserMessage.text("Second"))
+        assert raised.value.code == "runtime_state"
+        assert raised.value.details == {
+            "action": "run_turn",
+            "state": "running_turn",
+        }
         assert len(provider.requests) == 1
 
         provider.release.set()
-        first_events, second_events = await asyncio.gather(first_turn, second_turn)
+        first_events = await first_turn
 
         assert first_events == (_completion(AssistantMessage.text("Done")),)
-        assert second_events == (_completion(AssistantMessage.text("Done")),)
-        assert len(provider.requests) == 2
+        assert len(provider.requests) == 1
         system_message = provider.requests[0].messages[0]
         assert provider.requests[0].messages == (
             system_message,
             UserMessage.text("First"),
-        )
-        assert provider.requests[1].messages == (
-            system_message,
-            UserMessage.text("First"),
-            AssistantMessage.text("Done"),
-            UserMessage.text("Second"),
         )
         await runtime.close()
 
     asyncio.run(scenario())
 
 
-def test_reusing_detached_session_id_requires_resume(tmp_path: Path) -> None:
+def test_detached_session_must_be_resumed_explicitly(tmp_path: Path) -> None:
     first_user = UserMessage.text("Before close")
     second_user = UserMessage.text("After close")
     first_assistant = AssistantMessage.text("Old state")
-    provider = ScriptedModelProvider(script=((_completion(first_assistant),),))
+    second_assistant = AssistantMessage.text("New state")
+    provider = ScriptedModelProvider(
+        script=(
+            (_completion(first_assistant),),
+            (_completion(second_assistant),),
+        )
+    )
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
@@ -422,22 +410,36 @@ def test_reusing_detached_session_id_requires_resume(tmp_path: Path) -> None:
             context_policy=_context_policy,
         )
 
-        await _collect_turn(runtime, "session-a", first_user)
-        first_session = runtime._sessions["session-a"]
-        first_kernel = first_session.kernel
-        await runtime.close_session("session-a")
-        await runtime.close_session("session-a")
-        await runtime.close_session("unknown")
-        with pytest.raises(HostFacingError) as raised:
-            await _collect_turn(runtime, "session-a", second_user)
+        session = await runtime.new_session()
+        await _collect_turn(runtime, first_user)
+        first_kernel = runtime._binding.kernel
+        await runtime.detach_session()
+        await runtime.detach_session()
+
+        with pytest.raises(RuntimeStateError) as raised:
+            await _collect_turn(runtime, second_user)
+        assert raised.value.details == {
+            "action": "run_turn",
+            "state": "no_session",
+        }
+        assert first_kernel._closed is True
+        assert runtime._binding is None
+
+        resumed = await runtime.resume_session(session.session_id)
+        assert resumed.session_id == session.session_id
+        assert resumed.revision == 2
+        second_events = await _collect_turn(runtime, second_user)
+        assert second_events == (_completion(second_assistant),)
 
         first_system = provider.requests[0].messages[0]
         assert isinstance(first_system, SystemMessage)
         assert provider.requests[0].messages == (first_system, first_user)
-        assert raised.value.code == "session_already_exists"
-        assert raised.value.details == {"session_id": "session-a"}
-        assert first_kernel._closed is True
-        assert "session-a" not in runtime._sessions
+        assert provider.requests[1].messages == (
+            first_system,
+            first_user,
+            first_assistant,
+            second_user,
+        )
         provider.assert_exhausted()
         await runtime.close()
 
@@ -460,7 +462,8 @@ def test_assembles_workspace_and_optional_host_instruction(
             context_policy=_context_policy,
         )
 
-        await _collect_turn(runtime, "session-a", UserMessage.text("Work"))
+        await _new_session(runtime)
+        await _collect_turn(runtime, UserMessage.text("Work"))
 
         system_message = provider.requests[0].messages[0]
         assert isinstance(system_message, SystemMessage)
@@ -506,8 +509,11 @@ def test_runtime_closes_every_session_kernel(
             provider=provider,
             context_policy=_context_policy,
         )
-        await _collect_turn(runtime, "session-a", UserMessage.text("A"))
-        await _collect_turn(runtime, "session-b", UserMessage.text("B"))
+        await _new_session(runtime)
+        await _collect_turn(runtime, UserMessage.text("A"))
+        await runtime.detach_session()
+        await _new_session(runtime)
+        await _collect_turn(runtime, UserMessage.text("B"))
 
         await runtime.close()
         await runtime.close()
@@ -520,9 +526,10 @@ def test_runtime_closes_every_session_kernel(
             ["kernel.close"],
             ["kernel.close"],
         ]
-        await runtime.close_session("session-a")
         with pytest.raises(RuntimeClosedError, match="AgentRuntime is closed"):
-            await _collect_turn(runtime, "session-a", UserMessage.text("closed"))
+            await runtime.detach_session()
+        with pytest.raises(RuntimeClosedError, match="AgentRuntime is closed"):
+            await _collect_turn(runtime, UserMessage.text("closed"))
 
     asyncio.run(scenario())
 
@@ -557,7 +564,7 @@ def test_runtime_holds_single_resource_aggregate(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_sessions_borrow_the_same_workspace_resources(
+def test_each_binding_borrows_the_same_workspace_resources(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -581,8 +588,11 @@ def test_sessions_borrow_the_same_workspace_resources(
             user_interaction=_user_interaction,
             context_policy=_context_policy,
         )
-        await _collect_turn(runtime, "session-a", UserMessage.text("A"))
-        await _collect_turn(runtime, "session-b", UserMessage.text("B"))
+        await _new_session(runtime)
+        await _collect_turn(runtime, UserMessage.text("A"))
+        await runtime.detach_session()
+        await _new_session(runtime)
+        await _collect_turn(runtime, UserMessage.text("B"))
 
         assert len(_TrackingEnvironmentKernel.instances) == 2
         first, second = _TrackingEnvironmentKernel.instances
@@ -623,8 +633,11 @@ def test_each_session_gets_an_independent_environment_copy(
             user_interaction=_user_interaction,
             context_policy=_context_policy,
         )
-        await _collect_turn(runtime, "session-a", UserMessage.text("A"))
-        await _collect_turn(runtime, "session-b", UserMessage.text("B"))
+        await _new_session(runtime)
+        await _collect_turn(runtime, UserMessage.text("A"))
+        await runtime.detach_session()
+        await _new_session(runtime)
+        await _collect_turn(runtime, UserMessage.text("B"))
 
         first, second = _TrackingEnvironmentKernel.instances
         assert first.base_env == {"VALUE": "shared"}
@@ -661,9 +674,11 @@ def test_runtime_close_only_closes_session_owned_state(
             context_policy=_context_policy,
         )
         resources = runtime._resources
-        await _collect_turn(runtime, "session-a", UserMessage.text("A"))
-        await _collect_turn(runtime, "session-b", UserMessage.text("B"))
-        await runtime.close_session("session-a")
+        await _new_session(runtime)
+        await _collect_turn(runtime, UserMessage.text("A"))
+        await runtime.detach_session()
+        await _new_session(runtime)
+        await _collect_turn(runtime, UserMessage.text("B"))
 
         assert [
             kernel.close_count for kernel in _TrackingEnvironmentKernel.instances
@@ -734,7 +749,8 @@ def test_host_owned_dependencies_stay_outside_the_aggregate(
             on_diagnostic=received.append,
             context_policy=_context_policy,
         )
-        await _collect_turn(runtime, "session-a", UserMessage.text("Work"))
+        await _new_session(runtime)
+        await _collect_turn(runtime, UserMessage.text("Work"))
         await runtime.close()
 
         field_names = set(_RuntimeResources.__dataclass_fields__)
@@ -806,20 +822,22 @@ def _completion(message: AssistantMessage) -> ModelCompletion:
     return ModelCompletion(message=message, finish_reason="stop")
 
 
-async def _collect_turn(
+async def _new_session(
     runtime: AgentRuntime,
-    session_id: str,
-    message: UserMessage,
     *,
     provider: ModelProvider | None = None,
+) -> str:
+    session = await runtime.new_session(provider=provider)
+    return session.session_id
+
+
+async def _collect_turn(
+    runtime: AgentRuntime,
+    message: UserMessage,
 ) -> tuple[ModelEvent, ...]:
     return tuple(
         [
             event
-            async for event in runtime.run_turn(
-                session_id,
-                message,
-                provider=provider,
-            )
+            async for event in runtime.run_turn(message)
         ]
     )

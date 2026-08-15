@@ -1,18 +1,44 @@
-"""Host-facing Runtime lifecycle."""
+"""Host-facing Runtime lifecycle with one active session binding.
+
+The Runtime is the composition root and the owner of the active-session
+state machine (RFC-0018): it never binds two Sessions at once. Durable
+``Session`` data stays in the SessionStore; the Runtime owns the live
+binding (ContextEngine + EnvironmentKernel + AgentLoop), the turn task
+reference, and the lifecycle locks.
+
+State transitions::
+
+    NO_SESSION --new/resume--> REPLACING --attach--> ACTIVE_IDLE
+    ACTIVE_IDLE --run_turn--> RUNNING_TURN --complete--> ACTIVE_IDLE
+    ACTIVE_IDLE/RUNNING_TURN --new/resume--> REPLACING (cancel + join turn,
+        detach current binding, attach target)
+    ACTIVE_IDLE/RUNNING_TURN --detach--> NO_SESSION
+    any non-terminal --close--> CLOSING --done--> CLOSED
+
+Lifecycle operations are serialized by ``_lifecycle_op_lock``; the short
+``_state_lock`` only protects the state and the turn-task reference, and
+is never held across a long await.
+"""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
+import threading
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from types import TracebackType
-from typing import Any
+from typing import Any, Coroutine
+from uuid import uuid4
 
-from cli_agent.errors import HostFacingError, error_boundary
-from cli_agent.errors.session import SessionConflictError
-from cli_agent.errors.workspace import WorkspaceMismatchError
+from cli_agent.errors import (
+    RuntimeStateError,
+    SessionArchivedError,
+    WorkspaceMismatchError,
+    error_boundary,
+)
 from cli_agent.runtime._agent_loop import AgentLoop
 from cli_agent.runtime._context import ContextEngineFactory, ContextPolicy, SessionUsage
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -22,7 +48,11 @@ from cli_agent.runtime._resources import (
     _reconcile_runtime_resources,
     _RuntimeResources,
 )
-from cli_agent.runtime._session import SessionConfig, serialize_system_prompt
+from cli_agent.runtime._session import (
+    Session,
+    SessionConfig,
+    serialize_system_prompt,
+)
 from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
@@ -37,17 +67,59 @@ class RuntimeClosedError(RuntimeError):
     """Raised when work is requested from a closed Agent Runtime."""
 
 
+class RuntimeState(str, Enum):
+    """One state of the active-session state machine."""
+
+    NO_SESSION = "no_session"
+    REPLACING = "replacing"
+    ACTIVE_IDLE = "active_idle"
+    RUNNING_TURN = "running_turn"
+    CLOSING = "closing"
+    CLOSED = "closed"
+
+
+# Predecessor states allowed for each target state.
+_TRANSITIONS: dict[RuntimeState, tuple[RuntimeState, ...]] = {
+    RuntimeState.REPLACING: (
+        RuntimeState.NO_SESSION,
+        RuntimeState.ACTIVE_IDLE,
+        RuntimeState.RUNNING_TURN,
+    ),
+    RuntimeState.ACTIVE_IDLE: (RuntimeState.REPLACING,),
+    RuntimeState.RUNNING_TURN: (RuntimeState.ACTIVE_IDLE,),
+    RuntimeState.NO_SESSION: (RuntimeState.REPLACING,),
+    RuntimeState.CLOSING: (
+        RuntimeState.NO_SESSION,
+        RuntimeState.ACTIVE_IDLE,
+        RuntimeState.RUNNING_TURN,
+    ),
+    RuntimeState.CLOSED: (RuntimeState.CLOSING,),
+}
+
+_ATTACHABLE_STATES = (
+    RuntimeState.NO_SESSION,
+    RuntimeState.ACTIVE_IDLE,
+    RuntimeState.RUNNING_TURN,
+)
+
+_ILLEGAL_TRANSITION_MESSAGE = "operation is not allowed in the current Runtime state"
+
+
 @dataclass(slots=True)
-class _Session:
-    kernel: EnvironmentKernel
+class _ActiveBinding:
+    """One live binding: durable Session plus its active-session resources.
+
+    Locks, tasks, and closing flags never enter the Session data model;
+    they live here, owned by the Runtime.
+    """
+
+    session: Session
     loop: AgentLoop
-    lock: asyncio.Lock
-    closing: bool = False
-    active_task: asyncio.Task[Any] | None = None
+    kernel: EnvironmentKernel
 
 
 class AgentRuntime:
-    """Own Workspace-scoped resources for the host."""
+    """Own Workspace-scoped resources and one active Session binding."""
 
     def __init__(
         self,
@@ -74,7 +146,11 @@ class AgentRuntime:
             context_policy=context_policy,
             on_diagnostic=on_diagnostic,
         )
-        self._sessions: dict[str, _Session] = {}
+        self._state = RuntimeState.NO_SESSION
+        self._binding: _ActiveBinding | None = None
+        self._turn_task: asyncio.Task[Any] | None = None
+        self._lifecycle_op_lock = asyncio.Lock()
+        self._state_lock = threading.Lock()
         self._closed = False
 
     @classmethod
@@ -102,8 +178,9 @@ class AgentRuntime:
             workspace (`str | Path`):
                 Existing directory to bind as the Workspace.
             provider (`ModelProvider`):
-                Model provider used by new Sessions when no per-turn override
-                is supplied to :meth:`run_turn`.
+                Model provider used by new Sessions when no per-session
+                override is supplied to :meth:`new_session` or
+                :meth:`resume_session`.
             user_interaction (`UserInteraction`):
                 Host-owned Runtime-wide question channel; required even when
                 ``execution_policy`` is omitted.
@@ -191,182 +268,277 @@ class AgentRuntime:
 
         return self._closed
 
+    async def new_session(
+        self,
+        *,
+        provider: ModelProvider | None = None,
+    ) -> Session:
+        """Create and attach one new durable Session.
+
+        The current binding, if any, is detached first; its running turn
+        (from another task) is cancelled and joined before the replacement
+        proceeds. The attach-time system message is captured for audit in
+        the SessionConfig.
+
+        Args:
+            provider (`ModelProvider | None`):
+                Optional provider override bound to this Session; defaults
+                to the Runtime provider.
+
+        Returns:
+            The created durable `Session`.
+
+        Raises:
+            RuntimeClosedError: If the Runtime is closed.
+            RuntimeStateError: If the transition is not allowed.
+        """
+
+        async with self._lifecycle_op_lock:
+            self._ensure_open()
+            provider = provider if provider is not None else self._provider
+            return await self._replace_active(
+                self._attach_new(provider),
+                action="new_session",
+            )
+
+    async def resume_session(
+        self,
+        session_id: str,
+        *,
+        provider: ModelProvider | None = None,
+    ) -> Session:
+        """Load, repair, and attach one durable Session.
+
+        The current binding, if any, is detached first. The loaded Session
+        must belong to this Workspace and must not be archived; the crash
+        frontier is repaired before a fresh ContextEngine and Kernel are
+        created, and the SystemMessage is rebuilt from the current
+        Workspace / Capability environment instead of replaying the
+        captured config.
+
+        Args:
+            session_id (`str`):
+                The durable Session to resume.
+            provider (`ModelProvider | None`):
+                Optional provider override bound to this Session; defaults
+                to the Runtime provider.
+
+        Returns:
+            The resumed durable `Session`.
+
+        Raises:
+            RuntimeClosedError: If the Runtime is closed.
+            RuntimeStateError: If the transition is not allowed.
+            HostFacingError: If the Session is missing, archived, belongs
+                to another Workspace, or cannot be repaired.
+        """
+
+        async with self._lifecycle_op_lock:
+            self._ensure_open()
+            provider = provider if provider is not None else self._provider
+            return await self._replace_active(
+                self._attach_existing(session_id, provider),
+                action="resume_session",
+            )
+
+    async def detach_session(self) -> None:
+        """Detach and close the active binding, leaving ``NO_SESSION``.
+
+        A running turn (from another task) is cancelled and joined before
+        the Kernel closes. Detaching with no active Session is a no-op.
+
+        Raises:
+            RuntimeClosedError: If the Runtime is closed.
+            RuntimeStateError: If the transition is not allowed.
+        """
+
+        async with self._lifecycle_op_lock:
+            self._ensure_open()
+            await self._cancel_active_turn(action="detach_session")
+            await self._detach_current()
+            self._transition_locked(RuntimeState.NO_SESSION, action="detach_session")
+
+    async def archive_session(self, session_id: str) -> None:
+        """Archive one durable Session; an active binding detaches first.
+
+        Args:
+            session_id (`str`): The Session to archive.
+
+        Raises:
+            RuntimeClosedError: If the Runtime is closed.
+            HostFacingError: If the Session has no row or cannot be
+                written.
+        """
+
+        async with self._lifecycle_op_lock:
+            self._ensure_open()
+            await self._detach_if_active(session_id, action="archive_session")
+            self._resources.session_store.archive(session_id)
+
+    async def unarchive_session(self, session_id: str) -> None:
+        """Clear one durable Session's archive marker.
+
+        Args:
+            session_id (`str`): The Session to unarchive.
+
+        Raises:
+            RuntimeClosedError: If the Runtime is closed.
+            HostFacingError: If the Session has no row or cannot be
+                written.
+        """
+
+        async with self._lifecycle_op_lock:
+            self._ensure_open()
+            self._resources.session_store.unarchive(session_id)
+
+    async def delete_session(self, session_id: str) -> None:
+        """Delete one durable Session; an active binding detaches first.
+
+        Args:
+            session_id (`str`): The Session to delete.
+
+        Raises:
+            RuntimeClosedError: If the Runtime is closed.
+            HostFacingError: If the Session has no row or cannot be
+                written.
+        """
+
+        async with self._lifecycle_op_lock:
+            self._ensure_open()
+            await self._detach_if_active(session_id, action="delete_session")
+            self._resources.session_store.delete(session_id)
+
     async def close(self) -> None:
         """Close all Runtime-owned resources idempotently.
 
-        New turns are rejected first, every Session Kernel (and its queued and
-        running Executions) is closed, then the Workspace-lifetime resources
-        close in reverse dependency order: Library worker, Backend Workspace
-        flush, Backend Workspace close. Every step is attempted even when an
-        earlier close fails, so no resource leaks; the first failure is
-        surfaced to the Host through a safe diagnostic and the original
-        exception. The Runtime stays closed and a later close remains a no-op.
+        New lifecycle operations are rejected first, a running turn is
+        cancelled (unless close is called from the turn consumer itself),
+        the active binding closes its Kernel, then the Workspace-lifetime
+        resources close in reverse dependency order: Library worker,
+        Backend Workspace flush, Backend Workspace close. Every step is
+        attempted even when an earlier close fails, so no resource leaks;
+        the first failure is surfaced to the Host through a safe
+        diagnostic and the original exception. The Runtime stays closed
+        and a later close remains a no-op.
         """
 
-        if self._closed:
-            return
-        self._closed = True
-        sessions = tuple(self._sessions.values())
-        self._sessions.clear()
-        errors: list[Exception] = []
-        for session in sessions:
+        async with self._lifecycle_op_lock:
+            with self._state_lock:
+                if self._closed:
+                    return
+                self._closed = True
+                self._transition_locked(RuntimeState.CLOSING, action="close")
+                turn_task = self._turn_task
+                binding = self._binding
+                current = asyncio.current_task()
+            if (
+                turn_task is not None
+                and turn_task is not current
+                and not turn_task.done()
+            ):
+                turn_task.cancel()
+            errors: list[Exception] = []
+            if binding is not None:
+                try:
+                    binding.loop.close()
+                except Exception as exc:
+                    errors.append(exc)
+                try:
+                    await binding.kernel.close()
+                except Exception as exc:
+                    errors.append(exc)
             try:
-                await self._close_session_state(session)
+                await self._resources.close()
             except Exception as exc:
                 errors.append(exc)
-        try:
-            await self._resources.close()
-        except Exception as exc:
-            errors.append(exc)
-        if errors:
-            self._emit_diagnostic(
-                "runtime.close_failed",
-                "Runtime close reported a failure",
-                detail={"exception": repr(errors[0])},
-            )
-            raise errors[0]
+            with self._state_lock:
+                self._transition_locked(RuntimeState.CLOSED, action="close")
+                self._binding = None
+                self._turn_task = None
+            if turn_task is not None and turn_task is not current:
+                with suppress(asyncio.CancelledError, Exception):
+                    await turn_task
+            if errors:
+                self._emit_diagnostic(
+                    "runtime.close_failed",
+                    "Runtime close reported a failure",
+                    detail={"exception": repr(errors[0])},
+                )
+                raise errors[0]
 
-    async def run_turn(
-        self,
-        session_id: str,
-        message: UserMessage,
-        *,
-        provider: ModelProvider | None = None,
-    ) -> AsyncIterator[ModelEvent]:
-        """Run one turn in an active or newly created Agent Session.
+    async def run_turn(self, message: UserMessage) -> AsyncIterator[ModelEvent]:
+        """Run one model turn in the active Session.
+
+        The Runtime must be in ``ACTIVE_IDLE``: a turn while another turn
+        is already running is an illegal transition. The turn completes
+        back to ``ACTIVE_IDLE``, or unwinds early when a lifecycle
+        operation (detach, replacement, close) changes the state.
 
         Args:
-            session_id (`str`):
-                Host-visible Session identifier. A durable id that is no
-                longer active must be resumed explicitly and cannot be reused
-                to create fresh in-memory state.
             message (`UserMessage`):
                 User-authored message to append to the Session history.
-            provider (`ModelProvider | None`):
-                Optional provider override; used only when ``session_id`` is
-                first seen.
 
         Yields:
-            Model events streamed by the Session's Agent Loop.
+            Model events streamed by the active Session's Agent Loop.
 
         Raises:
-            HostFacingError: If ``session_id`` already exists and requires
-                resume, the durable session belongs to a different
-                Workspace, or durable Session creation fails.
+            RuntimeClosedError: If the Runtime is closed.
+            RuntimeStateError: If there is no active Session or a turn is
+                already running.
         """
 
-        self._ensure_open()
-        session = self._sessions.get(session_id)
-        if session is None:
-            bound_provider = provider if provider is not None else self._provider
-            workspace = self._resources.workspace
-            system = assemble_system_message(
-                Path(workspace.root),
-                self._instruction,
-                snapshot=self._resources.snapshot,
-            )
-            try:
-                self._resources.session_store.create(
-                    session_id,
-                    workspace.id,
-                    SessionConfig(system_prompt=serialize_system_prompt(system)),
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeClosedError("AgentRuntime is closed")
+            binding = self._binding
+            if binding is None:
+                raise RuntimeStateError(
+                    action="run_turn",
+                    state=self._state.value,
+                    message=(
+                        "no active session; call new_session or resume_session first"
+                    ),
                 )
-            except SessionConflictError as exc:
-                existing, _ = self._resources.session_store.load(session_id)
-                if existing.workspace_id != workspace.id:
-                    raise WorkspaceMismatchError(
-                        session_id=session_id,
-                        workspace_id=existing.workspace_id,
-                        expected_workspace_id=workspace.id,
-                    ) from exc
-                raise HostFacingError(
-                    code="session_already_exists",
-                    message="Session already exists and must be resumed.",
-                    hint="Resume the existing session or choose a new session id.",
-                    details={"session_id": session_id},
-                ) from exc
-            kernel = self._new_kernel(session_id)
-            try:
-                context = self._context_factory.create(
-                    session_id,
-                    provider=bound_provider,
-                    system_message=system,
+            if self._state is not RuntimeState.ACTIVE_IDLE:
+                raise RuntimeStateError(
+                    action="run_turn",
+                    state=self._state.value,
+                    message=(
+                        "a turn is already running or a lifecycle "
+                        "operation is in progress"
+                    ),
                 )
-
-                def commit(message: ModelMessage) -> int:
-                    return self._resources.session_store.append(
-                        session_id,
-                        message,
-                        expected_revision=context.revision,
-                    )
-
-                loop = AgentLoop(
-                    bound_provider,
-                    kernel,
-                    context=context,
-                    commit=commit,
-                    on_diagnostic=self._on_diagnostic,
-                )
-            except BaseException:
-                await kernel.close()
-                raise
-            candidate = _Session(
-                kernel=kernel,
-                loop=loop,
-                lock=asyncio.Lock(),
-            )
-            session = self._sessions.setdefault(session_id, candidate)
-            if session is not candidate:
-                await kernel.close()
-
-        async with session.lock:
-            self._ensure_open()
-            if session.closing:
-                raise RuntimeClosedError("Agent Session is closed")
-            active_task = asyncio.current_task()
-            session.active_task = active_task
-            try:
-                with error_boundary(
-                    "runtime.run_turn",
-                    on_diagnostic=self._boundary_diagnostic,
-                ):
-                    async for event in session.loop.run(message):
-                        if self._closed or session.closing:
+            self._state = RuntimeState.RUNNING_TURN
+            self._turn_task = asyncio.current_task()
+        try:
+            with error_boundary(
+                "runtime.run_turn",
+                on_diagnostic=self._boundary_diagnostic,
+            ):
+                async for event in binding.loop.run(message):
+                    with self._state_lock:
+                        if self._state is not RuntimeState.RUNNING_TURN:
                             return
-                        yield event
-                        if self._closed or session.closing:
-                            return
-            finally:
-                if session.active_task is active_task:
-                    session.active_task = None
+                    yield event
+        finally:
+            with self._state_lock:
+                if self._state is RuntimeState.RUNNING_TURN:
+                    self._state = RuntimeState.ACTIVE_IDLE
+                self._turn_task = None
 
-    async def close_session(self, session_id: str) -> None:
-        """Close and forget one Agent Session idempotently.
-
-        Closing detaches the Runtime binding only: no session lifecycle
-        state is persisted, so the session stays resumable.
-        """
-
-        session = self._sessions.pop(session_id, None)
-        if session is not None:
-            await self._close_session_state(session)
-
-    def session_usage(self, session_id: str) -> SessionUsage | None:
-        """Return the session-cumulative token usage, or ``None`` when unknown.
-
-        Args:
-            session_id (`str`):
-                Host-visible Session identifier.
+    def session_usage(self) -> SessionUsage | None:
+        """Return the active Session's cumulative usage, or ``None``.
 
         Returns:
-            The session-cumulative input and output token counts, or ``None``
-            when no open Session with this id exists, including closed ones.
+            The session-cumulative input and output token counts, or
+            ``None`` when no Session is bound (including after detach and
+            close).
         """
 
-        session = self._sessions.get(session_id)
-        if session is None:
+        binding = self._binding
+        if binding is None:
             return None
-        return session.loop.usage
+        return binding.loop.usage
 
     async def __aenter__(self) -> AgentRuntime:
         self._ensure_open()
@@ -379,6 +551,173 @@ class AgentRuntime:
         traceback: TracebackType | None,
     ) -> None:
         await self.close()
+
+    async def _replace_active(
+        self,
+        build: Coroutine[Any, Any, tuple[Session, _ActiveBinding]],
+        *,
+        action: str,
+    ) -> Session:
+        """Cancel, detach, build, and attach one new active binding.
+
+        A failed build leaves the Runtime in ``NO_SESSION`` with no
+        half-initialized binding and no leaked Kernel.
+        """
+
+        await self._cancel_active_turn(action=action)
+        await self._detach_current()
+        try:
+            session, binding = await build
+        except BaseException:
+            self._transition_locked(RuntimeState.NO_SESSION, action=action)
+            raise
+        with self._state_lock:
+            self._binding = binding
+            self._transition_locked(RuntimeState.ACTIVE_IDLE, action=action)
+        return session
+
+    async def _cancel_active_turn(self, *, action: str) -> None:
+        """Move to REPLACING and cancel the running turn, joining it.
+
+        The cancelled generator releases the turn task reference itself;
+        nothing is awaited while the state lock is held.
+        """
+
+        with self._state_lock:
+            self._transition_locked(RuntimeState.REPLACING, action=action)
+            turn_task = self._turn_task
+            current = asyncio.current_task()
+        if turn_task is not None and turn_task is not current and not turn_task.done():
+            turn_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await turn_task
+
+    def _transition_locked(self, target: RuntimeState, *, action: str) -> None:
+        """Transition to one state, rejecting illegal predecessors.
+
+        The caller must hold ``_state_lock``; the check never awaits.
+        """
+
+        if self._state not in _TRANSITIONS[target]:
+            raise RuntimeStateError(
+                action=action,
+                state=self._state.value,
+                message=_ILLEGAL_TRANSITION_MESSAGE,
+            )
+        self._state = target
+
+    async def _detach_current(self) -> None:
+        """Close the current binding and drop the reference."""
+
+        with self._state_lock:
+            binding = self._binding
+            self._binding = None
+        if binding is None:
+            return
+        binding.loop.close()
+        await binding.kernel.close()
+
+    async def _detach_if_active(self, session_id: str, *, action: str) -> None:
+        """Detach the active binding when it owns the given Session."""
+
+        binding = self._binding
+        if binding is not None and binding.session.session_id == session_id:
+            await self._cancel_active_turn(action=action)
+            await self._detach_current()
+            self._transition_locked(RuntimeState.NO_SESSION, action=action)
+
+    async def _attach_new(
+        self,
+        provider: ModelProvider,
+    ) -> tuple[Session, _ActiveBinding]:
+        """Create one durable Session and build its live binding."""
+
+        workspace = self._resources.workspace
+        session_id = uuid4().hex
+        system = assemble_system_message(
+            Path(workspace.root),
+            self._instruction,
+            snapshot=self._resources.snapshot,
+        )
+        session = self._resources.session_store.create(
+            session_id,
+            workspace.id,
+            SessionConfig(serialize_system_prompt(system)),
+        )
+        binding = await self._build_binding(session, system, provider)
+        return session, binding
+
+    async def _attach_existing(
+        self,
+        session_id: str,
+        provider: ModelProvider,
+    ) -> tuple[Session, _ActiveBinding]:
+        """Preflight, repair, and rebuild one durable Session's binding."""
+
+        store = self._resources.session_store
+        workspace = self._resources.workspace
+        session, _ = store.load(session_id)
+        if session.archived_at is not None:
+            raise SessionArchivedError(session_id=session_id)
+        if session.workspace_id != workspace.id:
+            raise WorkspaceMismatchError(
+                session_id=session_id,
+                workspace_id=session.workspace_id,
+                expected_workspace_id=workspace.id,
+            )
+        store.repair_interrupted_execution(
+            session_id,
+            expected_revision=session.revision,
+        )
+        session, _ = store.load(session_id)
+        system = assemble_system_message(
+            Path(workspace.root),
+            self._instruction,
+            snapshot=self._resources.snapshot,
+        )
+        binding = await self._build_binding(session, system, provider)
+        return session, binding
+
+    async def _build_binding(
+        self,
+        session: Session,
+        system,
+        provider: ModelProvider,
+    ) -> _ActiveBinding:
+        """Build the Kernel, ContextEngine, and AgentLoop for one Session.
+
+        A construction failure closes the freshly created Kernel so a
+        failed attach never leaks it.
+        """
+
+        kernel = self._new_kernel(session.session_id)
+        try:
+            context = self._context_factory.create(
+                session.session_id,
+                provider=provider,
+                system_message=system,
+            )
+            store = self._resources.session_store
+
+            def commit(message: ModelMessage) -> int:
+                return store.append(
+                    session.session_id,
+                    message,
+                    expected_revision=context.revision,
+                )
+
+            loop = AgentLoop(
+                provider,
+                kernel,
+                context=context,
+                commit=commit,
+                on_diagnostic=self._on_diagnostic,
+            )
+        except BaseException:
+            with suppress(Exception):
+                await kernel.close()
+            raise
+        return _ActiveBinding(session=session, loop=loop, kernel=kernel)
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -409,44 +748,11 @@ class AgentRuntime:
 
         self._emit_diagnostic(kind, message, detail=detail)
 
-    async def _close_session_state(self, session: _Session) -> None:
-        """Cancel one active turn, stop its Kernel, and await its unwind."""
-
-        session.closing = True
-        active_task = session.active_task
-        current_task = asyncio.current_task()
-        if (
-            active_task is not None
-            and active_task is not current_task
-            and not active_task.done()
-        ):
-            active_task.cancel()
-
-        error: Exception | None = None
-        try:
-            session.loop.close()
-        except Exception as exc:
-            error = exc
-        try:
-            await session.kernel.close()
-        except Exception as exc:
-            if error is None:
-                error = exc
-
-        if active_task is not None and active_task is not current_task:
-            with suppress(asyncio.CancelledError, Exception):
-                await active_task
-        if active_task is not current_task:
-            async with session.lock:
-                pass
-
-        if error is not None:
-            raise error
-
     def _emit_diagnostic(
         self,
         kind: str,
         message: str,
+        *,
         detail: Mapping[str, object] | None = None,
     ) -> None:
         """Emit one structured notice when a Host callback is configured.

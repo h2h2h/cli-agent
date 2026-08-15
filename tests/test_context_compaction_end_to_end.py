@@ -103,19 +103,16 @@ def _exec_ids(request: ModelRequest) -> set[str]:
 
 async def _run_turn(
     runtime: AgentRuntime,
-    session_id: str,
     text: str,
     *,
     provider=None,
 ) -> tuple[ModelEvent, ...]:
+    if runtime._binding is None:
+        await runtime.new_session(provider=provider)
     return tuple(
         [
             event
-            async for event in runtime.run_turn(
-                session_id,
-                UserMessage.text(text),
-                provider=provider,
-            )
+            async for event in runtime.run_turn(UserMessage.text(text))
         ]
     )
 
@@ -137,9 +134,9 @@ def test_tier0_and_tier1_snip_trajectory(
     received: list[RuntimeDiagnostic] = []
     runtime = asyncio.run(_open_runtime(tmp_path, provider, _STANDARD_BUDGET, received))
     try:
-        asyncio.run(_run_turn(runtime, "session", "Inspect the old workspace"))
-        asyncio.run(_run_turn(runtime, "session", "Inspect the recent marker"))
-        asyncio.run(_run_turn(runtime, "session", "Summarize the state"))
+        asyncio.run(_run_turn(runtime, "Inspect the old workspace"))
+        asyncio.run(_run_turn(runtime, "Inspect the recent marker"))
+        asyncio.run(_run_turn(runtime, "Summarize the state"))
 
         requests = provider.requests
         assert len(requests) == 5
@@ -177,9 +174,9 @@ def test_tier2_prune_trajectory(
     received: list[RuntimeDiagnostic] = []
     runtime = asyncio.run(_open_runtime(tmp_path, provider, _STANDARD_BUDGET, received))
     try:
-        asyncio.run(_run_turn(runtime, "session", "Inspect the old workspace"))
-        asyncio.run(_run_turn(runtime, "session", "Inspect the recent marker"))
-        asyncio.run(_run_turn(runtime, "session", "Summarize the state"))
+        asyncio.run(_run_turn(runtime, "Inspect the old workspace"))
+        asyncio.run(_run_turn(runtime, "Inspect the recent marker"))
+        asyncio.run(_run_turn(runtime, "Summarize the state"))
 
         requests = provider.requests
         final_request = requests[4]
@@ -221,9 +218,9 @@ def test_tier3_summarize_trajectory(
     received: list[RuntimeDiagnostic] = []
     runtime = asyncio.run(_open_runtime(tmp_path, provider, _STANDARD_BUDGET, received))
     try:
-        asyncio.run(_run_turn(runtime, "session", "First old discussion"))
-        asyncio.run(_run_turn(runtime, "session", "Second recent discussion"))
-        events = asyncio.run(_run_turn(runtime, "session", "Wrap up"))
+        asyncio.run(_run_turn(runtime, "First old discussion"))
+        asyncio.run(_run_turn(runtime, "Second recent discussion"))
+        events = asyncio.run(_run_turn(runtime, "Wrap up"))
 
         assert events[-1] == ModelCompletion(
             message=AssistantMessage.text("final answer"),
@@ -269,9 +266,9 @@ def test_initial_pressure_above_summarize_but_snip_suffices(
     )
     runtime = asyncio.run(_open_runtime(tmp_path, provider, _LARGE_BUDGET, None))
     try:
-        asyncio.run(_run_turn(runtime, "session", "Inspect the old workspace"))
-        asyncio.run(_run_turn(runtime, "session", "Inspect the recent marker"))
-        asyncio.run(_run_turn(runtime, "session", "Summarize the state"))
+        asyncio.run(_run_turn(runtime, "Inspect the old workspace"))
+        asyncio.run(_run_turn(runtime, "Inspect the recent marker"))
+        asyncio.run(_run_turn(runtime, "Summarize the state"))
 
         assert len(provider.requests) == 5
         final_request = provider.requests[4]
@@ -305,7 +302,7 @@ def test_overflow_recovers_and_retries_once_without_repeating_tools(
     received: list[RuntimeDiagnostic] = []
     runtime = asyncio.run(_open_runtime(tmp_path, provider, _STANDARD_BUDGET, received))
     try:
-        events = asyncio.run(_run_turn(runtime, "session", "Create a marker once"))
+        events = asyncio.run(_run_turn(runtime, "Create a marker once"))
 
         assert len(provider.requests) == 3
         assert [diagnostic.kind for diagnostic in received] == [
@@ -333,7 +330,7 @@ def test_second_overflow_propagates_and_session_stays_closable(
     runtime = asyncio.run(_open_runtime(tmp_path, provider, _STANDARD_BUDGET, None))
     try:
         with pytest.raises(ContextExhaustedError):
-            asyncio.run(_run_turn(runtime, "session", "Hello"))
+            asyncio.run(_run_turn(runtime, "Hello"))
         assert len(provider.requests) == 2
     finally:
         asyncio.run(runtime.close())
@@ -357,10 +354,11 @@ def test_cross_session_compaction_is_isolated(
     provider_b = ScriptedModelProvider(script=(_plain_step("plain session answer"),))
     runtime = asyncio.run(_open_runtime(tmp_path, provider_a, _STANDARD_BUDGET, None))
     try:
-        asyncio.run(_run_turn(runtime, "session-a", "Inspect the old workspace"))
-        asyncio.run(_run_turn(runtime, "session-a", "Inspect the recent marker"))
-        asyncio.run(_run_turn(runtime, "session-a", "Summarize the state"))
-        asyncio.run(_run_turn(runtime, "session-b", "Hello", provider=provider_b))
+        asyncio.run(_run_turn(runtime, "Inspect the old workspace"))
+        asyncio.run(_run_turn(runtime, "Inspect the recent marker"))
+        asyncio.run(_run_turn(runtime, "Summarize the state"))
+        asyncio.run(runtime.detach_session())
+        asyncio.run(_run_turn(runtime, "Hello", provider=provider_b))
 
         final_request_a = provider_a.requests[4]
         old_result, _recent = (
@@ -389,9 +387,9 @@ def test_close_session_releases_context_and_new_id_is_fresh(
     )
     runtime = asyncio.run(_open_runtime(tmp_path, provider, _STANDARD_BUDGET, None))
     try:
-        asyncio.run(_run_turn(runtime, "session", "First turn"))
-        asyncio.run(runtime.close_session("session"))
-        asyncio.run(_run_turn(runtime, "fresh-session", "Second turn"))
+        asyncio.run(_run_turn(runtime, "First turn"))
+        asyncio.run(runtime.detach_session())
+        asyncio.run(_run_turn(runtime, "Second turn"))
 
         first_system = provider.requests[0].messages[0]
         second_system = provider.requests[1].messages[0]
@@ -505,9 +503,9 @@ async def run_file_exploration_trajectory(
     provider.add_stream(
         _plain_step("Found notes.txt; it contains the marker value 42.")
     )
-    await _run_turn(runtime, "eval-a", "Explore the workspace")
-    await _run_turn(runtime, "eval-a", "Read the notes file")
-    events = await _run_turn(runtime, "eval-a", "Report what you found")
+    await _run_turn(runtime, "Explore the workspace")
+    await _run_turn(runtime, "Read the notes file")
+    events = await _run_turn(runtime, "Report what you found")
     return {
         "requests": len(provider.requests),
         "input_tokens": [
@@ -535,7 +533,7 @@ async def run_output_polling_trajectory(
     )
     provider.add_stream(_exec_step(start_call))
     provider.add_stream(_plain_step("Started; polling output now."))
-    await _run_turn(runtime, "eval-b", "Start the long command")
+    await _run_turn(runtime, "Start the long command")
     first = provider.requests[1]
     start_result = next(
         message.content[0] for message in _tool_results(first) if message.content
@@ -549,7 +547,7 @@ async def run_output_polling_trajectory(
     )
     provider.add_stream(_exec_step(poll_call))
     provider.add_stream(_plain_step("Output complete: 20 lines."))
-    events = await _run_turn(runtime, "eval-b", "Poll until the command finishes")
+    events = await _run_turn(runtime, "Poll until the command finishes")
     return {
         "requests": len(provider.requests),
         "exec_id": output["exec_id"],
@@ -590,11 +588,11 @@ async def run_edit_test_fix_verify_trajectory(
     provider.add_stream(_exec_step(verify_call))
     provider.add_stream(_plain_step("Verified the fix."))
     provider.add_stream(_plain_step("Fixed and verified: add(2, 2) returns 4."))
-    await _run_turn(runtime, "eval-c", "Write a first version of add")
-    await _run_turn(runtime, "eval-c", "Run the add test")
-    await _run_turn(runtime, "eval-c", "Fix the function")
-    await _run_turn(runtime, "eval-c", "Verify the fix")
-    events = await _run_turn(runtime, "eval-c", "Report the outcome")
+    await _run_turn(runtime, "Write a first version of add")
+    await _run_turn(runtime, "Run the add test")
+    await _run_turn(runtime, "Fix the function")
+    await _run_turn(runtime, "Verify the fix")
+    events = await _run_turn(runtime, "Report the outcome")
     return {
         "requests": len(provider.requests),
         "test_exit_code": _exit_code(provider.requests[3]),
