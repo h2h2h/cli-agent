@@ -305,11 +305,11 @@ def test_reconcile_runs_steps_in_documented_order(
             "mcp_discovery",
             "mcp_stubs",
             "snapshot",
-            "deployment_reconcile",
             "state_database",
             "summary_cache",
             "session_store",
             "library_catalog",
+            "deployment_reconcile",
             "tool_executor",
         ]
         assert resources.workspace.root == str(_FakePaths.root)
@@ -681,7 +681,7 @@ def test_reconcile_failure_at_index_publish_closes_opened_resources(
             )
         )
 
-    assert order == ["workspace_open", "workspace.close"]
+    assert order == ["workspace_open", "db.open", "db.close", "workspace.close"]
 
 
 def test_project_instruction_load_failure_closes_opened_resources(

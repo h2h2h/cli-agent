@@ -166,6 +166,7 @@ class AgentRuntime:
         execution_policy: ExecutionPolicy | None = None,
         parallel_commands: frozenset[str] | None = None,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+        backend: str = "local",
     ) -> Coroutine[Any, None, AgentRuntime]:
         """Validate arguments and return a coroutine that opens the Runtime.
 
@@ -176,7 +177,8 @@ class AgentRuntime:
 
         Args:
             workspace (`str | Path`):
-                Existing directory to bind as the Workspace.
+                Existing directory to bind as the Workspace (the Host
+                control directory when ``backend`` is ``"docker"``).
             provider (`ModelProvider`):
                 Model provider used by new Sessions when no per-session
                 override is supplied to :meth:`new_session` or
@@ -203,6 +205,10 @@ class AgentRuntime:
                 Optional Host callback receiving structured Runtime
                 Diagnostics, such as MCP discovery exhaustion, without blocking
                 Runtime open. Omitted callbacks keep today's silent behavior.
+            backend (`str`):
+                The Workspace Backend kind, fixed for the Workspace
+                lifetime (``"local"`` or ``"docker"``); V1 does not
+                hot-swap a Backend after open.
 
         Returns:
             A coroutine resolving to the opened :class:`AgentRuntime`.
@@ -219,6 +225,7 @@ class AgentRuntime:
             parallel_commands=frozenset(parallel_commands or ()),
             on_diagnostic=on_diagnostic,
             context_policy=context_policy,
+            backend=backend,
         )
 
     @classmethod
@@ -234,6 +241,7 @@ class AgentRuntime:
         parallel_commands: frozenset[str],
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
         context_policy: ContextPolicy,
+        backend: str,
     ) -> AgentRuntime:
         """Prepare Workspace-scoped resources and construct the Runtime."""
 
@@ -241,6 +249,7 @@ class AgentRuntime:
             workspace=workspace,
             repertoire=repertoire,
             on_diagnostic=on_diagnostic,
+            backend=backend,
         )
         try:
             runtime = cls(

@@ -151,19 +151,27 @@ async def _ensure_locked(
         )
 
 
-def effective_requirements(content: bytes) -> bytes:
+def effective_requirements(
+    content: bytes,
+    *,
+    include_mcp: bool = True,
+) -> bytes:
     """Combine user requirements with the Runtime-owned base dependency.
 
-    The base dependency is appended unless the user already declares it, so a
-    M13 self-connecting stub can import ``mcp`` in the worker venv. M14 removes
-    the worker's need for ``mcp`` (stubs switch to the IPC shim).
+    The base dependency is appended when MCP bindings are deployed unless the
+    user already declares it. Workspaces without MCP servers do not install an
+    otherwise unused network dependency.
     """
 
     lines = content.decode("utf-8").splitlines()
-    if any(line.strip() == _RUNTIME_BASE_REQUIREMENTS for line in lines):
+    if not include_mcp:
+        effective = lines
+    elif any(line.strip() == _RUNTIME_BASE_REQUIREMENTS for line in lines):
         effective = lines
     else:
         effective = [*lines, _RUNTIME_BASE_REQUIREMENTS]
+    if not effective:
+        return b""
     return ("\n".join(effective) + "\n").encode("utf-8")
 
 

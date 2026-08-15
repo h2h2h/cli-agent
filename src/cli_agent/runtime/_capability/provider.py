@@ -12,10 +12,11 @@ snapshot is the Deployment plane's job.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.mcp.config import discover_configs
 from cli_agent.runtime._capability.mcp.facts import MCPServerConfig
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
@@ -52,9 +53,9 @@ class CapabilitySnapshot:
     skills: _SkillCatalog
     mcp_servers: tuple[MCPServerConfig, ...]
     project_instructions: _ProjectInstructions | None
-    library: object | None = None
+    library: _LibraryCatalog | None = None
 
-    def with_library(self, library: object) -> CapabilitySnapshot:
+    def with_library(self, library: _LibraryCatalog) -> CapabilitySnapshot:
         """Attach the live Library Catalog and fold its facts into the revision."""
 
         return replace(
@@ -74,10 +75,16 @@ class CapabilityProvider:
         *,
         view: _LogicalCapabilityView,
         workspace: Path,
+        instructions_loader: Callable[
+            [],
+            Awaitable[_ProjectInstructions | None],
+        ]
+        | None = None,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> None:
         self._view = view
         self._workspace = workspace
+        self._instructions_loader = instructions_loader
         self._on_diagnostic = on_diagnostic
 
     async def discover_mcp_configs(self) -> tuple[MCPServerConfig, ...]:
@@ -108,7 +115,11 @@ class CapabilityProvider:
             mcp_configs = await discover_configs(view, self._on_diagnostic)
         tools = await _ToolCatalog.discover(view, self._on_diagnostic)
         skills = await _SkillCatalog.discover(view)
-        instructions = _load_project_instructions(self._workspace)
+        instructions = (
+            await self._instructions_loader()
+            if self._instructions_loader is not None
+            else _load_project_instructions(self._workspace)
+        )
         inputs = view.fingerprint_inputs
         if instructions is not None:
             inputs += (
@@ -149,7 +160,7 @@ def _chain_revision(revision: str, domain: bytes, digest: str) -> str:
     return hasher.hexdigest()
 
 
-def _library_fingerprint(library: object) -> str:
+def _library_fingerprint(library: _LibraryCatalog) -> str:
     """Fold content-derived Library file fingerprints into one digest.
 
     Directory fingerprints and model-generated summaries are excluded so
@@ -157,9 +168,9 @@ def _library_fingerprint(library: object) -> str:
     """
 
     hasher = hashlib.sha256()
-    for entry in tuple(getattr(library, "entries", ())):
-        fingerprint = getattr(entry, "fingerprint", None)
-        if getattr(entry, "kind", None) != "file" or fingerprint is None:
+    for entry in library.entries:
+        fingerprint = entry.fingerprint
+        if entry.kind != "file" or fingerprint is None:
             continue
         hasher.update(len(entry.path.encode("utf-8")).to_bytes(8, "big"))
         hasher.update(entry.path.encode("utf-8"))

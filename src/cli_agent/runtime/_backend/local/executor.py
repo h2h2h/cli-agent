@@ -11,11 +11,9 @@ process itself starts only when the returned ``ExecutionHandle`` runs.
 from __future__ import annotations
 
 import json
-import keyword
 import os
-import posixpath
 
-from cli_agent.runtime._backend.facts import _ToolBinding, _ToolExecutionRequest
+from cli_agent.runtime._backend.facts import _ToolExecutionRequest
 from cli_agent.runtime._backend.local.backend import _LocalBackendWorkspace
 from cli_agent.runtime._backend.local.filesystem import _resolve_path
 from cli_agent.runtime._backend.local.shell import (
@@ -25,13 +23,12 @@ from cli_agent.runtime._backend.local.shell import (
 from cli_agent.runtime._capability.deployment import (
     DeploymentSnapshot,
     StaleDeploymentError,
+    validate_tool_bindings,
     verify_deployment,
 )
 from cli_agent.runtime._environment.handlers.base import _CommandContext
 from cli_agent.runtime._environment.handlers.executions import _text_execution
 from cli_agent.runtime._execution import ExecutionHandle
-
-_TOOLS_DIRECTORY = "tools/"
 
 
 class _LocalToolExecutor:
@@ -98,7 +95,7 @@ class _LocalToolExecutor:
                 f"Tool environment is unavailable: {exc}\n",
                 success=False,
             )
-        invalid_binding = _invalid_binding(request.bindings)
+        invalid_binding = validate_tool_bindings(request.bindings)
         if invalid_binding is not None:
             return _text_execution(
                 f"Tool environment is unavailable: {invalid_binding}\n",
@@ -160,32 +157,3 @@ class _LocalToolExecutor:
         """Reject every operation after the Backend Workspace closes."""
 
         self._backend._ensure_open()
-
-
-def _invalid_binding(bindings: tuple[_ToolBinding, ...]) -> str | None:
-    """Return the first invalid binding, or None when every binding is safe.
-
-    Bindings are the requested capabilities of one Tool run: names must be
-    non-keyword Python identifiers and paths must stay inside the logical
-    Tools tree, so the worker can never be steered outside the materialized
-    Tools directory.
-    """
-
-    for binding in bindings:
-        name = binding.name
-        path = binding.path
-        if (
-            not isinstance(name, str)
-            or not name
-            or not name.isidentifier()
-            or keyword.iskeyword(name)
-        ):
-            return f"invalid Tool binding: {name!r}"
-        if (
-            not isinstance(path, str)
-            or posixpath.isabs(path)
-            or not path.startswith(_TOOLS_DIRECTORY)
-            or ".." in posixpath.normpath(path).split("/")
-        ):
-            return f"invalid Tool path: {path!r}"
-    return None

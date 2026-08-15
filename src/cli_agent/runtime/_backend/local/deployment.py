@@ -25,11 +25,7 @@ from typing import TYPE_CHECKING
 
 from cli_agent.runtime._backend.local.backend import _LocalBackendWorkspace
 from cli_agent.runtime._backend.local.executor import _LocalToolExecutor
-from cli_agent.runtime._backend.local.mcp_runtime import (
-    binding_filename,
-    discover_servers,
-    render_binding,
-)
+from cli_agent.runtime._backend.local.mcp_runtime import discover_servers
 from cli_agent.runtime._backend.local.tool_runtime import (
     effective_requirements,
     ensure_tool_runtime,
@@ -43,23 +39,17 @@ from cli_agent.runtime._capability.deployment import (
     DeploymentSnapshot,
     ToolExecutor,
     _DeploymentManifest,
-    artifact_digest,
-    domains_match,
-    publish_artifacts,
+    commit_manifest,
+    publish_domains,
     read_manifest,
     volume_path,
-    write_manifest,
 )
 from cli_agent.runtime._capability.facts import _FilesystemError
-from cli_agent.runtime._capability.mcp.catalog import (
-    MCP_STUB_PREFIX,
-    render_stub,
-    stub_filename,
-)
 from cli_agent.runtime._capability.mcp.facts import (
     MCPServerConfig,
     _MCPServerFacts,
 )
+from cli_agent.runtime._capability.mcp.stubs import materialize_stubs
 from cli_agent.runtime._capability.projections import render_catalog_indexes
 from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._capability.workspace import _ensure_real_directory
@@ -186,51 +176,16 @@ class _LocalCapabilityDeployment:
         async with self._deployment_lock():
             manifest = await self._load_manifest(workspace)
             realized = self._realized_digests(manifest)
-            discovered = {fact.name: fact for fact in facts}
-            binding_configs = tuple(
-                config for config in configs if config.name in discovered
-            )
-            stubs = {
-                volume_path(
-                    self._volume,
-                    "tools",
-                    stub_filename(config.name),
-                ): render_stub(config, discovered[config.name]).encode("utf-8")
-                for config in binding_configs
-            }
-            binding_path = volume_path(
-                self._volume,
-                TOOL_RUNTIME_DIRECTORY,
-                binding_filename(),
-            )
-            binding = render_binding(binding_configs).encode("utf-8")
-            desired = {
-                "stubs": artifact_digest(stubs),
-                "binding": artifact_digest({binding_path: binding}),
-            }
-            if domains_match(
-                manifest,
+            realized, _ = await materialize_stubs(
+                filesystem=workspace.filesystem,
+                volume=self._volume,
                 workspace_id=workspace.id,
-                digests=desired,
-            ):
-                return
-            await self._remove_stale_stubs(workspace, keep=frozenset(stubs))
-            try:
-                await publish_artifacts(
-                    workspace.filesystem,
-                    {binding_path: binding},
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self._emit(
-                    "mcp.binding_failed",
-                    "MCP invocation binding could not be materialized",
-                    {"error": str(exc)},
-                )
-                return
-            await publish_artifacts(workspace.filesystem, stubs)
-            realized.update(desired)
+                configs=configs,
+                facts=facts,
+                manifest=manifest,
+                realized=realized,
+                on_diagnostic=self._on_diagnostic,
+            )
             self._realized = realized
 
     async def reconcile(
@@ -258,14 +213,13 @@ class _LocalCapabilityDeployment:
                     snapshot=snapshot,
                 ).items()
             }
-            desired_indexes = {"indexes": artifact_digest(indexes)}
-            if not domains_match(
-                manifest,
+            realized = await publish_domains(
+                filesystem=workspace.filesystem,
                 workspace_id=workspace.id,
-                digests=desired_indexes,
-            ):
-                await publish_artifacts(workspace.filesystem, indexes)
-                realized.update(desired_indexes)
+                manifest=manifest,
+                realized=realized,
+                domains={"indexes": indexes},
+            )
 
             runtime = None
             error: str | None = None
@@ -291,15 +245,13 @@ class _LocalCapabilityDeployment:
                         ): effective,
                     },
                 }
-                for domain, artifacts in tool_domains.items():
-                    desired = {domain: artifact_digest(artifacts)}
-                    if not domains_match(
-                        manifest,
-                        workspace_id=workspace.id,
-                        digests=desired,
-                    ):
-                        await publish_artifacts(workspace.filesystem, artifacts)
-                        realized.update(desired)
+                realized = await publish_domains(
+                    filesystem=workspace.filesystem,
+                    workspace_id=workspace.id,
+                    manifest=manifest,
+                    realized=realized,
+                    domains=tool_domains,
+                )
                 runtime = await ensure_tool_runtime(
                     tool_root,
                     tools_directory=self._state_root / "tools",
@@ -330,18 +282,14 @@ class _LocalCapabilityDeployment:
                 self._deployment = snapshot_result
                 return snapshot_result
 
-            published = _DeploymentManifest(
+            await commit_manifest(
+                workspace.filesystem,
+                self._volume,
                 workspace_id=workspace.id,
                 revision=snapshot.revision,
-                complete=True,
-                digests=dict(realized),
+                realized=realized,
+                previous=manifest,
             )
-            if manifest != published:
-                await write_manifest(
-                    workspace.filesystem,
-                    volume_path(self._volume, DEPLOYMENT_MANIFEST),
-                    published,
-                )
             local_backend = workspace.backend
             if isinstance(local_backend, _LocalBackendWorkspace):
                 local_backend._attach_tool_runtime(runtime)
@@ -388,28 +336,6 @@ class _LocalCapabilityDeployment:
             )
         except _FilesystemError:
             return b""
-
-    async def _remove_stale_stubs(
-        self,
-        workspace: Workspace,
-        *,
-        keep: frozenset[str],
-    ) -> None:
-        """Remove every stale generated ``mcp_*.py`` stub from the Tools tree."""
-
-        tools_directory = volume_path(self._volume, "tools")
-        try:
-            listing = await workspace.filesystem.list(tools_directory)
-        except _FilesystemError:
-            return
-        for entry in listing:
-            if not entry.name.startswith(MCP_STUB_PREFIX) or not entry.name.endswith(
-                ".py",
-            ):
-                continue
-            path = volume_path(self._volume, "tools", entry.name)
-            if path not in keep:
-                await workspace.filesystem.remove(path)
 
     def _deployment_lock(self) -> asyncio.Lock:
         """Return the per-Workspace deployment lock for this event loop."""

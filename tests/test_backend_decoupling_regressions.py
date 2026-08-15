@@ -84,7 +84,7 @@ def test_runtime_has_no_backend_session_or_parallel_workspace_owner() -> None:
     runtime_source = Path(
         importlib.import_module("cli_agent.runtime.runtime").__file__
     ).read_text(encoding="utf-8")
-    assert runtime_source.count("backend=") == 1
+    assert runtime_source.count("backend=") == 3
 
 
 def test_environment_kernel_never_touches_local_backend_mechanics() -> None:

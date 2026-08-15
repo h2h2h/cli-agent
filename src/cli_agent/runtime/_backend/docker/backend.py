@@ -9,9 +9,11 @@ unreachable, the image is missing and cannot be pulled, or the volume
 cannot be provisioned; execution-time daemon failures surface as
 ``BackendExecutionError`` and never masquerade as command exit codes.
 
-Capability materialization and Tool worker execution are out of scope for
-this backend (RFC-0017); the Docker ToolExecutor arrives with the Docker
-CapabilityDeployment.
+Capability materialization and Tool worker execution (RFC-0017) live in
+the Docker CapabilityDeployment: the deployment attaches the materialized
+Tool Runtime to this Backend through the Docker-only ``_tool_runtime``
+seam, and every execution mounts the persistent capability volume without
+mapping any Host path into the container namespace.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from aiodocker import Docker
 from aiodocker.exceptions import DockerError
+from aiodocker.types import JSONObject, JSONValue
 
 from cli_agent.runtime._backend.docker.execution import _DockerShellExecution
 from cli_agent.runtime._backend.docker.filesystem import (
@@ -39,6 +42,8 @@ from cli_agent.runtime._execution import BackendExecutionError, ExecutionHandle
 
 if TYPE_CHECKING:
     from aiodocker.containers import DockerContainer
+
+    from cli_agent.runtime._backend.docker.deployment import _DockerToolRuntime
 
 _NOT_FOUND = 404
 
@@ -125,8 +130,15 @@ class _DockerBackendWorkspace:
         self._volume = volume
         self._helper = helper
         self._live_containers: set[str] = set()
+        self._tool_runtime: _DockerToolRuntime | None = None
         self._closed = False
         self.filesystem = _DockerWorkspaceFilesystem(self)
+
+    @property
+    def volume(self) -> str:
+        """Return the persistent volume name backing this Workspace."""
+
+        return self._volume
 
     def execution_base_environment(self) -> Mapping[str, str]:
         """Return the Workspace environment merged under every execution.
@@ -201,6 +213,17 @@ class _DockerBackendWorkspace:
 
         self._live_containers.discard(container_id)
 
+    def _attach_tool_runtime(self, runtime: _DockerToolRuntime) -> None:
+        """Bind one materialized Docker Tool Runtime (Docker-only seam).
+
+        The Backend public protocol never exposes Tool Runtime mechanics;
+        the Docker CapabilityDeployment uses this seam to record the venv
+        Python, worker, and binding paths the ToolExecutor consumes.
+        """
+
+        self._ensure_open()
+        self._tool_runtime = runtime
+
     async def _create_execution_container(
         self,
         request: _ShellExecutionRequest,
@@ -220,25 +243,92 @@ class _DockerBackendWorkspace:
             **self.workspace_environment,
             **request.environment,
         }
-        config = {
+        config: dict[str, JSONValue] = {
             "Image": source.image,
             "Cmd": ["/bin/sh", "-c", request.command.raw_command],
             "WorkingDir": request.cwd,
             "Env": [f"{key}={value}" for key, value in environment.items()],
+            "Tty": False,
+            "HostConfig": {
+                "Binds": [f"{self._volume}:{source.root}"],
+            },
+        }
+        return await self._create_container(config, stdin=stdin)
+
+    async def _create_container(
+        self,
+        config: JSONObject,
+        *,
+        stdin: bool,
+    ) -> DockerContainer:
+        """Create one container from raw config without starting it.
+
+        Container creation or image resolution failures raise
+        ``BackendExecutionError``; command semantic failures stay exit
+        codes and never reach this path.
+        """
+
+        self._ensure_open()
+        payload: dict[str, JSONValue] = {
+            **config,
             "OpenStdin": stdin,
             "StdinOnce": stdin,
             "Tty": False,
             "AttachStdin": stdin,
             "AttachStdout": True,
             "AttachStderr": True,
+        }
+        try:
+            return await self._client.containers.create(payload)
+        except Exception as exc:
+            raise BackendExecutionError("Docker container creation failed") from exc
+
+    def _tool_container_config(
+        self,
+        *,
+        python: str,
+        worker: str,
+        cwd: str,
+        environment: dict[str, str],
+    ) -> JSONObject:
+        """Return the ephemeral Tool worker container config.
+
+        Only the persistent Workspace volume is mounted: the worker and
+        its bindings live entirely inside the volume namespace, and no
+        Host path is ever mapped into the container.
+        """
+
+        self._ensure_open()
+        source = self._source
+        return {
+            "Image": source.image,
+            "Cmd": [python, worker],
+            "WorkingDir": cwd,
+            "Env": [f"{key}={value}" for key, value in environment.items()],
             "HostConfig": {
                 "Binds": [f"{self._volume}:{source.root}"],
             },
         }
-        try:
-            return await self._client.containers.create(config)
-        except Exception as exc:
-            raise BackendExecutionError("Docker container creation failed") from exc
+
+    def _setup_container_config(
+        self,
+        *,
+        command: str,
+        environment: dict[str, str],
+    ) -> JSONObject:
+        """Return one transient setup container config over the volume."""
+
+        self._ensure_open()
+        source = self._source
+        return {
+            "Image": source.image,
+            "Cmd": ["/bin/sh", "-c", command],
+            "WorkingDir": source.root,
+            "Env": [f"{key}={value}" for key, value in environment.items()],
+            "HostConfig": {
+                "Binds": [f"{self._volume}:{source.root}"],
+            },
+        }
 
     async def _fs_call(self, payload: dict[str, object]) -> dict[str, object]:
         """Run one filesystem request inside the helper container.

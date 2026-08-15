@@ -15,7 +15,7 @@ jobs:
           python-version: "3.13"
       - run: uv sync --group dev
       - run: uv run ruff check src tests
-      - run: uv run pytest tests -m "not live_sync"
+      - run: uv run pytest tests -m "not live_sync and not docker"
 
   docker:
     name: docker backend tests
@@ -28,5 +28,5 @@ jobs:
       - run: uv sync --group dev
       - name: pull the Docker execution image
         run: docker pull python:3.12-alpine
-      - name: run the full suite against the Docker daemon
-        run: uv run pytest tests -m "not live_sync"
+      - name: run the Docker integration suite
+        run: uv run pytest tests -m "docker"

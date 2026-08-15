@@ -46,7 +46,7 @@ def test_backend_contract_has_no_capability_plane_members() -> None:
     source = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (_RUNTIME_SOURCE / "_backend").rglob("*.py")
-        if "local" not in str(path)
+        if "local" not in str(path) and path.name != "deployment.py"
     )
     for symbol in (
         "materialize_binding",

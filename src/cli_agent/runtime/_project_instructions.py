@@ -66,6 +66,36 @@ def _load_project_instructions(workspace: Path) -> _ProjectInstructions | None:
         content = source.read_bytes()
     except OSError as exc:
         raise _startup_error("read", source, str(exc)) from exc
+    return validate_instructions(source=str(source), content=content)
+
+
+def validate_instructions(
+    *,
+    source: str,
+    content: bytes,
+) -> _ProjectInstructions | None:
+    """Validate raw ``AGENTS.md`` bytes into one instruction snapshot.
+
+    The same size and strict-UTF-8 rules back the Host loader and the
+    volume-backed loader of the Docker deployment, so both planes agree on
+    what a valid project instruction is.
+
+    Args:
+        source (`str`):
+            The canonical instruction source label (Host path or
+            container-native path).
+        content (`bytes`):
+            The raw ``AGENTS.md`` bytes.
+
+    Returns:
+        The immutable instruction snapshot, or ``None`` for whitespace-only
+        content.
+
+    Raises:
+        ValueError: If the bytes exceed the fixed 32 KiB limit or are not
+            strict UTF-8.
+    """
+
     if len(content) > MAX_PROJECT_INSTRUCTION_BYTES:
         raise _startup_error(
             "size validation",
@@ -78,10 +108,10 @@ def _load_project_instructions(workspace: Path) -> _ProjectInstructions | None:
         raise _startup_error("decode", source, "content is not valid UTF-8") from exc
     if not text.strip():
         return None
-    return _ProjectInstructions(source=str(source), text=text)
+    return _ProjectInstructions(source=source, text=text)
 
 
-def _startup_error(operation: str, source: Path, message: str) -> ValueError:
+def _startup_error(operation: str, source: str | Path, message: str) -> ValueError:
     """Build one startup error locating the failed operation and source path."""
 
     return ValueError(

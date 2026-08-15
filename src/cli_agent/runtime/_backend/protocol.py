@@ -46,8 +46,15 @@ class _Backend(Protocol):
 class _BackendWorkspace(Protocol):
     """One live Runtime-owned Workspace shared by every Session Kernel."""
 
-    root: str
-    filesystem: _WorkspaceFilesystem
+    @property
+    def root(self) -> str:
+        """Return the Backend-native Workspace root."""
+        ...
+
+    @property
+    def filesystem(self) -> _WorkspaceFilesystem:
+        """Return the Backend-owned filesystem implementation."""
+        ...
 
     def prepare_shell(
         self,

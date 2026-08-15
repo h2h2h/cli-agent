@@ -34,7 +34,10 @@ class _LogicalCapabilityView(Protocol):
     a Backend; neither may write through this interface.
     """
 
-    root: str
+    @property
+    def root(self) -> str:
+        """Return the Backend-native root represented by this view."""
+        ...
 
     async def inspect(self, relative_path: str) -> _CapabilityInspection:
         """Return provenance and shadow facts for one managed path."""

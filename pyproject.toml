@@ -30,7 +30,7 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-addopts = "-m 'not live_sync'"
+addopts = "-m 'not live_sync and not docker'"
 markers = [
     "live_sync: run a real uv dependency synchronization instead of mocking it",
     "docker: run against a real Docker daemon; skipped when it is unavailable",

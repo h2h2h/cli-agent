@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import keyword
 import posixpath
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from cli_agent.runtime._backend import (
     _FileWriteRequest,
+    _ToolBinding,
     _ToolExecutionRequest,
     _WorkspaceFilesystem,
 )
@@ -64,7 +66,10 @@ class DeploymentSnapshot:
     handed to ``reconcile``; ``complete`` is False when any deployed
     runtime component (most commonly the private dependency environment)
     failed to materialize, in which case ``error`` carries the reason and
-    the previous complete deployment on disk remains in place.
+    the previous complete deployment on disk remains in place. ``mounts``
+    records the Backend-native volume mount contract of the deployed
+    capability runtime (RFC-0017); the Local deployment owns the Workspace
+    state volume and records no extra mount.
     """
 
     workspace_id: str
@@ -72,6 +77,7 @@ class DeploymentSnapshot:
     layout_version: int
     complete: bool
     error: str | None
+    mounts: tuple[str, ...] = ()
 
 
 @runtime_checkable
@@ -168,6 +174,37 @@ def verify_deployment(
             workspace_id=deployment.workspace_id,
             revision=deployment.revision,
         )
+
+
+def validate_tool_bindings(
+    bindings: tuple[_ToolBinding, ...],
+) -> str | None:
+    """Return the first invalid binding, or None when every binding is safe.
+
+    Bindings are the requested capabilities of one Tool run: names must be
+    non-keyword Python identifiers and paths must stay inside the logical
+    Tools tree, so a worker can never be steered outside the materialized
+    Tools directory. Shared by every ToolExecutor regardless of Backend.
+    """
+
+    for binding in bindings:
+        name = binding.name
+        path = binding.path
+        if (
+            not isinstance(name, str)
+            or not name
+            or not name.isidentifier()
+            or keyword.iskeyword(name)
+        ):
+            return f"invalid Tool binding: {name!r}"
+        if (
+            not isinstance(path, str)
+            or posixpath.isabs(path)
+            or not path.startswith("tools/")
+            or ".." in posixpath.normpath(path).split("/")
+        ):
+            return f"invalid Tool path: {path!r}"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +314,64 @@ async def publish_artifacts(
     for path in sorted(artifacts):
         await filesystem.write(
             _FileWriteRequest(path=path, content=artifacts[path]),
+        )
+
+
+async def publish_domains(
+    *,
+    filesystem: _WorkspaceFilesystem,
+    workspace_id: str,
+    manifest: _DeploymentManifest | None,
+    realized: Mapping[str, str],
+    domains: Mapping[str, Mapping[str, bytes]],
+) -> dict[str, str]:
+    """Publish every changed artifact domain and return the realized digests.
+
+    Each domain (e.g. ``indexes``, ``worker``, ``requirements``, ``stubs``,
+    ``binding``) is skipped when the completion manifest already covers its
+    digest for this Workspace; unchanged domains are never republished.
+    """
+
+    updated = dict(realized)
+    for domain, artifacts in domains.items():
+        desired = {domain: artifact_digest(artifacts)}
+        if not domains_match(
+            manifest,
+            workspace_id=workspace_id,
+            digests=desired,
+        ):
+            await publish_artifacts(filesystem, artifacts)
+            updated.update(desired)
+    return updated
+
+
+async def commit_manifest(
+    filesystem: _WorkspaceFilesystem,
+    volume: str,
+    *,
+    workspace_id: str,
+    revision: str,
+    realized: Mapping[str, str],
+    previous: _DeploymentManifest | None,
+) -> None:
+    """Atomically publish the completion manifest when anything changed.
+
+    A complete manifest binds the published artifact digests to the
+    snapshot revision and the Workspace identity; failed reconciles never
+    reach this point, so the previous complete deployment stays in place.
+    """
+
+    published = _DeploymentManifest(
+        workspace_id=workspace_id,
+        revision=revision,
+        complete=True,
+        digests=dict(realized),
+    )
+    if previous != published:
+        await write_manifest(
+            filesystem,
+            volume_path(volume, DEPLOYMENT_MANIFEST),
+            published,
         )
 
 

@@ -23,9 +23,10 @@ from cli_agent.runtime._backend import (
 )
 from cli_agent.runtime._backend.docker import (
     _DockerBackend,
+    _DockerBackendWorkspace,
     _DockerWorkspaceSource,
 )
-from cli_agent.runtime._backend.local import _LocalBackend
+from cli_agent.runtime._backend.local import _LocalBackend, _LocalBackendWorkspace
 from cli_agent.runtime._capability.source import _prepare_capability_source
 from cli_agent.runtime._capability.workspace import (
     _load_workspace_env,
@@ -41,10 +42,25 @@ _DEFAULT_DOCKER_IMAGE = "python:3.12-alpine"
 class Workspace(Protocol):
     """One thin logical working environment for an active Runtime."""
 
-    id: str
-    root: str
-    filesystem: _WorkspaceFilesystem
-    backend: _BackendWorkspace
+    @property
+    def id(self) -> str:
+        """Return the stable Workspace identity."""
+        ...
+
+    @property
+    def root(self) -> str:
+        """Return the Backend-native Workspace root."""
+        ...
+
+    @property
+    def filesystem(self) -> _WorkspaceFilesystem:
+        """Return the bound Workspace filesystem."""
+        ...
+
+    @property
+    def backend(self) -> _BackendWorkspace:
+        """Return the stable Backend binding."""
+        ...
 
     async def close(self) -> None:
         """Flush and close the bound Backend; later use fails closed."""
@@ -111,7 +127,7 @@ class _LocalWorkspace:
         self,
         workspace_id: str,
         root: Path,
-        backend: _BackendWorkspace,
+        backend: _LocalBackendWorkspace,
         repertoire: Path,
     ) -> None:
         self.id = workspace_id
@@ -192,7 +208,12 @@ class _DockerWorkspaceFactory:
                 environment=environment,
             )
         )
-        return _DockerWorkspace(workspace_id, backend, repertoire_root)
+        return _DockerWorkspace(
+            workspace_id,
+            paths.state,
+            backend,
+            repertoire_root,
+        )
 
 
 class _DockerWorkspace:
@@ -201,7 +222,8 @@ class _DockerWorkspace:
     def __init__(
         self,
         workspace_id: str,
-        backend: _BackendWorkspace,
+        state_root: Path,
+        backend: _DockerBackendWorkspace,
         repertoire: Path,
     ) -> None:
         self.id = workspace_id
@@ -209,6 +231,19 @@ class _DockerWorkspace:
         self.filesystem = backend.filesystem
         self.backend = backend
         self.repertoire = repertoire
+        self._state_root = state_root
+
+    @property
+    def state_root(self) -> Path:
+        """Return the Host control state directory (``.workspace``)."""
+
+        return self._state_root
+
+    @property
+    def deployment_volume(self) -> str:
+        """Return the Backend-relative capability volume path."""
+
+        return ".workspace"
 
     @property
     def volume(self) -> str:
