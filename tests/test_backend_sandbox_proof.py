@@ -24,7 +24,7 @@ from types import SimpleNamespace
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
-import cli_agent.runtime._resources as resources_module
+import cli_agent.runtime._workspace as workspace_module
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -714,7 +714,7 @@ def test_full_runtime_runs_on_the_sandbox_backend(
 ) -> None:
     _SandboxBackend.seed("tools/marker.py", _MARKER_TOOL)
     _SandboxBackend.seed("skills/review/SKILL.md", _REVIEW_SKILL)
-    monkeypatch.setattr(resources_module, "_LocalBackend", _SandboxBackend)
+    monkeypatch.setattr(workspace_module, "_LocalBackend", _SandboxBackend)
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
@@ -917,7 +917,7 @@ def test_sandbox_backend_open_failure_does_not_fall_back_to_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _SandboxBackend.fail_open = True
-    monkeypatch.setattr(resources_module, "_LocalBackend", _SandboxBackend)
+    monkeypatch.setattr(workspace_module, "_LocalBackend", _SandboxBackend)
 
     with pytest.raises(ValueError, match="sandbox constraint failed"):
         asyncio.run(

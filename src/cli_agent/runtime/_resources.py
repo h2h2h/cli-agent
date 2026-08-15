@@ -6,19 +6,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cli_agent.runtime._backend import (
-    _BackendWorkspace,
-    _BoundCapabilityView,
-    _CapabilityState,
-    _WorkspaceSource,
-)
-from cli_agent.runtime._backend.local import _LocalBackend
+from cli_agent.runtime._backend import _BackendWorkspace, _BoundCapabilityView
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
-from cli_agent.runtime._capability.source import _prepare_capability_source
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._database.session_store import SessionStore
 from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime._database.summary_cache import _SummaryCache
@@ -26,6 +18,7 @@ from cli_agent.runtime._project_instructions import (
     _load_project_instructions,
     _ProjectInstructions,
 )
+from cli_agent.runtime._workspace import Workspace, _LocalWorkspaceFactory
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 
@@ -36,11 +29,11 @@ class _RuntimeResources:
     ``frozen`` only prevents field rebinding; referenced components continue
     to encapsulate their own mutable state. ``base_env`` is excluded from the
     representation so debug output never contains Workspace environment values.
-    The aggregate owns the RFC-0012 close sequence: the Library worker, the
-    Backend Workspace flush, and the Backend Workspace close.
+    The aggregate owns the RFC-0012 close sequence: the Library worker stops
+    first, then the Workspace flushes and closes its bound Backend.
     """
 
-    workspace: Path
+    workspace: Workspace
     backend: _BackendWorkspace
     base_env: Mapping[str, str] = field(repr=False)
     capability_view: _BoundCapabilityView
@@ -54,8 +47,8 @@ class _RuntimeResources:
         """Close Workspace-lifetime resources in reverse dependency order.
 
         The Library worker (and its state database) stops first, the Backend
-        Workspace is flushed, then the Workspace and Capability State close.
-        Every step is attempted so a failure cannot leak resources; the first
+        Workspace is flushed, then the Workspace closes its Backend. Every
+        step is attempted so a failure cannot leak resources; the first
         failure is raised so the Host never assumes persistence succeeded.
         """
 
@@ -69,7 +62,7 @@ class _RuntimeResources:
         except Exception as exc:
             errors.append(exc)
         try:
-            await self.backend.close()
+            await self.workspace.close()
         except Exception as exc:
             errors.append(exc)
         if errors:
@@ -108,11 +101,11 @@ async def _reconcile_runtime_resources(
 ) -> _RuntimeResources:
     """Reconcile Workspace-lifetime resources in the established order.
 
-    The RFC-0012 open order is fixed: Host sources, Backend Workspace and
-    Bound View, Workspace project instructions, Workspace MCP, Tool Catalog,
-    Backend Tool Runtime, Skill Catalog, Library Catalog. Any failure rolls
-    back every already-opened resource in reverse order and re-raises the
-    original failure.
+    The RFC-0012 open order is fixed: Workspace identity, Host sources,
+    Backend Workspace and Bound View, Workspace project instructions,
+    Workspace MCP, Tool Catalog, Backend Tool Runtime, Skill Catalog,
+    Library Catalog. Any failure rolls back every already-opened resource
+    in reverse order and re-raises the original failure.
 
     Args:
         workspace (`str | Path`):
@@ -131,17 +124,15 @@ async def _reconcile_runtime_resources(
 
     opened = _OpenResources()
     try:
-        paths = _prepare_workspace(workspace)
-        capability_source = _prepare_capability_source(repertoire, paths.state)
-        backend = await _LocalBackend().open_workspace(
-            source=_WorkspaceSource(root=paths.root, environment=paths.environment),
-            capability_source=capability_source,
-            capability_state=_CapabilityState(root=paths.state),
+        opened_workspace = await _LocalWorkspaceFactory().open(
+            workspace,
+            repertoire=repertoire,
         )
-        opened.add(backend.close)
+        opened.add(opened_workspace.close)
+        backend = opened_workspace.backend
         project_instructions = await _load_project_instructions(
             backend.filesystem,
-            str(paths.root),
+            opened_workspace.root,
         )
         state_database = _StateDatabase.open()
         opened.add(lambda: _close_database(state_database))
@@ -167,7 +158,7 @@ async def _reconcile_runtime_resources(
             summary_cache,
         )
         return _RuntimeResources(
-            workspace=paths.root,
+            workspace=opened_workspace,
             backend=backend,
             base_env=backend.workspace_environment,
             capability_view=backend.capabilities,

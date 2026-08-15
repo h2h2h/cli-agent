@@ -165,7 +165,8 @@ def test_run_turn_persists_session_trace_in_order(
         (session,) = _sessions(tmp_path / "state.sqlite3")
         session_id, workspace_id, config, created_at, updated_at, archived_at = session
         assert session_id == "s1"
-        assert workspace_id == str(tmp_path.resolve())
+        assert workspace_id == runtime._resources.workspace.id
+        assert workspace_id.startswith("local:")
         assert json.loads(_session_config_prompt(session))["blocks"][0][
             "text"
         ].startswith("You are cli-agent")

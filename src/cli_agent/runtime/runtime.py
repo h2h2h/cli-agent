@@ -12,6 +12,7 @@ from typing import Any
 
 from cli_agent.errors import HostFacingError, error_boundary
 from cli_agent.errors.session import SessionConflictError
+from cli_agent.errors.workspace import WorkspaceMismatchError
 from cli_agent.runtime._agent_loop import AgentLoop
 from cli_agent.runtime._context import ContextEngineFactory, ContextPolicy, SessionUsage
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -248,15 +249,17 @@ class AgentRuntime:
 
         Raises:
             HostFacingError: If ``session_id`` already exists and requires
-                resume, or durable Session creation fails.
+                resume, the durable session belongs to a different
+                Workspace, or durable Session creation fails.
         """
 
         self._ensure_open()
         session = self._sessions.get(session_id)
         if session is None:
             bound_provider = provider if provider is not None else self._provider
+            workspace = self._resources.workspace
             system = assemble_system_message(
-                self._resources.workspace,
+                Path(workspace.root),
                 self._instruction,
                 tool_catalog=self._resources.tool_catalog,
                 skill_catalog=self._resources.skill_catalog,
@@ -265,10 +268,17 @@ class AgentRuntime:
             try:
                 self._resources.session_store.create(
                     session_id,
-                    str(self._resources.workspace),
+                    workspace.id,
                     SessionConfig(system_prompt=serialize_system_prompt(system)),
                 )
             except SessionConflictError as exc:
+                existing, _ = self._resources.session_store.load(session_id)
+                if existing.workspace_id != workspace.id:
+                    raise WorkspaceMismatchError(
+                        session_id=session_id,
+                        workspace_id=existing.workspace_id,
+                        expected_workspace_id=workspace.id,
+                    ) from exc
                 raise HostFacingError(
                     code="session_already_exists",
                     message="Session already exists and must be resumed.",
@@ -376,7 +386,7 @@ class AgentRuntime:
 
     def _new_kernel(self, session_id: str) -> EnvironmentKernel:
         return EnvironmentKernel(
-            self._resources.workspace,
+            self._resources.workspace.root,
             backend=self._resources.backend,
             library_catalog=self._resources.library_catalog,
             tool_catalog=self._resources.tool_catalog,

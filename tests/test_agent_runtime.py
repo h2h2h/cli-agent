@@ -536,7 +536,8 @@ def test_runtime_holds_single_resource_aggregate(tmp_path: Path) -> None:
 
         resources = runtime._resources
         assert isinstance(resources, _RuntimeResources)
-        assert resources.workspace == tmp_path.resolve()
+        assert resources.workspace.root == str(tmp_path.resolve())
+        assert resources.workspace.id.startswith("local:")
         assert isinstance(resources.backend, _BackendWorkspace)
         assert isinstance(resources.capability_view, _BoundCapabilityView)
         assert isinstance(resources.tool_catalog, _ToolCatalog)
@@ -674,7 +675,7 @@ def test_runtime_close_only_closes_session_owned_state(
         ] == [1, 1]
         assert resources.backend._closed
         assert hasattr(resources, "close")
-        assert resources.workspace == tmp_path.resolve()
+        assert resources.workspace.root == str(tmp_path.resolve())
         assert resources.base_env == {}
         assert resources.capability_view is runtime._resources.capability_view
         assert resources.tool_catalog is runtime._resources.tool_catalog

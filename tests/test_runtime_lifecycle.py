@@ -18,7 +18,7 @@ import pytest
 from interaction_fakes import _ScriptedInteraction
 
 import cli_agent.runtime._capability.library.catalog as library_module
-import cli_agent.runtime._resources as resources_module
+import cli_agent.runtime._workspace as workspace_module
 import cli_agent.runtime.runtime as runtime_module
 from cli_agent.runtime import (
     AgentRuntime,
@@ -431,7 +431,7 @@ def test_worker_start_failure_rolls_back_opened_resources(
     monkeypatch,
 ) -> None:
     opened: dict[str, object] = {}
-    real_backend = resources_module._LocalBackend
+    real_backend = workspace_module._LocalBackend
 
     class _RecordingBackend(real_backend):
         async def open_workspace(
@@ -446,7 +446,7 @@ def test_worker_start_failure_rolls_back_opened_resources(
             opened["workspace"] = workspace
             return workspace
 
-    monkeypatch.setattr(resources_module, "_LocalBackend", _RecordingBackend)
+    monkeypatch.setattr(workspace_module, "_LocalBackend", _RecordingBackend)
 
     def fail_start(
         self: object, provider: object, on_diagnostic: object = None
@@ -486,7 +486,7 @@ def test_backend_open_failure_never_creates_local_execution(
             type(self).calls += 1
             raise ValueError("backend constraint failed")
 
-    monkeypatch.setattr(resources_module, "_LocalBackend", FailingBackend)
+    monkeypatch.setattr(workspace_module, "_LocalBackend", FailingBackend)
 
     with pytest.raises(ValueError, match="backend constraint failed"):
         asyncio.run(

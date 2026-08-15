@@ -45,6 +45,7 @@ from cli_agent.errors.session import (
     SessionNotFoundError,
     SessionPersistenceError,
 )
+from cli_agent.errors.workspace import WorkspaceMismatchError
 
 __all__ = (
     "CliAgentError",
@@ -59,6 +60,7 @@ __all__ = (
     "SessionCorruptedError",
     "SessionNotFoundError",
     "SessionPersistenceError",
+    "WorkspaceMismatchError",
     "error_boundary",
     "internal_from_exception",
 )

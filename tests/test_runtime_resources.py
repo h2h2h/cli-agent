@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import cli_agent.runtime._resources as resources_module
+import cli_agent.runtime._workspace as workspace_module
 from cli_agent.runtime._backend import _BackendWorkspace, _BoundCapabilityView
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
@@ -45,8 +46,10 @@ def test_reconcile_returns_complete_resource_aggregate(tmp_path: Path) -> None:
         )
 
         assert isinstance(resources, _RuntimeResources)
-        assert resources.workspace == workspace.resolve()
+        assert resources.workspace.root == str(workspace.resolve())
+        assert resources.workspace.id.startswith("local:")
         assert isinstance(resources.backend, _BackendWorkspace)
+        assert resources.backend is resources.workspace.backend
         assert resources.backend.root == str(workspace.resolve())
         assert isinstance(resources.base_env, Mapping)
         assert dict(resources.base_env) == {"TOKEN": "secret"}
@@ -218,6 +221,11 @@ def test_reconcile_runs_steps_in_documented_order(
         order.append("prepare_workspace")
         return _FakePaths()
 
+    def load_workspace_identity(state: object) -> str:
+        del state
+        order.append("workspace_identity")
+        return "local:00000000000000000000000000000000"
+
     def prepare_capability_source(
         repertoire: object,
         state_root: object,
@@ -226,13 +234,18 @@ def test_reconcile_runs_steps_in_documented_order(
         order.append("prepare_capability_source")
         return _FakeCapabilitySource()
 
-    monkeypatch.setattr(resources_module, "_prepare_workspace", prepare_workspace)
+    monkeypatch.setattr(workspace_module, "_prepare_workspace", prepare_workspace)
     monkeypatch.setattr(
-        resources_module,
+        workspace_module,
+        "_load_workspace_identity",
+        load_workspace_identity,
+    )
+    monkeypatch.setattr(
+        workspace_module,
         "_prepare_capability_source",
         prepare_capability_source,
     )
-    monkeypatch.setattr(resources_module, "_LocalBackend", _FakeLocalBackend)
+    monkeypatch.setattr(workspace_module, "_LocalBackend", _FakeLocalBackend)
     monkeypatch.setattr(
         resources_module,
         "_load_project_instructions",
@@ -255,6 +268,7 @@ def test_reconcile_runs_steps_in_documented_order(
 
         assert order == [
             "prepare_workspace",
+            "workspace_identity",
             "prepare_capability_source",
             "backend_open",
             "project_instructions",
@@ -267,7 +281,7 @@ def test_reconcile_runs_steps_in_documented_order(
             "skill_catalog",
             "library_catalog",
         ]
-        assert resources.workspace == _FakePaths.root
+        assert resources.workspace.root == str(_FakePaths.root)
         assert dict(resources.base_env) == {"TOKEN": "secret"}
 
     asyncio.run(scenario())
@@ -518,7 +532,7 @@ def _install_noop_reconcile_fakes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     _TrackingLocalBackend.order = order
     _TrackingLocalBackend.tool_runtime_failure = None
     _TrackingStateDatabase.order = order
-    monkeypatch.setattr(resources_module, "_LocalBackend", _TrackingLocalBackend)
+    monkeypatch.setattr(workspace_module, "_LocalBackend", _TrackingLocalBackend)
     monkeypatch.setattr(
         resources_module,
         "_load_project_instructions",
@@ -634,7 +648,7 @@ def test_backend_open_failure_propagates_without_fallback(
             raise ValueError("backend constraint failed")
 
     order = _install_noop_reconcile_fakes(monkeypatch)
-    monkeypatch.setattr(resources_module, "_LocalBackend", FailingLocalBackend)
+    monkeypatch.setattr(workspace_module, "_LocalBackend", FailingLocalBackend)
 
     with pytest.raises(ValueError, match="backend constraint failed"):
         asyncio.run(
@@ -666,9 +680,18 @@ def test_aggregate_close_follows_reverse_dependency_order(tmp_path: Path) -> Non
         async def close() -> None:
             order.append("backend.close")
 
+    class FakeWorkspace:
+        def __init__(self, backend: object) -> None:
+            self.backend = backend
+
+        @staticmethod
+        async def close() -> None:
+            order.append("workspace.close")
+
+    backend = FakeBackend()
     resources = _RuntimeResources(
-        workspace=tmp_path,
-        backend=FakeBackend(),  # type: ignore[arg-type]
+        workspace=FakeWorkspace(backend),  # type: ignore[arg-type]
+        backend=backend,  # type: ignore[arg-type]
         base_env={},
         capability_view=object(),
         project_instructions=None,
@@ -680,7 +703,7 @@ def test_aggregate_close_follows_reverse_dependency_order(tmp_path: Path) -> Non
 
     asyncio.run(resources.close())
 
-    assert order == ["library.close", "flush", "backend.close"]
+    assert order == ["library.close", "flush", "workspace.close"]
 
 
 def test_aggregate_close_attempts_every_step_and_surfaces_failure(
@@ -701,9 +724,16 @@ def test_aggregate_close_attempts_every_step_and_surfaces_failure(
         async def close(self) -> None:
             self.closed = True
 
+    class FakeWorkspace:
+        def __init__(self, backend: object) -> None:
+            self.backend = backend
+
+        async def close(self) -> None:
+            await self.backend.close()  # type: ignore[attr-defined]
+
     backend = FailingBackend()
     resources = _RuntimeResources(
-        workspace=tmp_path,
+        workspace=FakeWorkspace(backend),  # type: ignore[arg-type]
         backend=backend,  # type: ignore[arg-type]
         base_env={},
         capability_view=object(),
