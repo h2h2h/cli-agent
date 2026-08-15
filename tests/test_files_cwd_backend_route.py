@@ -31,7 +31,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.cd import _prepare_cd
-from cli_agent.runtime._environment.handlers.files import _FileHandler
+from cli_agent.runtime._environment.sources import _FileSource
 from cli_agent.runtime._execution import (
     _KILLED_BEFORE_START,
     ExitStatus,
@@ -111,7 +111,7 @@ class _RecordedOutput:
 
 def test_files_write_builds_one_resolved_request(tmp_path: Path) -> None:
     filesystem = _RecordingFilesystem()
-    handler = _FileHandler(filesystem)
+    handler = _FileSource(filesystem)
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(tmp_path),
@@ -138,7 +138,7 @@ def test_files_write_builds_one_resolved_request(tmp_path: Path) -> None:
 
 def test_files_edit_builds_one_resolved_request(tmp_path: Path) -> None:
     filesystem = _RecordingFilesystem()
-    handler = _FileHandler(filesystem)
+    handler = _FileSource(filesystem)
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(tmp_path),
@@ -166,7 +166,7 @@ def test_files_edit_builds_one_resolved_request(tmp_path: Path) -> None:
 def test_files_request_resolves_relative_to_backend_cwd(tmp_path: Path) -> None:
     filesystem = _RecordingFilesystem()
     subdirectory = tmp_path / "sub"
-    handler = _FileHandler(filesystem)
+    handler = _FileSource(filesystem)
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(subdirectory),
@@ -313,7 +313,7 @@ def test_filesystem_execution_cancel_before_run_has_no_side_effects(
     tmp_path: Path,
 ) -> None:
     filesystem = _RecordingFilesystem()
-    handler = _FileHandler(filesystem)
+    handler = _FileSource(filesystem)
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(tmp_path),

@@ -4,22 +4,21 @@ from pathlib import Path
 import pytest
 
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
-from cli_agent.runtime._environment.commands import (
-    _builtin_custom_commands,
-    _Command,
-    _CustomCommand,
-    _CustomCommandRegistry,
-    _ShellCommand,
-)
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
-from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.routing import (
     _CommandRouter,
     _ExecutionRoute,
+)
+from cli_agent.runtime._environment.sources import (
+    ExecutionSource,
+    _builtin_inline_sources,
+    _InlineSource,
+    _ShellSource,
+    _SourceRegistry,
 )
 from cli_agent.runtime._execution import (
     ExecutionOutputSink,
@@ -55,78 +54,78 @@ def test_parser_emits_only_generic_shell_syntax_facts() -> None:
     )
 
 
-def test_custom_command_contract_and_registry_match_command_heads() -> None:
-    command = _CustomCommand(
-        name="custom",
+def test_inline_source_contract_and_registry_match_command_heads() -> None:
+    source = _InlineSource(
+        "custom",
         prepare=_successful_preparer,
         parallel_safe=True,
         isolated=False,
     )
-    registry = _CustomCommandRegistry((command,))
+    registry = _SourceRegistry((("custom", source),))
 
-    assert isinstance(command, _Command)
-    assert command.matches(parse_shell_ast("custom argument"))
-    assert not command.matches(parse_shell_ast('custom "unterminated'))
-    assert registry.resolve(parse_shell_ast("custom argument")) is command
+    assert isinstance(source, ExecutionSource)
+    assert registry.resolve(parse_shell_ast("custom argument")) is source
     assert registry.resolve(parse_shell_ast('custom "unterminated')) is None
     assert registry.resolve(parse_shell_ast("./custom argument")) is None
-    assert command.parallel_safe(parse_shell_ast("custom argument")) is True
-    assert command.isolated is False
+    assert source.parallel_safe(parse_shell_ast("custom argument")) is True
+    assert source.isolated is False
 
 
-def test_registry_rejects_duplicate_custom_command_names() -> None:
-    registry = _CustomCommandRegistry()
-    registry.register(_CustomCommand(name="duplicate", prepare=_successful_preparer))
+def test_registry_rejects_duplicate_source_names() -> None:
+    registry = _SourceRegistry(
+        (
+            (
+                "duplicate",
+                _InlineSource("duplicate", _successful_preparer, isolated=True),
+            ),
+        )
+    )
 
     with pytest.raises(ValueError, match="already registered"):
         registry.register(
-            _CustomCommand(name="duplicate", prepare=_successful_preparer)
+            "duplicate",
+            _InlineSource("duplicate", _successful_preparer, isolated=True),
         )
 
 
-def test_router_returns_command_and_parallel_safe_without_driver_fields() -> None:
-    registry = _CustomCommandRegistry(_builtin_custom_commands())
+def test_router_returns_source_and_parallel_safe_without_driver_fields() -> None:
+    registry = _SourceRegistry(_builtin_inline_sources())
     router = _CommandRouter(
-        shell_command=_ShellCommand(
-            prepare=_ShellHandler().prepare,
-            parallel_commands=frozenset({"cat"}),
-        ),
-        custom_registry=registry,
+        shell_source=_ShellSource(parallel_commands=frozenset({"cat"})),
+        sources=registry,
     )
 
     custom_route = router.resolve(parse_shell_ast("export A=1"))
     shell_route = router.resolve(parse_shell_ast("cat file.txt"))
 
     assert isinstance(custom_route, _ExecutionRoute)
-    assert custom_route.command.name == "export"
+    assert isinstance(custom_route.source, _InlineSource)
+    assert custom_route.source.name == "export"
     assert custom_route.parallel_safe is False
-    assert shell_route.command.name is None
+    assert isinstance(shell_route.source, _ShellSource)
     assert shell_route.parallel_safe is True
     assert tuple(
         field.name for field in _ExecutionRoute.__dataclass_fields__.values()
     ) == (
-        "command",
+        "source",
         "parallel_safe",
     )
 
 
 def test_router_resolve_has_no_policy_or_scheduler_dependencies() -> None:
-    registry = _CustomCommandRegistry(_builtin_custom_commands())
+    registry = _SourceRegistry(_builtin_inline_sources())
     router = _CommandRouter(
-        shell_command=_ShellCommand(
-            prepare=_ShellHandler().prepare,
-            parallel_commands=frozenset({"cat"}),
-        ),
-        custom_registry=registry,
+        shell_source=_ShellSource(parallel_commands=frozenset({"cat"})),
+        sources=registry,
     )
 
-    assert set(vars(router)) == {"_shell_command", "_custom_registry"}
+    assert set(vars(router)) == {"_shell_source", "_sources"}
     assert tuple(_ExecutionRoute.__dataclass_fields__) == (
-        "command",
+        "source",
         "parallel_safe",
     )
     route = router.resolve(parse_shell_ast("cat file.txt"))
-    assert isinstance(route.command, _ShellCommand)
+    assert isinstance(route.source, _ShellSource)
     assert route.parallel_safe is True
     assert router.resolve(parse_shell_ast("cat file.txt")) == route
 
@@ -140,9 +139,9 @@ def test_prepare_does_not_mutate_session_before_execution(tmp_path: Path) -> Non
             environment=environment,
         )
         command = parse_shell_ast("export KEY=value")
-        custom = _builtin_custom_commands()[1]
+        export = dict(_builtin_inline_sources())["export"]
 
-        execution = custom.prepare(
+        execution = export.prepare(
             _ExecutionRequest(command=command),
             context,
         )

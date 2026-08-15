@@ -356,9 +356,7 @@ def test_tools_list_info_and_reserved_invalid_syntax_use_tool_handler(
     async def scenario() -> None:
         kernel = await _kernel(tmp_path, repertoire)
         try:
-            registered = kernel._router._custom_registry.resolve(
-                parse_shell_ast("tools list")
-            )
+            registered = kernel._router._sources.resolve(parse_shell_ast("tools list"))
             assert registered is not None
             assert registered.name == "tools"
             assert not hasattr(kernel._router, "_tool_command")
@@ -375,8 +373,8 @@ def test_tools_list_info_and_reserved_invalid_syntax_use_tool_handler(
             assert invalid["status"] == "failed"
             assert "Usage: tools" in _text(invalid, "stderr")
             state = kernel._executions[str(invalid["exec_id"])]
-            assert state.route.command is registered
-            assert state.route.command.name == "tools"
+            assert state.route.source is registered
+            assert state.route.source.name == "tools"
             assert state.route.parallel_safe is False
         finally:
             await kernel.close()
@@ -409,7 +407,7 @@ def test_custom_and_shell_commands_share_one_execution_lifecycle(
                 snapshot = _output(await _exec(kernel, command))
                 state = kernel._executions[str(snapshot["exec_id"])]
 
-                assert state.route.command.name == route_name
+                assert state.route.source.name == route_name
                 assert state.route.parallel_safe is parallel_safe
                 assert {
                     "exec_id",

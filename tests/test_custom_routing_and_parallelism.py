@@ -12,16 +12,16 @@ from cli_agent.runtime._backend.local import (
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._environment.commands import (
-    _builtin_custom_commands,
-    _CustomCommand,
-    _CustomCommandRegistry,
-    _ShellCommand,
-)
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
-from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.routing import (
     _CommandRouter,
+)
+from cli_agent.runtime._environment.sources import (
+    _builtin_inline_sources,
+    _FileSource,
+    _InlineSource,
+    _ShellSource,
+    _SourceRegistry,
 )
 from cli_agent.runtime._execution import (
     ExecutionOutputSink,
@@ -39,22 +39,23 @@ def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> No
 
         return _InlineExecution(execute)
 
-    registry = _CustomCommandRegistry(
+    registry = _SourceRegistry(
         (
-            *_builtin_custom_commands(),
-            _CustomCommand(
-                name="cli_read",
-                prepare=prepare_cli_read,
-                parallel_safe=True,
+            *_builtin_inline_sources(),
+            (
+                "cli_read",
+                _InlineSource(
+                    "cli_read",
+                    prepare_cli_read,
+                    parallel_safe=True,
+                    isolated=True,
+                ),
             ),
         )
     )
     router = _CommandRouter(
-        shell_command=_ShellCommand(
-            prepare=_ShellHandler().prepare,
-            parallel_commands=frozenset({"cat"}),
-        ),
-        custom_registry=registry,
+        shell_source=_ShellSource(parallel_commands=frozenset({"cat"})),
+        sources=registry,
     )
 
     export_route = router.resolve(parse_shell_ast("export A=1"))
@@ -62,18 +63,18 @@ def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> No
     cat_route = router.resolve(parse_shell_ast("cat file.txt"))
     pipeline_route = router.resolve(parse_shell_ast("cat file.txt | head"))
 
-    assert isinstance(export_route.command, _CustomCommand)
-    assert export_route.command.name == "export"
-    assert export_route.command.isolated is False
+    assert isinstance(export_route.source, _InlineSource)
+    assert export_route.source.name == "export"
+    assert export_route.source.isolated is False
     assert export_route.parallel_safe is False
-    assert isinstance(read_route.command, _CustomCommand)
-    assert read_route.command.name == "cli_read"
-    assert read_route.command.isolated is True
+    assert isinstance(read_route.source, _InlineSource)
+    assert read_route.source.name == "cli_read"
+    assert read_route.source.isolated is True
     assert read_route.parallel_safe is True
-    assert isinstance(cat_route.command, _ShellCommand)
-    assert cat_route.command.isolated is True
+    assert isinstance(cat_route.source, _ShellSource)
+    assert cat_route.source.isolated is True
     assert cat_route.parallel_safe is True
-    assert isinstance(pipeline_route.command, _ShellCommand)
+    assert isinstance(pipeline_route.source, _ShellSource)
     assert pipeline_route.parallel_safe is False
 
 
@@ -184,10 +185,11 @@ def test_files_command_resolves_to_custom_route_and_is_serial(
             tmp_path, backend=_LocalBackendWorkspace(tmp_path, {}, view)
         )
         try:
-            registered = kernel._router._custom_registry.resolve(
+            registered = kernel._router._sources.resolve(
                 parse_shell_ast("files write f <<'EOF'\nx\nEOF")
             )
             assert registered is not None
+            assert isinstance(registered, _FileSource)
             assert registered.name == "files"
             assert registered.isolated is True
 
@@ -201,14 +203,14 @@ def test_files_command_resolves_to_custom_route_and_is_serial(
             assert written["status"] == "exited"
             assert "wrote" in _stream_text(written, "stdout")
             state = kernel._executions[str(written["exec_id"])]
-            assert state.route.command.name == "files"
+            assert state.route.source.name == "files"
             assert state.route.parallel_safe is False
 
             invalid = _output(await _exec(kernel, "files nonsense hello"))
             assert invalid["status"] == "failed"
             assert "unknown files subcommand" in _stream_text(invalid, "stderr")
             state = kernel._executions[str(invalid["exec_id"])]
-            assert state.route.command.name == "files"
+            assert state.route.source.name == "files"
         finally:
             await kernel.close()
 
@@ -230,12 +232,20 @@ def test_files_command_cannot_be_silently_overridden(tmp_path: Path) -> None:
 
         return _InlineExecution(execute)
 
-    registry = _CustomCommandRegistry(
-        (_CustomCommand(name="files", prepare=prepare_duplicate),)
-    )
-
     with pytest.raises(ValueError, match="already registered"):
-        EnvironmentKernel(tmp_path, registry=registry)
+        EnvironmentKernel(
+            tmp_path,
+            custom_sources=(
+                (
+                    "files",
+                    _InlineSource(
+                        "files",
+                        prepare_duplicate,
+                        isolated=True,
+                    ),
+                ),
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -253,10 +263,10 @@ def test_files_head_is_not_matched_by_path_qualified_commands(
 ) -> None:
     kernel = EnvironmentKernel(tmp_path)
 
-    resolved = kernel._router._custom_registry.resolve(parse_shell_ast(raw))
+    resolved = kernel._router._sources.resolve(parse_shell_ast(raw))
 
     assert resolved is None
-    assert kernel._router.resolve(parse_shell_ast(raw)).command.name is None
+    assert kernel._router.resolve(parse_shell_ast(raw)).source.name is None
 
 
 @pytest.mark.parametrize(
@@ -280,7 +290,7 @@ def test_malformed_files_forms_fail_on_files_route_not_shell(
             snapshot = _output(await _exec(kernel, raw))
             assert snapshot["status"] == "failed"
             state = kernel._executions[str(snapshot["exec_id"])]
-            assert state.route.command.name == "files"
+            assert state.route.source.name == "files"
             assert state.route.parallel_safe is False
         finally:
             await kernel.close()

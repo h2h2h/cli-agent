@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import uuid4
 
-from cli_agent.runtime._environment.execution_state import _ExecutionState
 from cli_agent.runtime._environment.handlers.base import _ExecutionRequest
+from cli_agent.runtime._environment.records import ExecutionRecord
 from cli_agent.runtime._environment.routing import _ExecutionRoute
 
 _DEFAULT_QUEUE_LIMIT = 32
@@ -15,8 +15,8 @@ _DEFAULT_PARALLEL_LIMIT = 4
 
 @dataclass(frozen=True, slots=True)
 class _SchedulerAdmission:
-    state: _ExecutionState
-    runnable: tuple[_ExecutionState, ...]
+    state: ExecutionRecord
+    runnable: tuple[ExecutionRecord, ...]
 
 
 class _ExecutionScheduler:
@@ -30,8 +30,8 @@ class _ExecutionScheduler:
         self._queue_limit = queue_limit
         self._parallel_limit = parallel_limit
         self._next_submission_sequence = 0
-        self._pending: list[_ExecutionState] = []
-        self._running: dict[str, _ExecutionState] = {}
+        self._pending: list[ExecutionRecord] = []
+        self._running: dict[str, ExecutionRecord] = {}
         self._closed = False
 
     def admit(
@@ -48,7 +48,7 @@ class _ExecutionScheduler:
         ):
             return None
 
-        state = _ExecutionState(
+        state = ExecutionRecord(
             exec_id=uuid4().hex,
             request=request,
             route=route,
@@ -61,7 +61,7 @@ class _ExecutionScheduler:
             runnable=self._claim_runnable(),
         )
 
-    def complete(self, state: _ExecutionState) -> tuple[_ExecutionState, ...]:
+    def complete(self, state: ExecutionRecord) -> tuple[ExecutionRecord, ...]:
         """Release one running Execution and promote ordered follow-up work."""
 
         self._running.pop(state.exec_id, None)
@@ -69,7 +69,7 @@ class _ExecutionScheduler:
             return ()
         return self._claim_runnable()
 
-    def cancel_pending(self, state: _ExecutionState) -> bool:
+    def cancel_pending(self, state: ExecutionRecord) -> bool:
         """Atomically terminate one queued Execution before it is claimed."""
 
         for index, pending in enumerate(self._pending):
@@ -80,7 +80,7 @@ class _ExecutionScheduler:
                 return True
         return False
 
-    def close(self) -> tuple[_ExecutionState, ...]:
+    def close(self) -> tuple[ExecutionRecord, ...]:
         """Stop promotion and release all queued Executions."""
 
         if self._closed:
@@ -101,7 +101,7 @@ class _ExecutionScheduler:
             return False
         return all(state.route.parallel_safe for state in self._running.values())
 
-    def _claim_runnable(self) -> tuple[_ExecutionState, ...]:
+    def _claim_runnable(self) -> tuple[ExecutionRecord, ...]:
         if not self._pending:
             return ()
 
@@ -113,7 +113,7 @@ class _ExecutionScheduler:
                 return ()
             return (self._claim(head),)
 
-        claimed: list[_ExecutionState] = []
+        claimed: list[ExecutionRecord] = []
         capacity = self._parallel_limit - len(self._running)
         for state in self._pending:
             if capacity <= 0:
@@ -124,7 +124,7 @@ class _ExecutionScheduler:
             capacity -= 1
         return tuple(claimed)
 
-    def _claim(self, state: _ExecutionState) -> _ExecutionState:
+    def _claim(self, state: ExecutionRecord) -> ExecutionRecord:
         self._pending.remove(state)
         self._running[state.exec_id] = state
         state.status = "running"

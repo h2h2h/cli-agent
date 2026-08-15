@@ -635,7 +635,7 @@ def test_file_exploration_fixture_preserves_facts(
         asyncio.run(runtime.close())
 
 
-def test_output_polling_fixture_reuses_execution_state(
+def test_output_polling_fixture_reuses_execution_record(
     tmp_path: Path,
 ) -> None:
     provider = _StreamQueueProvider()

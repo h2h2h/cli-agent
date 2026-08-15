@@ -10,20 +10,19 @@ from cli_agent.runtime._backend.local import (
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._environment.commands import (
-    _builtin_custom_commands,
-    _CustomCommand,
-    _CustomCommandRegistry,
-    _ShellCommand,
-)
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
-from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.routing import (
     _ExecutionRoute,
+)
+from cli_agent.runtime._environment.sources import (
+    _builtin_inline_sources,
+    _InlineSource,
+    _ShellSource,
+    _SourceRegistry,
 )
 from cli_agent.runtime._execution import (
     _KILLED_BEFORE_START,
@@ -54,7 +53,7 @@ def test_custom_command_prepares_export_and_shell_handler_prepares_process(
             cwd=str(tmp_path),
             environment=environment,
         )
-        registry = _CustomCommandRegistry(_builtin_custom_commands())
+        registry = _SourceRegistry(_builtin_inline_sources())
 
         export = parse_shell_ast("export A=1 MESSAGE='two words'")
         export_spec = registry.resolve(export)
@@ -70,7 +69,7 @@ def test_custom_command_prepares_export_and_shell_handler_prepares_process(
         assert outcome == ExitStatus(0)
         assert environment == {"A": "1", "MESSAGE": "two words"}
 
-        process_execution = _ShellHandler(_LocalBackendWorkspace(tmp_path, {})).prepare(
+        process_execution = _ShellSource(_LocalBackendWorkspace(tmp_path, {})).prepare(
             _ExecutionRequest(command=parse_shell_ast("pwd")),
             context,
         )
@@ -84,7 +83,7 @@ def test_inline_export_cancelled_before_run_does_not_mutate_session(
 ) -> None:
     async def scenario() -> None:
         environment: dict[str, str] = {}
-        registry = _CustomCommandRegistry(_builtin_custom_commands())
+        registry = _SourceRegistry(_builtin_inline_sources())
         command = parse_shell_ast("export CANCELLED=yes")
         spec = registry.resolve(command)
         assert spec is not None
@@ -131,7 +130,7 @@ def test_invalid_inline_export_reports_failure_without_mutation(
     async def scenario() -> None:
         environment = {"PRESERVED": "yes"}
         output = _BufferOutput()
-        registry = _CustomCommandRegistry(_builtin_custom_commands())
+        registry = _SourceRegistry(_builtin_inline_sources())
         command = parse_shell_ast("export VALID=value BROKEN")
         spec = registry.resolve(command)
         assert spec is not None
@@ -224,14 +223,14 @@ def test_kernel_runs_and_cancels_handle_without_branch(
             chunk_limit=10,
             byte_limit=1_000,
         )
-        state = kernel._supervisor.admit(
+        state = kernel._manager.admit(
             _ExecutionRequest(command=parse_shell_ast("fake command")),
             _shell_route(handler),
         )
         assert state is not None
         await execution.started.wait()
 
-        await kernel._supervisor.terminate(state)
+        await kernel._manager.terminate(state)
 
         assert handler.prepared == [
             ("fake command", str(tmp_path), {"SESSION": "value"})
@@ -259,26 +258,28 @@ def test_parallel_safe_metadata_forces_an_isolated_command_context(
             prepared_context.environment["WORKER"] = "changed"
             return ExitStatus(0)
 
-        def prepare(request: _ExecutionRequest, context: _CommandContext) -> _InlineExecution:
+        def prepare(
+            request: _ExecutionRequest, context: _CommandContext
+        ) -> _InlineExecution:
             del request
             nonlocal prepared_context
             prepared_context = context
             return _InlineExecution(execute)
 
-        registry = _CustomCommandRegistry(
-            (
-                _CustomCommand(
-                    name="worker",
-                    prepare=prepare,
-                    parallel_safe=True,
-                    isolated=False,
-                ),
-            )
-        )
         kernel = EnvironmentKernel(
             tmp_path,
             base_env={"SESSION": "value"},
-            registry=registry,
+            custom_sources=(
+                (
+                    "worker",
+                    _InlineSource(
+                        "worker",
+                        prepare=prepare,
+                        parallel_safe=True,
+                        isolated=False,
+                    ),
+                ),
+            ),
         )
         try:
             result = await kernel.dispatch(
@@ -313,11 +314,11 @@ def test_handler_preparation_failure_releases_serial_slot_for_queued_execution(
             chunk_limit=10,
             byte_limit=1_000,
         )
-        failed = kernel._supervisor.admit(
+        failed = kernel._manager.admit(
             _ExecutionRequest(command=parse_shell_ast("fake command")),
             _shell_route(_FailingHandler()),
         )
-        queued = kernel._supervisor.admit(
+        queued = kernel._manager.admit(
             _ExecutionRequest(command=parse_shell_ast("fake command")),
             _shell_route(_SuccessfulHandler()),
         )
@@ -339,6 +340,6 @@ def test_handler_preparation_failure_releases_serial_slot_for_queued_execution(
 
 def _shell_route(handler) -> _ExecutionRoute:
     return _ExecutionRoute(
-        command=_ShellCommand(prepare=handler.prepare),
+        source=_InlineSource("fake", handler.prepare, isolated=True),
         parallel_safe=False,
     )

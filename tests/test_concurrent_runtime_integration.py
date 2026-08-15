@@ -26,7 +26,7 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._environment.execution_state import _ExecutionState
+from cli_agent.runtime._environment.records import ExecutionRecord
 
 _user_interaction = _ScriptedInteraction("deny")
 _context_policy = ContextPolicy(
@@ -542,7 +542,7 @@ async def _wait_for_path(path: Path) -> None:
 
 
 async def _wait_for_terminal_state(
-    state: _ExecutionState,
+    state: ExecutionRecord,
 ) -> None:
     for _ in range(100):
         if state.is_terminal:

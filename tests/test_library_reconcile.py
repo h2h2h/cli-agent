@@ -25,7 +25,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionRequest,
 )
-from cli_agent.runtime._environment.handlers.files import _FileHandler
+from cli_agent.runtime._environment.sources import _FileSource
 
 
 def _repertoire(workspace: Path) -> Path:
@@ -108,15 +108,13 @@ async def _write_library_file(
 ) -> None:
     """Write one Library file through the real Files command handler."""
 
-    handler = _FileHandler(
+    handler = _FileSource(
         _filesystem(workspace, view),
         mark_dirty=catalog.mark_path_dirty,
     )
     execution = handler.prepare(
         _ExecutionRequest(
-            command=parse_shell_ast(
-                f"files write .workspace/library/{logical}"
-            ),
+            command=parse_shell_ast(f"files write .workspace/library/{logical}"),
             stdin=content,
         ),
         _CommandContext(
@@ -323,7 +321,7 @@ def test_files_edit_marks_dirty_and_transitions_to_stale(tmp_path: Path) -> None
         await _drain(catalog)
         assert catalog.get("notes.md").status == "ready"  # type: ignore[union-attr]
 
-        handler = _FileHandler(
+        handler = _FileSource(
             _filesystem(tmp_path, view),
             mark_dirty=catalog.mark_path_dirty,
         )
@@ -365,7 +363,7 @@ def test_failed_files_write_never_marks_dirty(tmp_path: Path) -> None:
         catalog = await _reconcile_catalog(view, tmp_path)
         (tmp_path / "blocker.txt").write_text("occupied\n", encoding="utf-8")
 
-        handler = _FileHandler(
+        handler = _FileSource(
             _filesystem(tmp_path, view),
             mark_dirty=catalog.mark_path_dirty,
         )

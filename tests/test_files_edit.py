@@ -19,7 +19,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionRequest,
 )
-from cli_agent.runtime._environment.handlers.files import _FileHandler
+from cli_agent.runtime._environment.sources import _FileSource
 from cli_agent.runtime._execution import (
     ExitStatus,
 )
@@ -305,7 +305,7 @@ def _run(
         stdin = json.dumps(payload)
     output = _RecordedOutput()
     backend = _LocalBackendWorkspace(cwd, {}, view)
-    execution = _FileHandler(backend.filesystem).prepare(
+    execution = _FileSource(backend.filesystem).prepare(
         _ExecutionRequest(command=parse_shell_ast(command), stdin=stdin),
         _CommandContext(workspace=str(cwd), cwd=str(cwd), environment={}),
     )

@@ -29,7 +29,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionRequest,
 )
-from cli_agent.runtime._environment.handlers.shell import _ShellHandler
+from cli_agent.runtime._environment.sources import _ShellSource
 from cli_agent.runtime._execution import (
     _KILLED_BEFORE_START,
     ExitStatus,
@@ -370,7 +370,7 @@ def test_cancelled_shell_execution_does_not_copy_up(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         backend = _LocalBackendWorkspace(workspace, {}, view)
-        execution = _ShellHandler(backend).prepare(
+        execution = _ShellSource(backend).prepare(
             _ExecutionRequest(
                 command=parse_shell_ast("echo x > .workspace/tools/cancelled.txt"),
             ),

@@ -21,7 +21,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionRequest,
 )
-from cli_agent.runtime._environment.handlers.files import _FileHandler
+from cli_agent.runtime._environment.sources import _FileSource
 from cli_agent.runtime._execution import (
     _KILLED_BEFORE_START,
     ExitStatus,
@@ -126,7 +126,7 @@ def test_files_write_in_view_under_policy_never_pierces_repertoire(
 
 def test_files_write_cancelled_before_run_creates_nothing(tmp_path: Path) -> None:
     async def scenario() -> None:
-        execution = _FileHandler().prepare(
+        execution = _FileSource().prepare(
             _ExecutionRequest(
                 command=parse_shell_ast("files write partial.txt"),
                 stdin="content\n",

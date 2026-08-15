@@ -222,10 +222,10 @@ def test_command_handlers_never_create_host_processes() -> None:
         assert "importlib" not in source, path
 
 
-def test_tool_handler_source_never_references_host_execution_details() -> None:
-    from cli_agent.runtime._environment.handlers import tools as handler_module
+def test_tool_source_never_references_host_execution_details() -> None:
+    from cli_agent.runtime._environment import sources as source_module
 
-    source = Path(handler_module.__file__).read_text(encoding="utf-8")
+    source = Path(source_module.__file__).read_text(encoding="utf-8")
 
     assert "create_subprocess" not in source
     assert "os.environ" not in source

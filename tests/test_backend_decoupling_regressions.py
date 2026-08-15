@@ -16,7 +16,7 @@ from cli_agent.runtime._backend.facts import (
     _ShellExecutionRequest,
     _ToolExecutionRequest,
 )
-from cli_agent.runtime._environment.execution_state import _ExecutionState
+from cli_agent.runtime._environment.records import ExecutionRecord
 from cli_agent.runtime._resources import _RuntimeResources
 
 _LEGACY_WORKSPACE_TOKENS = ("pathlib", "Path(")
@@ -48,8 +48,8 @@ def test_handlers_and_catalogs_never_use_host_path_for_the_workspace() -> None:
                 assert token not in source, (path, token)
 
 
-def test_execution_state_and_snapshot_carry_no_backend_discriminator() -> None:
-    state_fields = set(fields(_ExecutionState))
+def test_execution_record_and_snapshot_carry_no_backend_discriminator() -> None:
+    state_fields = set(fields(ExecutionRecord))
     assert state_fields.isdisjoint(
         {
             "backend",

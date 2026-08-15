@@ -13,26 +13,25 @@ from cli_agent.runtime._capability.command_parser import (
     parse_shell_ast,
 )
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._environment.commands import (
-    _builtin_custom_commands,
-    _CustomCommandRegistry,
-    _ShellCommand,
-)
-from cli_agent.runtime._environment.execution_state import _ExecutionState
-from cli_agent.runtime._environment.handlers.shell import _ShellHandler
 from cli_agent.runtime._environment.policy import (
     PolicyAction,
     PolicyEvaluation,
 )
+from cli_agent.runtime._environment.records import ExecutionRecord
 from cli_agent.runtime._environment.routing import _CommandRouter
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
+from cli_agent.runtime._environment.sources import (
+    _builtin_inline_sources,
+    _ShellSource,
+    _SourceRegistry,
+)
 
 
 def _router() -> _CommandRouter:
-    registry = _CustomCommandRegistry(_builtin_custom_commands())
+    registry = _SourceRegistry(_builtin_inline_sources())
     return _CommandRouter(
-        shell_command=_ShellCommand(prepare=_ShellHandler().prepare),
-        custom_registry=registry,
+        shell_source=_ShellSource(),
+        sources=registry,
     )
 
 
@@ -1519,7 +1518,7 @@ async def _wait_for_path(path: Path) -> None:
 
 async def _wait_for_queued_state(
     kernel: EnvironmentKernel,
-) -> _ExecutionState:
+) -> ExecutionRecord:
     for _ in range(100):
         for state in kernel._executions.values():
             if state.status == "queued":

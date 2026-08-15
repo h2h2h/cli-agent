@@ -1,10 +1,9 @@
-"""Reserved Files command grammar, mutation facts, and handler.
+"""Reserved Files command grammar and mutation operations.
 
-The ``files`` command family is a single-module Runtime command: grammar
-facts and pure parsing live here, while the handler only builds Workspace
-Filesystem requests and formats results. Payloads never enter the Shell
-parser: ``files write`` and ``files edit`` read their content from the
-``exec`` ``stdin`` argument.
+Grammar facts and pure parsing live here together with the Workspace
+Filesystem mutation operations used by ``_FileSource``. Payloads never
+enter the Shell parser: ``files write`` and ``files edit`` read their
+content from the ``exec`` ``stdin`` argument.
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from cli_agent.runtime._backend import (
     _FileEdit,
     _FileEditRequest,
     _FilesystemError,
-    _FilesystemExecution,
     _FileWriteRequest,
     _WorkspaceFilesystem,
 )
@@ -29,13 +27,7 @@ from cli_agent.runtime._capability.command_parser import (
     ShellRedirect,
     SimpleCommand,
 )
-from cli_agent.runtime._environment.handlers.base import (
-    _CommandContext,
-    _ExecutionRequest,
-)
-from cli_agent.runtime._environment.handlers.executions import _text_execution
 from cli_agent.runtime._execution import (
-    ExecutionHandle,
     ExecutionOutputSink,
     ExitStatus,
 )
@@ -150,69 +142,6 @@ def _invalid(reason: str) -> FileCommand:
     """Return one stable usage diagnostic for an unsupported Files shape."""
 
     return FileCommand(operation="invalid", valid=False, validation_error=reason)
-
-
-class _FileHandler:
-    """Prepare files write and edit operations from trusted Files facts."""
-
-    def __init__(
-        self,
-        filesystem: _WorkspaceFilesystem | None = None,
-        mark_dirty: _MarkDirty | None = None,
-    ) -> None:
-        self._filesystem = filesystem
-        self._mark_dirty = mark_dirty
-
-    def prepare(
-        self,
-        request: _ExecutionRequest,
-        context: _CommandContext,
-    ) -> ExecutionHandle:
-        facts = parse_files_command(request.command)
-        if facts is None:
-            raise RuntimeError("File handler received an ordinary command")
-        if not facts.valid:
-            return _text_execution(
-                (facts.validation_error or "Invalid files command") + "\n",
-                success=False,
-            )
-        filesystem = self._filesystem
-        if filesystem is None:
-            return _text_execution(
-                "Workspace filesystem is unavailable\n",
-                success=False,
-            )
-        if facts.operation not in {"write", "edit"} or facts.path is None:
-            return _text_execution("Invalid files command\n", success=False)
-        stdin = request.stdin
-        if stdin is None:
-            return _text_execution(
-                f"`files {facts.operation}` requires payload in exec.stdin\n",
-                success=False,
-            )
-        if facts.operation == "write":
-            return _FilesystemExecution(
-                _write_operation(
-                    filesystem,
-                    facts.path,
-                    stdin,
-                    context.cwd,
-                    self._mark_dirty,
-                )
-            )
-        try:
-            edits = parse_edit_payload(stdin)
-        except ValueError as exc:
-            return _text_execution(f"{exc}\n", success=False)
-        return _FilesystemExecution(
-            _edit_operation(
-                filesystem,
-                facts.path,
-                edits,
-                context.cwd,
-                self._mark_dirty,
-            )
-        )
 
 
 def _write_operation(

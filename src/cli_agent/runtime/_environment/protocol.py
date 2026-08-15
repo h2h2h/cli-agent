@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import jsonschema
 
-from cli_agent.runtime._environment.execution_state import _ExecutionState
+from cli_agent.runtime._environment.records import ExecutionRecord
 from cli_agent.runtime._syscalls import BUILT_IN_SYSCALL_SCHEMAS
 from cli_agent.runtime.model import JSONValue, ToolCall, ToolResult
 
@@ -60,7 +60,7 @@ def _apply_defaults(
 
 
 def _snapshot(
-    state: _ExecutionState,
+    state: ExecutionRecord,
     *,
     cursor: int,
     limit: int,

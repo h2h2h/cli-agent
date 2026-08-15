@@ -18,7 +18,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionRequest,
 )
-from cli_agent.runtime._environment.handlers.files import _FileHandler
+from cli_agent.runtime._environment.sources import _FileSource
 from cli_agent.runtime._execution import (
     ExitStatus,
 )
@@ -78,8 +78,7 @@ def test_files_write_empty_stdin_creates_empty_file(tmp_path: Path) -> None:
 
 def test_files_write_preserves_stdin_content_exactly(tmp_path: Path) -> None:
     content = (
-        'EOF\nEDI\n$HOME  `ls`  "quoted"\n'
-        "std::function's callables\n  keep   spaces  "
+        'EOF\nEDI\n$HOME  `ls`  "quoted"\nstd::function\'s callables\n  keep   spaces  '
     )
     outcome, output = _write(
         tmp_path,
@@ -199,7 +198,7 @@ def _write(
 ) -> tuple[ExitStatus, _RecordedOutput]:
     output = _RecordedOutput()
     backend = _LocalBackendWorkspace(cwd, {}, view)
-    execution = _FileHandler(backend.filesystem).prepare(
+    execution = _FileSource(backend.filesystem).prepare(
         _ExecutionRequest(command=parse_shell_ast(command), stdin=stdin),
         _CommandContext(workspace=str(cwd), cwd=str(cwd), environment={}),
     )

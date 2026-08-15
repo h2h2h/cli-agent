@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
@@ -17,23 +17,14 @@ from cli_agent.runtime._capability.command_parser import (
 )
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-from cli_agent.runtime._environment.commands import (
-    _builtin_custom_commands,
-    _CustomCommand,
-    _CustomCommandRegistry,
-    _ShellCommand,
-)
-from cli_agent.runtime._environment.execution_state import _ExecutionState
 from cli_agent.runtime._environment.handlers.base import _ExecutionRequest
-from cli_agent.runtime._environment.handlers.files import _FileHandler
-from cli_agent.runtime._environment.handlers.shell import _ShellHandler
-from cli_agent.runtime._environment.handlers.tools import _ToolHandler
 from cli_agent.runtime._environment.interaction import (
     UserAnswer,
     UserInteraction,
     UserOption,
     UserQuestion,
 )
+from cli_agent.runtime._environment.manager import ExecutionManager
 from cli_agent.runtime._environment.policy import (
     ExecutionPolicy,
     PolicyAction,
@@ -45,12 +36,20 @@ from cli_agent.runtime._environment.protocol import (
     _snapshot,
     _validate_arguments,
 )
+from cli_agent.runtime._environment.records import ExecutionRecord
 from cli_agent.runtime._environment.routing import _CommandRouter
 from cli_agent.runtime._environment.scheduler import (
     _DEFAULT_PARALLEL_LIMIT,
     _DEFAULT_QUEUE_LIMIT,
 )
-from cli_agent.runtime._environment.supervisor import _ExecutionSupervisor
+from cli_agent.runtime._environment.sources import (
+    ExecutionSource,
+    _builtin_inline_sources,
+    _FileSource,
+    _ShellSource,
+    _SourceRegistry,
+    _ToolSource,
+)
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import ToolCall, ToolResult
 
@@ -75,7 +74,7 @@ class EnvironmentKernel:
         queue_limit: int = _DEFAULT_QUEUE_LIMIT,
         parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
         parallel_commands: frozenset[str] | None = None,
-        registry: _CustomCommandRegistry | None = None,
+        custom_sources: Iterable[tuple[str, ExecutionSource]] = (),
         user_interaction: UserInteraction | None = None,
         session_id: str | None = None,
         library_catalog: _LibraryCatalog | None = None,
@@ -92,48 +91,35 @@ class EnvironmentKernel:
         self._session_id = session_id
         self._on_diagnostic = on_diagnostic
         self._library_catalog = library_catalog
-        tool_handler = _ToolHandler(tool_catalog, backend)
-        tool_command = _CustomCommand(
-            name="tools",
-            prepare=tool_handler.prepare,
-            parallel_safe=tool_handler.parallel_safe,
-            isolated=True,
+        entries = list(_builtin_inline_sources(backend.filesystem))
+        entries.append(
+            (
+                "files",
+                _FileSource(
+                    backend.filesystem,
+                    mark_dirty=(
+                        library_catalog.mark_path_dirty
+                        if library_catalog is not None
+                        else None
+                    ),
+                ),
+            )
         )
-        file_handler = _FileHandler(
-            backend.filesystem,
-            mark_dirty=(
-                library_catalog.mark_path_dirty if library_catalog is not None else None
-            ),
-        )
-        file_command = _CustomCommand(
-            name="files",
-            prepare=file_handler.prepare,
-            parallel_safe=False,
-            isolated=True,
-            consumes_stdin=True,
-        )
-        if registry is None:
-            commands = list(_builtin_custom_commands(backend.filesystem))
-            commands.append(tool_command)
-            commands.append(file_command)
-            registry = _CustomCommandRegistry(commands)
-        else:
-            registry.register(tool_command)
-            registry.register(file_command)
-        shell_handler = _ShellHandler(backend)
+        entries.append(("tools", _ToolSource(tool_catalog, backend)))
+        entries.extend(custom_sources)
         self._router = _CommandRouter(
-            shell_command=_ShellCommand(
-                prepare=shell_handler.prepare,
+            shell_source=_ShellSource(
+                backend,
                 parallel_commands=frozenset(parallel_commands or ()),
             ),
-            custom_registry=registry,
+            sources=_SourceRegistry(entries),
         )
         self._env = dict(base_env or {})
         self._cwd = backend.root
-        self._executions: dict[str, _ExecutionState] = {}
+        self._executions: dict[str, ExecutionRecord] = {}
         self._interaction_tasks: set[asyncio.Task[object]] = set()
         self._closed = False
-        self._supervisor = _ExecutionSupervisor(
+        self._manager = ExecutionManager(
             self,
             queue_limit=queue_limit,
             parallel_limit=parallel_limit,
@@ -152,7 +138,7 @@ class EnvironmentKernel:
             task.cancel()
         if interaction_tasks:
             await asyncio.gather(*interaction_tasks, return_exceptions=True)
-        await self._supervisor.close()
+        await self._manager.close()
         self._env.clear()
 
     async def dispatch(self, call: ToolCall) -> ToolResult:
@@ -280,7 +266,7 @@ class EnvironmentKernel:
             command=command,
             stdin=args.get("stdin"),
         )
-        state = self._supervisor.admit(request, route)
+        state = self._manager.admit(request, route)
         if state is None:
             return _protocol_error(
                 call.call_id,
@@ -462,7 +448,7 @@ class EnvironmentKernel:
                 code="unknown_execution",
                 message="execution not found",
             )
-        await self._supervisor.wait_for_output(
+        await self._manager.wait_for_output(
             state,
             cursor=args["cursor"],
             wait_ms=args["wait_ms"],
@@ -487,7 +473,7 @@ class EnvironmentKernel:
                 code="unknown_execution",
                 message="execution not found",
             )
-        await self._supervisor.terminate(state)
+        await self._manager.terminate(state)
         return ToolResult(
             call_id=call.call_id,
             output=_snapshot(

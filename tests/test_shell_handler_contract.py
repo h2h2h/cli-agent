@@ -1,6 +1,6 @@
-"""Shell Handler request contract and static dependency tests.
+"""Shell Source request contract and static dependency tests.
 
-RFC-0012 issue 03 requires the Shell Handler to only translate existing
+RFC-0012 issue 03 requires the Shell Source to only translate existing
 parse facts, Backend cwd, and Session environment into a
 ``_ShellExecutionRequest``, with no Host subprocess creation, no
 ``os.environ`` reads, and no concrete Capability View dependency.
@@ -16,7 +16,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionRequest,
 )
-from cli_agent.runtime._environment.handlers.shell import _ShellHandler
+from cli_agent.runtime._environment.sources import _ShellSource
 from cli_agent.runtime._execution import (
     ExecutionHandle,
     ExecutionOutputSink,
@@ -44,9 +44,9 @@ class _SilentExecution:
         return
 
 
-def test_shell_handler_emits_backend_neutral_request(tmp_path: Path) -> None:
+def test_shell_source_emits_backend_neutral_request(tmp_path: Path) -> None:
     backend = _RecordingBackend()
-    handler = _ShellHandler(backend)
+    handler = _ShellSource(backend)
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(tmp_path),
@@ -72,9 +72,9 @@ def test_shell_handler_emits_backend_neutral_request(tmp_path: Path) -> None:
     )
 
 
-def test_shell_handler_encodes_stdin_as_utf8_input_data(tmp_path: Path) -> None:
+def test_shell_source_encodes_stdin_as_utf8_input_data(tmp_path: Path) -> None:
     backend = _RecordingBackend()
-    handler = _ShellHandler(backend)
+    handler = _ShellSource(backend)
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(tmp_path),
@@ -93,11 +93,11 @@ def test_shell_handler_encodes_stdin_as_utf8_input_data(tmp_path: Path) -> None:
     assert backend.requests[0].input_data == "héllo 世界\n".encode("utf-8")
 
 
-def test_shell_handler_keeps_empty_stdin_distinct_from_omitted(
+def test_shell_source_keeps_empty_stdin_distinct_from_omitted(
     tmp_path: Path,
 ) -> None:
     backend = _RecordingBackend()
-    handler = _ShellHandler(backend)
+    handler = _ShellSource(backend)
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(tmp_path),
@@ -113,7 +113,7 @@ def test_shell_handler_keeps_empty_stdin_distinct_from_omitted(
     assert backend.requests[0].input_data == b""
 
 
-def test_shell_handler_requires_a_backend_workspace(tmp_path: Path) -> None:
+def test_shell_source_requires_a_backend_workspace(tmp_path: Path) -> None:
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(tmp_path),
@@ -121,7 +121,7 @@ def test_shell_handler_requires_a_backend_workspace(tmp_path: Path) -> None:
     )
 
     try:
-        _ShellHandler().prepare(
+        _ShellSource().prepare(
             _ExecutionRequest(command=parse_shell_ast("echo hi")),
             context,
         )
@@ -131,8 +131,8 @@ def test_shell_handler_requires_a_backend_workspace(tmp_path: Path) -> None:
         raise AssertionError("Shell handler must fail without a Backend Workspace")
 
 
-def test_shell_handler_module_has_no_process_or_environment_mechanics() -> None:
-    source = _module_source(_ShellHandler.__module__)
+def test_shell_source_module_has_no_process_or_environment_mechanics() -> None:
+    source = _module_source(_ShellSource.__module__)
 
     assert "asyncio" not in source
     assert "import os" not in source

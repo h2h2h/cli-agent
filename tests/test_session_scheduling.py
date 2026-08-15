@@ -6,8 +6,8 @@ from pathlib import Path
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._environment.execution_state import _ExecutionState
 from cli_agent.runtime._environment.policy import PolicyAction, PolicyEvaluation
+from cli_agent.runtime._environment.records import ExecutionRecord
 
 _UNKNOWN_EXECUTION = {
     "ok": False,
@@ -756,7 +756,7 @@ async def _wait_for_path(path: Path) -> None:
 
 async def _wait_for_queued_state(
     kernel: EnvironmentKernel,
-) -> _ExecutionState:
+) -> ExecutionRecord:
     for _ in range(100):
         for state in kernel._executions.values():
             if state.status == "queued":

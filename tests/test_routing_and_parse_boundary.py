@@ -9,14 +9,11 @@ import pytest
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._backend.local import _LocalBackendWorkspace
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._environment.commands import (
-    _CustomCommand,
-    _CustomCommandRegistry,
-)
-from cli_agent.runtime._environment.execution_state import _ExecutionState
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
+from cli_agent.runtime._environment.records import ExecutionRecord
 from cli_agent.runtime._environment.routing import _ExecutionRoute
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
+from cli_agent.runtime._environment.sources import _InlineSource
 from cli_agent.runtime._execution import (
     ExecutionOutputSink,
     ExitStatus,
@@ -114,12 +111,10 @@ def test_malformed_custom_command_never_reaches_custom_handler(
 
         return _InlineExecution(execute)
 
-    registry = _CustomCommandRegistry(
-        (_CustomCommand(name="cli_read", prepare=prepare),)
-    )
+    sources = (("cli_read", _InlineSource("cli_read", prepare, isolated=True)),)
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path, registry=registry)
+        kernel = EnvironmentKernel(tmp_path, custom_sources=sources)
         try:
             result = await kernel.dispatch(
                 ToolCall(
@@ -153,12 +148,10 @@ def test_malformed_tools_heredoc_no_longer_bypasses_parser(
 
         return _InlineExecution(execute)
 
-    registry = _CustomCommandRegistry(
-        (_CustomCommand(name="cli_run", prepare=prepare),)
-    )
+    sources = (("cli_run", _InlineSource("cli_run", prepare, isolated=True)),)
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path, registry=registry)
+        kernel = EnvironmentKernel(tmp_path, custom_sources=sources)
         try:
             result = await kernel.dispatch(
                 ToolCall(
@@ -202,7 +195,7 @@ def test_parse_failure_never_reaches_capability_view(tmp_path: Path) -> None:
 
 
 def test_supervisor_and_scheduler_carry_no_policy_metadata() -> None:
-    state_fields = set(_ExecutionState.__dataclass_fields__)
+    state_fields = set(ExecutionRecord.__dataclass_fields__)
     assert state_fields.isdisjoint(
         {
             "decision",
@@ -215,7 +208,7 @@ def test_supervisor_and_scheduler_carry_no_policy_metadata() -> None:
     assert "request" in state_fields
 
     route_fields = set(_ExecutionRoute.__dataclass_fields__)
-    assert route_fields == {"command", "parallel_safe"}
+    assert route_fields == {"source", "parallel_safe"}
 
     assert list(_ExecutionScheduler.admit.__annotations__) == [
         "request",

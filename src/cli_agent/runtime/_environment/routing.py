@@ -1,22 +1,21 @@
-"""Resolve parsed commands to unified Runtime command contracts."""
+"""Resolve parsed commands to one ExecutionSource and its schedule fact."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from cli_agent.runtime._capability.command_parser import ShellParseResult
-from cli_agent.runtime._environment.commands import (
-    _Command,
-    _CustomCommandRegistry,
-    _ShellCommand,
+from cli_agent.runtime._environment.sources import (
+    ExecutionSource,
+    _SourceRegistry,
 )
 
 
 @dataclass(frozen=True, slots=True)
 class _ExecutionRoute:
-    """Bind one parsed command to its selected Command and schedule fact."""
+    """Bind one parsed command to its selected Source and schedule fact."""
 
-    command: _Command
+    source: ExecutionSource
     parallel_safe: bool
 
     def __post_init__(self) -> None:
@@ -25,25 +24,25 @@ class _ExecutionRoute:
 
 
 class _CommandRouter:
-    """Prefer registered custom commands and otherwise use Shell fallback."""
+    """Resolve registered command heads and otherwise use the Shell fallback."""
 
     def __init__(
         self,
         *,
-        shell_command: _ShellCommand,
-        custom_registry: _CustomCommandRegistry,
+        shell_source: ExecutionSource,
+        sources: _SourceRegistry,
     ) -> None:
-        self._shell_command = shell_command
-        self._custom_registry = custom_registry
+        self._shell_source = shell_source
+        self._sources = sources
 
     def resolve(self, command: ShellParseResult) -> _ExecutionRoute:
-        """Select one Command and its schedule fact without performing work."""
+        """Select one Source and its schedule fact without performing work."""
 
-        selected = self._custom_registry.resolve(command)
-        if selected is None:
-            selected = self._shell_command
+        source = self._sources.resolve(command)
+        if source is None:
+            source = self._shell_source
 
         return _ExecutionRoute(
-            command=selected,
-            parallel_safe=selected.parallel_safe(command),
+            source=source,
+            parallel_safe=source.parallel_safe(command),
         )

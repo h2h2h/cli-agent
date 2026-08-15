@@ -1,4 +1,4 @@
-"""Backend-neutral live Execution state and observation helpers."""
+"""Backend-neutral live Execution records and output buffering."""
 
 from __future__ import annotations
 
@@ -18,7 +18,9 @@ _TERMINAL_STATUSES = frozenset({"exited", "failed", "killed"})
 
 
 @dataclass(slots=True)
-class _ExecutionState:
+class ExecutionRecord:
+    """One admitted Execution owned by the ExecutionManager."""
+
     exec_id: str
     request: _ExecutionRequest
     route: _ExecutionRoute
@@ -39,17 +41,17 @@ class _ExecutionState:
         return self.status in _TERMINAL_STATUSES
 
 
-class _StateOutput:
-    """Bound and publish command output for one live Execution State."""
+class OutputBuffer:
+    """Bound and publish command output for one live Execution record."""
 
     def __init__(
         self,
-        state: _ExecutionState,
+        record: ExecutionRecord,
         *,
         chunk_bound: int,
         byte_bound: int,
     ) -> None:
-        self._state = state
+        self._record = record
         self._chunk_bound = chunk_bound
         self._byte_bound = byte_bound
 
@@ -58,31 +60,31 @@ class _StateOutput:
         stream: Literal["stdout", "stderr"],
         data: bytes,
     ) -> None:
-        state = self._state
+        record = self._record
         if (
-            len(state.chunks) >= self._chunk_bound
-            or state.retained_bytes + len(data) > self._byte_bound
+            len(record.chunks) >= self._chunk_bound
+            or record.retained_bytes + len(data) > self._byte_bound
         ):
-            state.truncated = True
-            await _notify_changed(state)
+            record.truncated = True
+            await _notify_changed(record)
             return
 
-        state.chunks.append(
+        record.chunks.append(
             {
-                "cursor": len(state.chunks),
+                "cursor": len(record.chunks),
                 "stream": stream,
                 "text": data.decode("utf-8", errors="replace"),
                 "timestamp": _timestamp(),
             }
         )
-        state.retained_bytes += len(data)
-        await _notify_changed(state)
+        record.retained_bytes += len(data)
+        await _notify_changed(record)
 
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-async def _notify_changed(state: _ExecutionState) -> None:
-    async with state.changed:
-        state.changed.notify_all()
+async def _notify_changed(record: ExecutionRecord) -> None:
+    async with record.changed:
+        record.changed.notify_all()
