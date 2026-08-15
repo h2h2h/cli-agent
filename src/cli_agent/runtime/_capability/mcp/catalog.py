@@ -1,31 +1,24 @@
-"""Runtime-open MCP projection reconciliation from Workspace descriptions.
+"""Runtime-owned MCP Tool stub rendering from discovery facts.
 
-Discovery is delegated to the Backend Workspace MCP Runtime: the Catalog
-reads and validates the ``_mcp`` descriptions from the Bound Capability
-View, asks the Runtime for provider-neutral server facts, and projects one
-generated stub per discovered server into the Workspace Tools tree. Stubs
-only call the Runtime-materialized ``mcp_binding`` module; the Catalog never
-holds a transport stream, client, or subprocess, and never reads env values.
+Rendering is pure: the deployment plane supplies the validated server
+configs plus the provider-neutral discovery facts, and this module returns
+the generated stub source for each discovered server. Stubs only call the
+Runtime-materialized ``mcp_binding`` module; the renderer never holds a
+transport stream, client, or subprocess, never reads env values, and never
+writes Workspace files.
 """
 
 from __future__ import annotations
 
 import keyword
-import posixpath
 import re
-from collections.abc import Callable, Mapping
 
-from cli_agent.runtime._backend import (
-    _BackendWorkspace,
-    _FileWriteRequest,
-    _MCPToolFacts,
+from cli_agent.runtime._capability.mcp.facts import (
+    MCPServerConfig,
+    _MCPServerFacts,
 )
-from cli_agent.runtime._capability.facts import _FilesystemError
-from cli_agent.runtime._capability.mcp.config import discover_configs
-from cli_agent.runtime._capability.mcp.facts import MCPServerConfig
-from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
-_MCP_STUB_PREFIX = "mcp_"
+MCP_STUB_PREFIX = "mcp_"
 
 _STUB_RESERVED_NAMES = frozenset(
     {
@@ -45,108 +38,20 @@ _TYPE_HINTS = {
 }
 
 
-class _MCPCatalog:
-    """Reconcile MCP server descriptions into generated Tool stubs.
+def stub_filename(server_name: str) -> str:
+    """Return the generated stub filename inside the Tools tree."""
 
-    Alignment is a full rebuild with no manifest: stale ``mcp_*.py`` stubs are
-    removed, then one stub is generated per successfully discovered server.
-    """
-
-    def __init__(self, servers: tuple[str, ...]) -> None:
-        self.servers = servers
-
-    @classmethod
-    async def reconcile(
-        cls,
-        backend: _BackendWorkspace,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
-        *,
-        configs: tuple[MCPServerConfig, ...] | None = None,
-    ) -> _MCPCatalog:
-        """Align ``_mcp`` descriptions with generated Tools by full rebuild.
-
-        Args:
-            backend (`_BackendWorkspace`):
-                The live Backend Workspace; its MCP Runtime performs
-                discovery and materializes the invocation binding and its
-                Filesystem receives the stub projection.
-            on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
-                Optional Host callback for non-blocking reconcile notices.
-            configs (`tuple[MCPServerConfig, ...] | None`):
-                Optional pre-discovered configs; when omitted they are
-                discovered from the Bound Capability View.
-
-        Returns:
-            A catalog naming the servers successfully projected this run.
-        """
-
-        if configs is None:
-            configs = await discover_configs(backend.capabilities, on_diagnostic)
-        discovered = {
-            fact.name: fact
-            for fact in await backend.mcp.discover(configs, on_diagnostic)
-        }
-        await _remove_stale_stubs(backend)
-        try:
-            await backend.mcp.materialize_binding(
-                tuple(config for config in configs if config.name in discovered)
-            )
-        except Exception as exc:
-            _emit(
-                on_diagnostic,
-                "mcp.binding_failed",
-                "MCP invocation binding could not be materialized",
-                {"error": str(exc)},
-            )
-            return cls(())
-
-        produced: list[str] = []
-        for config in configs:
-            fact = discovered.get(config.name)
-            if fact is None:
-                continue
-            path = _stub_path(backend, config.name)
-            await backend.filesystem.write(
-                _FileWriteRequest(
-                    path=path,
-                    content=_render_stub(config, fact.tools).encode("utf-8"),
-                )
-            )
-            produced.append(config.name)
-        return cls(tuple(sorted(produced)))
+    return f"{MCP_STUB_PREFIX}{server_name}.py"
 
 
-def _stub_path(backend: _BackendWorkspace, server_name: str) -> str:
-    return posixpath.join(
-        backend.capabilities.root,
-        "tools",
-        f"{_MCP_STUB_PREFIX}{server_name}.py",
-    )
-
-
-async def _remove_stale_stubs(backend: _BackendWorkspace) -> None:
-    """Remove every ``mcp_*.py`` stub from the Workspace Tools tree.
-
-    The ``mcp_`` filename prefix is the sole ownership basis for MCP-generated
-    artifacts; files without the prefix are never touched.
-    """
-
-    tools_directory = posixpath.join(backend.capabilities.root, "tools")
-    try:
-        listing = await backend.filesystem.list(tools_directory)
-    except _FilesystemError:
-        return
-    for entry in listing:
-        if entry.name.startswith(_MCP_STUB_PREFIX) and entry.name.endswith(".py"):
-            await backend.filesystem.remove(posixpath.join(tools_directory, entry.name))
-
-
-def _render_stub(
+def render_stub(
     config: MCPServerConfig,
-    tools: tuple[_MCPToolFacts, ...],
+    facts: _MCPServerFacts,
 ) -> str:
+    """Render one generated Tool stub for a discovered MCP server."""
+
     header = (
-        _stub_docstring(config, tools)
+        _stub_docstring(config, facts.tools)
         + "\n\nPARALLEL_SAFE = False\n"
         + "\nimport json\n\n"
         + "from mcp_binding import call_tool as _call_mcp\n"
@@ -154,7 +59,7 @@ def _render_stub(
     used: set[str] = set(_STUB_RESERVED_NAMES)
     functions = [
         _tool_function(config.name, tool, func_name=_function_name(tool.name, used))
-        for tool in tools
+        for tool in facts.tools
     ]
     body = "\n\n".join([*functions, _call_runtime(config.name)])
     return header + "\n\n" + body + "\n"
@@ -162,7 +67,7 @@ def _render_stub(
 
 def _stub_docstring(
     config: MCPServerConfig,
-    tools: tuple[_MCPToolFacts, ...],
+    tools: tuple,
 ) -> str:
     lines = [
         '"""',
@@ -184,7 +89,7 @@ def _stub_docstring(
     return "\n".join(lines)
 
 
-def _tool_function(server_name: str, tool: _MCPToolFacts, *, func_name: str) -> str:
+def _tool_function(server_name: str, tool, *, func_name: str) -> str:
     schema = tool.input_schema or {}
     properties = schema.get("properties") or {}
     required = schema.get("required") or []
@@ -259,14 +164,3 @@ def _function_name(raw: str, used: set[str]) -> str:
         counter += 1
     used.add(candidate)
     return candidate
-
-
-def _emit(
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
-    kind: str,
-    message: str,
-    detail: Mapping[str, object] | None = None,
-) -> None:
-    if on_diagnostic is None:
-        return
-    on_diagnostic(RuntimeDiagnostic(kind=kind, message=message, detail=detail or {}))

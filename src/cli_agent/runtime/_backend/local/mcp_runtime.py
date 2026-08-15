@@ -1,12 +1,12 @@
-"""Local Backend Workspace MCP Runtime: discovery and invocation binding.
+"""Local Workspace MCP discovery and invocation binding rendering.
 
-The Local Backend owns every Workspace MCP connection: discovery connects to
-each configured server from the Backend context (resolving env values only
-from the Local execution base environment) and returns provider-neutral
-``_MCPServerFacts``. Invocation is materialized as a Runtime-owned binding
-module inside the Backend Tool Runtime; the model-visible stubs only call
-``mcp_binding.call_tool`` and never see connection details, env names, or
-credential values.
+The CapabilityDeployment plane owns placement; this module owns the Local
+mechanical detail of contacting servers and rendering the Runtime-owned
+binding module. Discovery connects to each configured server from the
+Local execution base environment (never raw ``os.environ``) and returns
+provider-neutral ``_MCPServerFacts``. The rendered binding carries only
+connection details and environment names; model-visible stubs never see
+credentials or transport streams.
 """
 
 from __future__ import annotations
@@ -14,82 +14,41 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
-from cli_agent.runtime._backend.facts import (
+from cli_agent.runtime._capability.mcp.facts import (
+    MCPServerConfig,
     _MCPServerFacts,
     _MCPToolFacts,
-)
-from cli_agent.runtime._capability.mcp.facts import MCPServerConfig
-from cli_agent.runtime._capability.workspace import (
-    _atomic_write,
-    _ensure_real_directory,
 )
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 _DISCOVERY_RETRIES = 3
-_BINDING_DIRECTORY = ".tool-environment"
 _BINDING_FILENAME = "mcp_binding.py"
 
 
-class _LocalMCPRuntime:
-    """Discover Workspace MCP servers from the Local Backend context."""
+async def discover_servers(
+    configs: tuple[MCPServerConfig, ...],
+    base_environment: Mapping[str, str],
+    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+) -> tuple[_MCPServerFacts, ...]:
+    """Discover every configured server and return provider-neutral facts.
 
-    def __init__(
-        self,
-        view_root: Callable[[], Path | None],
-        base_environment: Callable[[], Mapping[str, str]],
-        ensure_open: Callable[[], None],
-    ) -> None:
-        self._view_root = view_root
-        self._base_environment = base_environment
-        self._ensure_open = ensure_open
+    Servers are contacted in parallel; each failed attempt is retried up to
+    ``_DISCOVERY_RETRIES`` times, and exhaustion emits a diagnostic and
+    produces no facts for that server.
+    """
 
-    async def discover(
-        self,
-        configs: tuple[MCPServerConfig, ...],
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
-    ) -> tuple[_MCPServerFacts, ...]:
-        """Discover every configured server and return neutral facts.
+    results = await asyncio.gather(
+        *(_discover(config, base_environment, on_diagnostic) for config in configs)
+    )
+    return tuple(fact for fact in results if fact is not None)
 
-        Servers are contacted in parallel; each failed attempt is retried up
-        to ``_DISCOVERY_RETRIES`` times, and exhaustion emits a diagnostic
-        and produces no facts for that server.
-        """
 
-        self._ensure_open()
-        environment = self._base_environment()
-        results = await asyncio.gather(
-            *(_discover(config, environment, on_diagnostic) for config in configs)
-        )
-        return tuple(fact for fact in results if fact is not None)
+def binding_filename() -> str:
+    """Return the binding module filename inside the Tool Runtime root."""
 
-    async def materialize_binding(
-        self,
-        configs: tuple[MCPServerConfig, ...],
-    ) -> None:
-        """Materialize the invocation binding into the Backend Tool Runtime.
-
-        Args:
-            configs (`tuple[MCPServerConfig, ...]`):
-                The successfully discovered servers the stubs will invoke.
-
-        Raises:
-            RuntimeError: If no Bound Capability View is available.
-            ValueError: If the Tool environment path is not a real directory.
-        """
-
-        self._ensure_open()
-        view_root = self._view_root()
-        if view_root is None:
-            raise RuntimeError("Workspace MCP binding requires a Capability View")
-        root = view_root / _BINDING_DIRECTORY
-        _ensure_real_directory(root, label="Tool environment path")
-        _atomic_write(
-            root / _BINDING_FILENAME,
-            _render_binding(configs).encode("utf-8"),
-        )
+    return _BINDING_FILENAME
 
 
 async def _discover(
@@ -199,7 +158,7 @@ def _resolved_headers(
     }
 
 
-def _render_binding(configs: tuple[MCPServerConfig, ...]) -> str:
+def render_binding(configs: tuple[MCPServerConfig, ...]) -> str:
     """Render the Runtime-owned worker-side invocation binding module.
 
     The binding carries connection details and environment names for every
@@ -213,7 +172,7 @@ def _render_binding(configs: tuple[MCPServerConfig, ...]) -> str:
     return (
         '"""Runtime-owned MCP invocation binding.\n'
         "\n"
-        "Materialized into the Backend Tool Runtime by the Local Backend.\n"
+        "Materialized into the Tool Runtime by the CapabilityDeployment.\n"
         "Stubs only call call_tool; connection details and environment\n"
         "names stay in this Runtime-owned module, never in stubs.\n"
         '"""\n'
@@ -271,7 +230,7 @@ def _render_binding(configs: tuple[MCPServerConfig, ...]) -> str:
         "\n"
         "def call_tool(name, tool_name, arguments):\n"
         '    """Invoke one MCP tool synchronously inside the worker."""\n'
-        "    return asyncio.run(_async_call_tool(name, tool_name, arguments))\n"
+        "    return asyncio.run(_async_call_tool(name, tool_name, arguments))"
     )
 
 

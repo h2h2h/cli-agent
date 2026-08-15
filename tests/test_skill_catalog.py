@@ -274,7 +274,7 @@ def test_system_message_skill_section_omitted_without_catalog(
 
 async def _reconcile_skills(view, filesystem):
     catalog = await _SkillCatalog.discover(view)
-    await write_skill_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    await write_skill_index(volume=view.root, filesystem=filesystem, catalog=catalog)
     return catalog
 
 

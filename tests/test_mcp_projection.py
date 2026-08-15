@@ -18,8 +18,10 @@ from cli_agent.runtime._backend.local import (
     _LocalCapabilityView,
 )
 from cli_agent.runtime._backend.local import mcp_runtime as mcp_runtime_module
-from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
+from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
+from cli_agent.runtime._capability.mcp.config import discover_configs
 from cli_agent.runtime._capability.workspace import _prepare_workspace
+from cli_agent.runtime._workspace import _LocalWorkspace
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 _user_interaction = _ScriptedInteraction("allow_once")
@@ -29,6 +31,7 @@ _context_policy = ContextPolicy(
     safety_margin_tokens=0,
 )
 
+_WORKSPACE_ID = "local:00000000000000000000000000000000"
 
 _FIXTURE = Path(__file__).parent / "mcp_server_fixture.py"
 
@@ -57,18 +60,40 @@ def _server_config(repertoire: Path, name: str, command: list[str]) -> None:
     )
 
 
-def _open_backend(workspace: Path, repertoire: Path) -> _LocalBackendWorkspace:
+def _open_deployment(
+    workspace: Path,
+    repertoire: Path,
+    *,
+    on_diagnostic=None,
+):
     _prepare_workspace(workspace)
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
-    return _LocalBackendWorkspace(workspace, {}, view)
+    backend = _LocalBackendWorkspace(workspace, {}, view)
+    deployment = _LocalCapabilityDeployment(
+        state_root=workspace / ".workspace",
+        repertoire=repertoire,
+        volume=".workspace",
+        base_environment=backend.execution_base_environment,
+        on_diagnostic=on_diagnostic,
+    )
+    opened = _LocalWorkspace(_WORKSPACE_ID, workspace, backend, repertoire)
+    return opened, deployment, view
+
+
+async def _reconcile_mcp(
+    opened,
+    deployment,
+    view,
+    on_diagnostic=None,
+) -> tuple[str, ...]:
+    configs = await discover_configs(view, on_diagnostic)
+    facts = await deployment.discover_mcp(configs, on_diagnostic)
+    await deployment.materialize_stubs(opened, configs, facts)
+    return tuple(sorted(fact.name for fact in facts))
 
 
 def _fixture_command() -> list[str]:
     return [sys.executable, str(_FIXTURE)]
-
-
-def _reconcile(backend, on_diagnostic=None) -> _MCPCatalog:
-    return asyncio.run(_MCPCatalog.reconcile(backend, on_diagnostic=on_diagnostic))
 
 
 def test_reconcile_generates_a_stub_with_mcp_prefix(tmp_path: Path) -> None:
@@ -76,15 +101,19 @@ def test_reconcile_generates_a_stub_with_mcp_prefix(tmp_path: Path) -> None:
     workspace.mkdir()
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "math", _fixture_command())
-    backend = _open_backend(workspace, repertoire)
     received: list[RuntimeDiagnostic] = []
+    opened, deployment, view = _open_deployment(
+        workspace,
+        repertoire,
+        on_diagnostic=received.append,
+    )
 
     async def scenario() -> None:
-        catalog = await _MCPCatalog.reconcile(backend, on_diagnostic=received.append)
+        servers = await _reconcile_mcp(opened, deployment, view, received.append)
         assert received == []
-        assert catalog.servers == ("math",)
+        assert servers == ("math",)
 
-        stub = Path(backend.capabilities.root) / "tools" / "mcp_math.py"
+        stub = workspace / ".workspace" / "tools" / "mcp_math.py"
         assert stub.is_file()
         content = stub.read_text(encoding="utf-8")
         assert content.startswith('"""\nMCP Server (stdio): math')
@@ -109,7 +138,7 @@ def test_reconcile_discovers_servers_in_parallel(
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "math", _fixture_command())
     _server_config(repertoire, "echo", _fixture_command())
-    backend = _open_backend(workspace, repertoire)
+    opened, deployment, view = _open_deployment(workspace, repertoire)
 
     entered = 0
     gate = asyncio.Event()
@@ -127,9 +156,9 @@ def test_reconcile_discovers_servers_in_parallel(
     monkeypatch.setattr(mcp_runtime_module, "_discover", gated_discover)
 
     async def scenario() -> None:
-        catalog = await _MCPCatalog.reconcile(backend)
+        servers = await _reconcile_mcp(opened, deployment, view)
         assert entered == 2
-        assert catalog.servers == ("echo", "math")
+        assert servers == ("echo", "math")
 
     asyncio.run(scenario())
 
@@ -142,7 +171,7 @@ def test_reconcile_recontacts_servers_every_run(
     workspace.mkdir()
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "math", _fixture_command())
-    backend = _open_backend(workspace, repertoire)
+    opened, deployment, view = _open_deployment(workspace, repertoire)
 
     calls = 0
     original = mcp_runtime_module._list_tools_once
@@ -155,18 +184,16 @@ def test_reconcile_recontacts_servers_every_run(
     monkeypatch.setattr(mcp_runtime_module, "_list_tools_once", counting_discover)
 
     async def scenario() -> None:
-        await _MCPCatalog.reconcile(backend)
+        await _reconcile_mcp(opened, deployment, view)
         assert calls == 1
-        first_stub = (
-            Path(backend.capabilities.root) / "tools" / "mcp_math.py"
-        ).read_bytes()
+        first_stub = (workspace / ".workspace" / "tools" / "mcp_math.py").read_bytes()
 
-        second = await _MCPCatalog.reconcile(backend)
+        servers = await _reconcile_mcp(opened, deployment, view)
         assert calls == 2
         assert (
-            Path(backend.capabilities.root) / "tools" / "mcp_math.py"
+            workspace / ".workspace" / "tools" / "mcp_math.py"
         ).read_bytes() == first_stub
-        assert second.servers == ("math",)
+        assert servers == ("math",)
 
     asyncio.run(scenario())
 
@@ -180,16 +207,18 @@ def test_reconcile_retries_discovery_and_emits_diagnostic(tmp_path: Path) -> Non
         "broken",
         [sys.executable, str(tmp_path / "missing_server.py")],
     )
-    backend = _open_backend(workspace, repertoire)
     received: list[RuntimeDiagnostic] = []
+    opened, deployment, view = _open_deployment(
+        workspace,
+        repertoire,
+        on_diagnostic=received.append,
+    )
 
     async def scenario() -> None:
-        catalog = await _MCPCatalog.reconcile(backend, on_diagnostic=received.append)
+        servers = await _reconcile_mcp(opened, deployment, view, received.append)
 
-        assert catalog.servers == ()
-        assert not (
-            Path(backend.capabilities.root) / "tools" / "mcp_broken.py"
-        ).exists()
+        assert servers == ()
+        assert not (workspace / ".workspace" / "tools" / "mcp_broken.py").exists()
 
         failures = [
             diagnostic
@@ -212,14 +241,18 @@ def test_reconcile_skips_invalid_config_with_diagnostic(tmp_path: Path) -> None:
         json.dumps({"name": "bad", "transport": "stdio"}),
         encoding="utf-8",
     )
-    backend = _open_backend(workspace, repertoire)
     received: list[RuntimeDiagnostic] = []
+    opened, deployment, view = _open_deployment(
+        workspace,
+        repertoire,
+        on_diagnostic=received.append,
+    )
 
     async def scenario() -> None:
-        catalog = await _MCPCatalog.reconcile(backend, on_diagnostic=received.append)
+        servers = await _reconcile_mcp(opened, deployment, view, received.append)
 
-        assert catalog.servers == ()
-        assert not (Path(backend.capabilities.root) / "tools" / "mcp_bad.py").exists()
+        assert servers == ()
+        assert not (workspace / ".workspace" / "tools" / "mcp_bad.py").exists()
         kinds = {diagnostic.kind for diagnostic in received}
         assert "mcp.config_invalid" in kinds
 
@@ -231,19 +264,22 @@ def test_reconcile_removes_stub_for_a_removed_description(tmp_path: Path) -> Non
     workspace.mkdir()
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "math", _fixture_command())
-    backend = _open_backend(workspace, repertoire)
+    opened, deployment, view = _open_deployment(workspace, repertoire)
 
     async def scenario() -> None:
-        await _MCPCatalog.reconcile(backend)
-        stub = Path(backend.capabilities.root) / "tools" / "mcp_math.py"
+        await _reconcile_mcp(opened, deployment, view)
+        stub = workspace / ".workspace" / "tools" / "mcp_math.py"
         assert stub.is_file()
 
         shutil.rmtree(repertoire / "_mcp" / "math")
-        refreshed = _open_backend(workspace, repertoire)
-        second = await _MCPCatalog.reconcile(refreshed)
+        refreshed, redeployment, refreshed_view = _open_deployment(
+            workspace,
+            repertoire,
+        )
+        servers = await _reconcile_mcp(refreshed, redeployment, refreshed_view)
 
         assert not stub.exists()
-        assert second.servers == ()
+        assert servers == ()
 
     asyncio.run(scenario())
 
@@ -253,21 +289,25 @@ def test_reconcile_overwrites_a_locally_modified_stub(tmp_path: Path) -> None:
     workspace.mkdir()
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "math", _fixture_command())
-    backend = _open_backend(workspace, repertoire)
     received: list[RuntimeDiagnostic] = []
+    opened, deployment, view = _open_deployment(
+        workspace,
+        repertoire,
+        on_diagnostic=received.append,
+    )
 
     async def scenario() -> None:
-        await _MCPCatalog.reconcile(backend)
-        stub = Path(backend.capabilities.root) / "tools" / "mcp_math.py"
+        await _reconcile_mcp(opened, deployment, view)
+        stub = workspace / ".workspace" / "tools" / "mcp_math.py"
         stub.write_text("# user-edited\n", encoding="utf-8")
 
-        catalog = await _MCPCatalog.reconcile(backend, on_diagnostic=received.append)
+        servers = await _reconcile_mcp(opened, deployment, view, received.append)
 
         assert stub.read_text(encoding="utf-8").startswith(
             '"""\nMCP Server (stdio): math'
         )
         assert "# user-edited" not in stub.read_text(encoding="utf-8")
-        assert catalog.servers == ("math",)
+        assert servers == ("math",)
         assert not any(
             diagnostic.kind == "mcp.stub_modified" for diagnostic in received
         )
@@ -280,16 +320,16 @@ def test_reconcile_never_touches_non_prefix_tools(tmp_path: Path) -> None:
     workspace.mkdir()
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "math", _fixture_command())
-    backend = _open_backend(workspace, repertoire)
+    opened, deployment, view = _open_deployment(workspace, repertoire)
 
     async def scenario() -> None:
-        keep = Path(backend.capabilities.root) / "tools" / "keep.py"
+        keep = workspace / ".workspace" / "tools" / "keep.py"
         keep.write_text("# user tool\n", encoding="utf-8")
 
-        await _MCPCatalog.reconcile(backend)
+        await _reconcile_mcp(opened, deployment, view)
 
         assert keep.read_text(encoding="utf-8") == "# user tool\n"
-        assert (Path(backend.capabilities.root) / "tools" / "mcp_math.py").is_file()
+        assert (workspace / ".workspace" / "tools" / "mcp_math.py").is_file()
 
     asyncio.run(scenario())
 
@@ -357,13 +397,11 @@ def test_generated_stub_is_valid_python_and_callable(tmp_path: Path) -> None:
     workspace.mkdir()
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "math", _fixture_command())
-    backend = _open_backend(workspace, repertoire)
+    opened, deployment, view = _open_deployment(workspace, repertoire)
 
-    _reconcile(backend)
+    asyncio.run(_reconcile_mcp(opened, deployment, view))
 
-    binding_path = (
-        Path(backend.capabilities.root) / ".tool-environment" / "mcp_binding.py"
-    )
+    binding_path = workspace / ".workspace" / ".tool-environment" / "mcp_binding.py"
     sys.path.insert(0, str(binding_path.parent))
     try:
         binding_spec = importlib.util.spec_from_file_location(
@@ -375,7 +413,7 @@ def test_generated_stub_is_valid_python_and_callable(tmp_path: Path) -> None:
         sys.modules[binding_spec.name] = binding_module
         binding_spec.loader.exec_module(binding_module)
 
-        stub_path = Path(backend.capabilities.root) / "tools" / "mcp_math.py"
+        stub_path = workspace / ".workspace" / "tools" / "mcp_math.py"
         spec = importlib.util.spec_from_file_location("cli_agent_math", stub_path)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
@@ -394,20 +432,23 @@ def test_reconcile_replaces_stub_when_server_is_renamed(tmp_path: Path) -> None:
     workspace.mkdir()
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "math", _fixture_command())
-    backend = _open_backend(workspace, repertoire)
+    opened, deployment, view = _open_deployment(workspace, repertoire)
 
     async def scenario() -> None:
-        await _MCPCatalog.reconcile(backend)
-        assert (Path(backend.capabilities.root) / "tools" / "mcp_math.py").is_file()
+        await _reconcile_mcp(opened, deployment, view)
+        assert (workspace / ".workspace" / "tools" / "mcp_math.py").is_file()
 
         shutil.rmtree(repertoire / "_mcp" / "math")
         _server_config(repertoire, "renamed", _fixture_command())
-        refreshed = _open_backend(workspace, repertoire)
-        catalog = await _MCPCatalog.reconcile(refreshed)
+        refreshed, redeployment, refreshed_view = _open_deployment(
+            workspace,
+            repertoire,
+        )
+        servers = await _reconcile_mcp(refreshed, redeployment, refreshed_view)
 
-        assert not (Path(backend.capabilities.root) / "tools" / "mcp_math.py").exists()
-        assert (Path(backend.capabilities.root) / "tools" / "mcp_renamed.py").is_file()
-        assert catalog.servers == ("renamed",)
+        assert not (workspace / ".workspace" / "tools" / "mcp_math.py").exists()
+        assert (workspace / ".workspace" / "tools" / "mcp_renamed.py").is_file()
+        assert servers == ("renamed",)
 
     asyncio.run(scenario())
 
@@ -417,11 +458,11 @@ def test_failed_reconcile_removes_a_previous_stub(tmp_path: Path) -> None:
     workspace.mkdir()
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "flaky", _fixture_command())
-    backend = _open_backend(workspace, repertoire)
+    opened, deployment, view = _open_deployment(workspace, repertoire)
 
     async def scenario() -> None:
-        await _MCPCatalog.reconcile(backend)
-        stub = Path(backend.capabilities.root) / "tools" / "mcp_flaky.py"
+        await _reconcile_mcp(opened, deployment, view)
+        stub = workspace / ".workspace" / "tools" / "mcp_flaky.py"
         assert stub.is_file()
 
         _server_config(
@@ -429,12 +470,20 @@ def test_failed_reconcile_removes_a_previous_stub(tmp_path: Path) -> None:
             "flaky",
             [sys.executable, str(tmp_path / "missing_server.py")],
         )
-        refreshed = _open_backend(workspace, repertoire)
+        refreshed, redeployment, refreshed_view = _open_deployment(
+            workspace,
+            repertoire,
+        )
         received: list[RuntimeDiagnostic] = []
-        catalog = await _MCPCatalog.reconcile(refreshed, on_diagnostic=received.append)
+        servers = await _reconcile_mcp(
+            refreshed,
+            redeployment,
+            refreshed_view,
+            received.append,
+        )
 
         assert not stub.exists()
-        assert catalog.servers == ()
+        assert servers == ()
         assert any(diagnostic.kind == "mcp.discovery_failed" for diagnostic in received)
 
     asyncio.run(scenario())
@@ -473,9 +522,11 @@ def test_runtime_open_reports_invalid_config_without_blocking(
 
 
 def _workspace_server(
-    view: _LocalCapabilityView, name: str, command: list[str]
+    workspace: Path,
+    name: str,
+    command: list[str],
 ) -> None:
-    directory = Path(view.root) / "_mcp" / name
+    directory = workspace / ".workspace" / "_mcp" / name
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "config.json").write_text(
         json.dumps(
@@ -494,13 +545,13 @@ def test_workspace_config_projects_without_repertoire(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     repertoire = _repertoire(workspace)
-    backend = _open_backend(workspace, repertoire)
-    _workspace_server(backend.capabilities, "math", _fixture_command())
+    opened, deployment, view = _open_deployment(workspace, repertoire)
+    _workspace_server(workspace, "math", _fixture_command())
 
     async def scenario() -> None:
-        catalog = await _MCPCatalog.reconcile(backend)
-        assert catalog.servers == ("math",)
-        assert (Path(backend.capabilities.root) / "tools" / "mcp_math.py").is_file()
+        servers = await _reconcile_mcp(opened, deployment, view)
+        assert servers == ("math",)
+        assert (workspace / ".workspace" / "tools" / "mcp_math.py").is_file()
 
     asyncio.run(scenario())
 
@@ -510,12 +561,12 @@ def test_workspace_config_overrides_repertoire(tmp_path: Path) -> None:
     workspace.mkdir()
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "math", _fixture_command())
-    backend = _open_backend(workspace, repertoire)
+    opened, deployment, view = _open_deployment(workspace, repertoire)
 
-    config_link = Path(backend.capabilities.root) / "_mcp" / "math" / "config.json"
+    config_link = workspace / ".workspace" / "_mcp" / "math" / "config.json"
     assert config_link.is_symlink()
     config_link.unlink()
-    (config_link).write_text(
+    config_link.write_text(
         json.dumps(
             {
                 "name": "math",
@@ -528,9 +579,14 @@ def test_workspace_config_overrides_repertoire(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         received: list[RuntimeDiagnostic] = []
-        catalog = await _MCPCatalog.reconcile(backend, on_diagnostic=received.append)
-        assert not (Path(backend.capabilities.root) / "tools" / "mcp_math.py").exists()
-        assert catalog.servers == ()
+        servers = await _reconcile_mcp(
+            opened,
+            deployment,
+            view,
+            received.append,
+        )
+        assert not (workspace / ".workspace" / "tools" / "mcp_math.py").exists()
+        assert servers == ()
         assert any(diagnostic.kind == "mcp.discovery_failed" for diagnostic in received)
 
     asyncio.run(scenario())
@@ -541,17 +597,18 @@ def test_workspace_whiteout_disables_repertoire_server(tmp_path: Path) -> None:
     workspace.mkdir()
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "math", _fixture_command())
-    backend = _open_backend(workspace, repertoire)
+    opened, deployment, view = _open_deployment(workspace, repertoire)
 
     async def scenario() -> None:
-        await _MCPCatalog.reconcile(backend)
-        stub = Path(backend.capabilities.root) / "tools" / "mcp_math.py"
+        await _reconcile_mcp(opened, deployment, view)
+        stub = workspace / ".workspace" / "tools" / "mcp_math.py"
         assert stub.is_file()
 
-        config_link = Path(backend.capabilities.root) / "_mcp" / "math" / "config.json"
+        config_link = workspace / ".workspace" / "_mcp" / "math" / "config.json"
         config_link.unlink()
         whiteout = (
-            Path(backend.capabilities.root)
+            workspace
+            / ".workspace"
             / ".capability-view"
             / "whiteouts"
             / "_mcp"
@@ -562,10 +619,15 @@ def test_workspace_whiteout_disables_repertoire_server(tmp_path: Path) -> None:
         whiteout.touch()
 
         received: list[RuntimeDiagnostic] = []
-        catalog = await _MCPCatalog.reconcile(backend, on_diagnostic=received.append)
+        servers = await _reconcile_mcp(
+            opened,
+            deployment,
+            view,
+            received.append,
+        )
 
         assert not stub.exists()
-        assert catalog.servers == ()
+        assert servers == ()
         assert not any(
             diagnostic.kind == "mcp.config_missing" for diagnostic in received
         )
@@ -577,18 +639,18 @@ def test_workspace_removed_server_removes_its_stub(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     repertoire = _repertoire(workspace)
-    backend = _open_backend(workspace, repertoire)
-    _workspace_server(backend.capabilities, "math", _fixture_command())
+    opened, deployment, view = _open_deployment(workspace, repertoire)
+    _workspace_server(workspace, "math", _fixture_command())
 
     async def scenario() -> None:
-        await _MCPCatalog.reconcile(backend)
-        stub = Path(backend.capabilities.root) / "tools" / "mcp_math.py"
+        await _reconcile_mcp(opened, deployment, view)
+        stub = workspace / ".workspace" / "tools" / "mcp_math.py"
         assert stub.is_file()
 
-        shutil.rmtree(Path(backend.capabilities.root) / "_mcp" / "math")
-        catalog = await _MCPCatalog.reconcile(backend)
+        shutil.rmtree(workspace / ".workspace" / "_mcp" / "math")
+        servers = await _reconcile_mcp(opened, deployment, view)
 
         assert not stub.exists()
-        assert catalog.servers == ()
+        assert servers == ()
 
     asyncio.run(scenario())

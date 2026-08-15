@@ -1,8 +1,9 @@
 """Capability index projections written into the Workspace (Deployment side).
 
 The control plane never writes; these helpers materialize catalog
-projections through a Backend Filesystem when the Runtime deploys a
-CapabilitySnapshot.
+projections through a Workspace Filesystem when the CapabilityDeployment
+deploys a CapabilitySnapshot. Targets are addressed with Backend-relative
+capability volume paths, never Host mirror paths.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from cli_agent.runtime._capability.provider import CapabilitySnapshot
 
 async def write_tool_index(
     *,
-    view_root: str,
+    volume: str,
     filesystem: _WorkspaceFilesystem,
     catalog,
 ) -> None:
@@ -23,7 +24,7 @@ async def write_tool_index(
 
     await filesystem.write(
         _FileWriteRequest(
-            path=posixpath.join(view_root, "tools/index.md"),
+            path=posixpath.join(volume, "tools/index.md"),
             content=catalog.render_index().encode("utf-8"),
         )
     )
@@ -31,7 +32,7 @@ async def write_tool_index(
 
 async def write_skill_index(
     *,
-    view_root: str,
+    volume: str,
     filesystem: _WorkspaceFilesystem,
     catalog,
 ) -> None:
@@ -39,27 +40,19 @@ async def write_skill_index(
 
     await filesystem.write(
         _FileWriteRequest(
-            path=posixpath.join(view_root, "skills/index.md"),
+            path=posixpath.join(volume, "skills/index.md"),
             content=catalog.render_index().encode("utf-8"),
         )
     )
 
 
-async def write_catalog_indexes(
+def render_catalog_indexes(
     *,
-    view_root: str,
-    filesystem: _WorkspaceFilesystem,
     snapshot: CapabilitySnapshot,
-) -> None:
-    """Atomically write the Tools and Skills index projections."""
+) -> dict[str, bytes]:
+    """Return the desired Tools and Skills index artifacts."""
 
-    await write_tool_index(
-        view_root=view_root,
-        filesystem=filesystem,
-        catalog=snapshot.tools,
-    )
-    await write_skill_index(
-        view_root=view_root,
-        filesystem=filesystem,
-        catalog=snapshot.skills,
-    )
+    return {
+        "tools/index.md": snapshot.tools.render_index().encode("utf-8"),
+        "skills/index.md": snapshot.skills.render_index().encode("utf-8"),
+    }

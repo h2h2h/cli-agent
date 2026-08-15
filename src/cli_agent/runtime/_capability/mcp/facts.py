@@ -35,6 +35,23 @@ _MCP_CONFIG_SCHEMA: dict[str, object] = {
 
 
 @dataclass(frozen=True, slots=True)
+class _MCPToolFacts:
+    """Provider-neutral facts for one discovered Workspace MCP tool."""
+
+    name: str
+    description: str
+    input_schema: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class _MCPServerFacts:
+    """Provider-neutral facts for one discovered Workspace MCP server."""
+
+    name: str
+    tools: tuple[_MCPToolFacts, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class MCPServerConfig:
     """One validated MCP server connection description.
 

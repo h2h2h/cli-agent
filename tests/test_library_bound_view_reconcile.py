@@ -19,7 +19,6 @@ from cli_agent.runtime import (
     ScriptedModelProvider,
 )
 from cli_agent.runtime._backend import (
-    _BoundCapabilityView,
     _CapabilityInspection,
     _DirectoryEntry,
     _FileMetadata,
@@ -27,6 +26,7 @@ from cli_agent.runtime._backend import (
     _FileWriteRequest,
 )
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
+from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime._database.summary_cache import _SummaryCache
 
@@ -160,7 +160,7 @@ def test_library_reconciles_against_in_memory_bound_view(tmp_path: Path) -> None
     async def scenario() -> None:
         catalog = await _LibraryCatalog.reconcile(view, filesystem, _cache(tmp_path))
 
-        assert isinstance(view, _BoundCapabilityView)
+        assert isinstance(view, _LogicalCapabilityView)
         by_path = {entry.path: entry for entry in catalog.entries}
         assert by_path["notes.md"].provenance == "workspace"
         assert by_path["notes.md"].shadows_repertoire is True

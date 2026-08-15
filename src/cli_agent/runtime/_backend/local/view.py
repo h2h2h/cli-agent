@@ -1,9 +1,10 @@
 """Local file-level Capability View materialized in the Workspace.
 
-Implements the generic ``_BoundCapabilityView`` contract (``root``,
+Implements the logical ``_LogicalCapabilityView`` contract (``root``,
 ``inspect``, ``list``, ``read``, ``stat``) with Host file mechanics: exact
 lower symlinks, Workspace copy-up, persistent whiteouts, and the Shell
-mutation lock. ``prepare_path`` and ``prepare_shell`` are Local-only seams
+mutation lock. Materialization is owned by the CapabilityDeployment plane
+(RFC-0014); ``prepare_path`` and ``prepare_shell`` are Local-only seams
 consumed by the Local Filesystem and Local Shell execution; the generic
 Backend contract never exposes them.
 """
@@ -456,26 +457,6 @@ class _LocalCapabilityView:
             except OSError:
                 break
             parent = parent.parent
-
-
-class _UnimplementedCapabilityView:
-    """Bound Capability View placeholder bound by a later migration."""
-
-    @property
-    def root(self) -> str:
-        raise NotImplementedError("Bound Capability View is not implemented yet")
-
-    async def inspect(self, relative_path: str) -> _CapabilityInspection:
-        raise NotImplementedError("Bound Capability View is not implemented yet")
-
-    async def list(self, relative_path: str) -> tuple[_DirectoryEntry, ...]:
-        raise NotImplementedError("Bound Capability View is not implemented yet")
-
-    async def read(self, relative_path: str) -> bytes:
-        raise NotImplementedError("Bound Capability View is not implemented yet")
-
-    async def stat(self, relative_path: str) -> _FileMetadata:
-        raise NotImplementedError("Bound Capability View is not implemented yet")
 
 
 def _managed_capability_path(path: str) -> Path:

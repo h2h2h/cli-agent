@@ -227,6 +227,7 @@ def test_concurrent_runtime_opens_share_idempotent_bootstrap(
         ".capability-view",
         ".tool-environment",
         "_mcp",
+        "deployment.json",
         "env",
         "identity",
         "library",

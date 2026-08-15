@@ -7,8 +7,6 @@ import pytest
 
 from cli_agent.runtime._backend import (
     _BackendWorkspace,
-    _CapabilitySource,
-    _CapabilityState,
     _FileEdit,
     _FileEditRequest,
     _FileEditResult,
@@ -32,12 +30,8 @@ async def _open_workspace(
     env = root / ".workspace" / "env"
     env.parent.mkdir()
     env.write_text(environment, encoding="utf-8")
-    repertoire = root / "repertoire"
-    repertoire.mkdir(exist_ok=True)
     return await _LocalBackend().open_workspace(
         source=_WorkspaceSource(root=root, environment=env),
-        capability_source=_CapabilitySource(repertoire=repertoire),
-        capability_state=_CapabilityState(root=root / ".workspace"),
     )
 
 
@@ -83,8 +77,6 @@ def test_open_fails_closed_when_workspace_root_is_missing(tmp_path: Path) -> Non
         with pytest.raises(ValueError, match="existing directory"):
             await _LocalBackend().open_workspace(
                 source=_WorkspaceSource(root=tmp_path / "missing", environment=env),
-                capability_source=_CapabilitySource(repertoire=tmp_path / "repertoire"),
-                capability_state=_CapabilityState(root=tmp_path / "missing"),
             )
 
     asyncio.run(scenario())
@@ -218,52 +210,5 @@ def test_close_forbids_workspace_and_borrowed_resource_use(tmp_path: Path) -> No
             workspace.filesystem.resolve("visible.txt", workspace.root)
         with pytest.raises(RuntimeError, match="Backend Workspace is closed"):
             await workspace.filesystem.read("visible.txt")
-        with pytest.raises(RuntimeError, match="Backend Workspace is closed"):
-            await workspace.capabilities.list("tools")
-        with pytest.raises(RuntimeError, match="Backend Workspace is closed"):
-            await workspace.mcp.discover(())
-        with pytest.raises(RuntimeError, match="Backend Workspace is closed"):
-            await workspace.reconcile_tool_runtime()
-
-    asyncio.run(scenario())
-
-
-def test_tool_runtime_reconciles_venv_and_materialized_worker(
-    tmp_path: Path,
-) -> None:
-    async def scenario() -> None:
-        workspace = await _open_workspace(tmp_path)
-
-        status = await workspace.reconcile_tool_runtime()
-
-        assert status.available, status.error
-        environment = tmp_path / ".workspace" / ".tool-environment"
-        assert (environment / ".venv" / "bin" / "python").is_file()
-        worker = environment / "worker.py"
-        assert worker.is_file()
-        assert not worker.is_symlink()
-        assert "stdlib-only worker" in worker.read_text(encoding="utf-8")
-
-    asyncio.run(scenario())
-
-
-def test_mcp_runtime_discovers_nothing_without_configs(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        workspace = await _open_workspace(tmp_path)
-
-        facts = await workspace.mcp.discover(())
-        assert facts == ()
-
-    asyncio.run(scenario())
-
-
-def test_mcp_runtime_materializes_an_empty_binding(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        workspace = await _open_workspace(tmp_path)
-
-        await workspace.mcp.materialize_binding(())
-        binding = tmp_path / ".workspace" / ".tool-environment" / "mcp_binding.py"
-        assert binding.is_file()
-        assert "_SERVERS = {" in binding.read_text(encoding="utf-8")
 
     asyncio.run(scenario())

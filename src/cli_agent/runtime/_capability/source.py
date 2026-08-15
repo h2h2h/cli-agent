@@ -1,17 +1,16 @@
 """Host-owned Capability Source and State preparation.
 
 RFC-0012 separates the logical Capability lower/upper/whiteout inputs from
-the Backend-owned materialization. These Host preparation helpers own the
-persistent ``Path`` inputs: they create or validate the Repertoire lower
-tree and reject a Repertoire that overlaps the Workspace state directory.
-Bound View materialization happens later inside the Local Backend.
+their materialization. These Host preparation helpers own the persistent
+``Path`` inputs: they create or validate the Repertoire lower tree and
+reject a Repertoire that overlaps the Workspace state directory. Bound View
+materialization happens later inside the CapabilityDeployment plane.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from cli_agent.runtime._backend import _CapabilitySource
 from cli_agent.runtime._capability.workspace import _ensure_real_directory
 
 _CAPABILITY_DIRECTORIES = ("tools", "skills", "library", "_mcp")
@@ -22,8 +21,8 @@ _MCP_DIRECTORY = "_mcp"
 def _prepare_capability_source(
     repertoire: str | Path | None,
     state_root: Path,
-) -> _CapabilitySource:
-    """Open the Host Repertoire and return the Capability Source input facts.
+) -> Path:
+    """Open the Host Repertoire and return its resolved root path.
 
     Args:
         repertoire (`str | Path | None`):
@@ -34,7 +33,7 @@ def _prepare_capability_source(
             overlap.
 
     Returns:
-        The Capability Source facts consumed by Backend Workspace open.
+        The resolved Repertoire root consumed by the CapabilityDeployment.
 
     Raises:
         ValueError: If the Repertoire path cannot be created, is not a real
@@ -58,7 +57,7 @@ def _prepare_capability_source(
         )
     if _paths_overlap(state_root, root):
         raise ValueError("repertoire must be outside the Workspace state directory")
-    return _CapabilitySource(repertoire=root)
+    return root
 
 
 def _paths_overlap(first: Path, second: Path) -> bool:

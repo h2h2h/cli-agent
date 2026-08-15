@@ -6,14 +6,15 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cli_agent.runtime._backend import _BackendWorkspace, _BoundCapabilityView
+from cli_agent.runtime._backend import _BackendWorkspace
+from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
+from cli_agent.runtime._capability.deployment import DeploymentSnapshot
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
-from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
-from cli_agent.runtime._capability.projections import write_catalog_indexes
 from cli_agent.runtime._capability.provider import (
     CapabilityProvider,
     CapabilitySnapshot,
 )
+from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._database.session_store import SessionStore
 from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime._database.summary_cache import _SummaryCache
@@ -26,17 +27,19 @@ class _RuntimeResources:
     """Reference-stable aggregate of Workspace-lifetime Runtime resources.
 
     ``frozen`` only prevents field rebinding; referenced components continue
-    to encapsulate their own mutable state. ``base_env`` is excluded from the
-    representation so debug output never contains Workspace environment values.
-    The aggregate owns the RFC-0012 close sequence: the Library worker stops
-    first, then the Workspace flushes and closes its bound Backend.
+    to encapsulate their own mutable state. ``base_env`` is excluded from
+    the representation so debug output never contains Workspace environment
+    values. The aggregate owns the RFC-0012 close sequence: the Library
+    worker stops first, then the Workspace flushes and closes its bound
+    Backend.
     """
 
     workspace: Workspace
     backend: _BackendWorkspace
     base_env: Mapping[str, str] = field(repr=False)
-    capability_view: _BoundCapabilityView
+    capability_view: _LogicalCapabilityView
     snapshot: CapabilitySnapshot
+    deployment: DeploymentSnapshot
     session_store: SessionStore
 
     async def close(self) -> None:
@@ -99,12 +102,14 @@ async def _reconcile_runtime_resources(
 ) -> _RuntimeResources:
     """Reconcile Workspace-lifetime resources in the established order.
 
-    The RFC-0012 open order is fixed: Workspace identity, Host sources,
-    Backend Workspace and Bound View, MCP config discovery and stub
-    projection, Capability snapshot discovery, catalog index projections,
-    Backend Tool Runtime, and the Library Catalog. Any failure rolls back
-    every already-opened resource in reverse order and re-raises the
-    original failure.
+    The RFC-0014 open order is fixed: Workspace identity and Host sources,
+    Backend Workspace open, CapabilityDeployment view attach, MCP config
+    discovery, MCP server discovery and stub projection, Capability
+    snapshot discovery, capability deployment reconcile, the application
+    state database, and the Library Catalog. Any failure rolls back every
+    already-opened resource in reverse order and re-raises the original
+    failure; a Tool environment deployment failure is fail-soft and
+    surfaces through the DeploymentSnapshot instead.
 
     Args:
         workspace (`str | Path`):
@@ -129,30 +134,37 @@ async def _reconcile_runtime_resources(
         )
         opened.add(opened_workspace.close)
         backend = opened_workspace.backend
+        deployment = _LocalCapabilityDeployment(
+            state_root=opened_workspace.state_root,
+            repertoire=opened_workspace.repertoire,
+            volume=opened_workspace.deployment_volume,
+            base_environment=backend.execution_base_environment,
+            on_diagnostic=on_diagnostic,
+        )
+        view = await deployment.attach(opened_workspace)
         provider = CapabilityProvider(
-            view=opened_workspace.capability_source,
+            view=view,
             workspace=opened_workspace.root_path,
             on_diagnostic=on_diagnostic,
         )
         mcp_configs = await provider.discover_mcp_configs()
-        await _MCPCatalog.reconcile(
-            backend,
-            on_diagnostic,
-            configs=mcp_configs,
+        mcp_facts = await deployment.discover_mcp(mcp_configs)
+        await deployment.materialize_stubs(
+            opened_workspace,
+            mcp_configs,
+            mcp_facts,
         )
         snapshot = await provider.discover(mcp_configs=mcp_configs)
-        await write_catalog_indexes(
-            view_root=backend.capabilities.root,
-            filesystem=backend.filesystem,
-            snapshot=snapshot,
+        deployment_snapshot = await deployment.reconcile(
+            snapshot,
+            opened_workspace,
         )
-        await backend.reconcile_tool_runtime()
         state_database = _StateDatabase.open()
         opened.add(lambda: _close_database(state_database))
         summary_cache = _SummaryCache(state_database)
         session_store = SessionStore(state_database)
         library_catalog = await _LibraryCatalog.reconcile(
-            backend.capabilities,
+            view,
             backend.filesystem,
             summary_cache,
         )
@@ -161,8 +173,9 @@ async def _reconcile_runtime_resources(
             workspace=opened_workspace,
             backend=backend,
             base_env=backend.workspace_environment,
-            capability_view=backend.capabilities,
+            capability_view=view,
             snapshot=snapshot,
+            deployment=deployment_snapshot,
             session_store=session_store,
         )
     except BaseException:

@@ -46,11 +46,11 @@ class _LocalWorkspaceFilesystem:
     def __init__(
         self,
         root: Path,
-        capability_view: _LocalCapabilityView | None = None,
+        view_provider: Callable[[], _LocalCapabilityView | None] | None = None,
         ensure_open: Callable[[], None] | None = None,
     ) -> None:
         self._root = root
-        self._capability_view = capability_view
+        self._view_provider = view_provider or (lambda: None)
         self._ensure_open = ensure_open or _noop
 
     def resolve(self, path: str, cwd: str) -> _ResolvedPath:
@@ -160,7 +160,7 @@ class _LocalWorkspaceFilesystem:
 
     def _prepare_target(self, path: str) -> Path:
         target = self._resolve(path)
-        view = self._capability_view
+        view = self._view_provider()
         if view is not None:
             try:
                 view.prepare_path(target)

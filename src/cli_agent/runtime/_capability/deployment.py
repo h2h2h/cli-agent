@@ -1,0 +1,275 @@
+"""CapabilityDeployment: the deployment plane between control plane and Workspace.
+
+The control plane (``CapabilityProvider``) discovers immutable logical
+``CapabilitySnapshot`` facts without side effects; this module defines the
+only materialization boundary between those snapshots and a Workspace.
+Deploying means attaching the Capability View, projecting MCP stubs,
+materializing the Tool worker, its private environment and dependencies,
+and the invocation binding, then recording one completion manifest that
+binds the published artifacts to the snapshot revision and the Workspace
+identity.
+
+Backend-neutral capability volume layout (issue RFC-0014), rooted at the
+Workspace state volume and addressed with Backend-relative paths so any
+Backend can host it and per-execution environments can mount it read-only:
+
+    <capability volume>/
+    ├── tools/  skills/  library/  _mcp/   # Capability View upper tree
+    ├── .capability-view/whiteouts/        # View mutation markers
+    ├── .tool-environment/                 # Tool runtime volume
+    │   ├── .venv/                         # Private environment
+    │   ├── worker.py                      # Runtime-owned worker
+    │   ├── mcp_binding.py                 # MCP invocation binding
+    │   ├── effective-requirements.txt     # Combined dependencies
+    │   └── requirements.sha256            # Dependency digest marker
+    └── deployment.json                    # Deployment completion manifest
+
+Deployment artifacts live under the persistent capability volume and never
+depend on the lifecycle of any single ExecutionHandle.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import posixpath
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+from cli_agent.runtime._backend import _FileWriteRequest, _WorkspaceFilesystem
+from cli_agent.runtime._capability.facts import _FilesystemError
+from cli_agent.runtime._capability.provider import CapabilitySnapshot
+
+if TYPE_CHECKING:
+    from cli_agent.runtime._workspace import Workspace
+
+DEPLOYMENT_SCHEMA_VERSION = 1
+
+TOOL_RUNTIME_DIRECTORY = ".tool-environment"
+DEPLOYMENT_MANIFEST = "deployment.json"
+
+
+@dataclass(frozen=True, slots=True)
+class DeploymentSnapshot:
+    """One capability deployment bound to a snapshot and a Workspace.
+
+    ``revision`` is the fingerprint of the exact ``CapabilitySnapshot``
+    handed to ``reconcile``; ``complete`` is False when any deployed
+    runtime component (most commonly the private dependency environment)
+    failed to materialize, in which case ``error`` carries the reason and
+    the previous complete deployment on disk remains in place.
+    """
+
+    workspace_id: str
+    revision: str
+    layout_version: int
+    complete: bool
+    error: str | None
+
+
+@runtime_checkable
+class CapabilityDeployment(Protocol):
+    """Materialize one CapabilitySnapshot into a Workspace."""
+
+    async def reconcile(
+        self,
+        snapshot: CapabilitySnapshot,
+        workspace: Workspace,
+    ) -> DeploymentSnapshot:
+        """Deploy the snapshot idempotently and return the deployment facts.
+
+        Reconciling the same snapshot into the same Workspace must not
+        reinstall anything: unchanged artifact domains are skipped via the
+        completion manifest, and a failed reconcile never marks an
+        incomplete deployment complete.
+        """
+        ...
+
+
+class StaleDeploymentError(RuntimeError):
+    """Raised when a deployment does not match what execution requested."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        workspace_id: str,
+        revision: str,
+    ) -> None:
+        super().__init__(reason)
+        self.workspace_id = workspace_id
+        self.revision = revision
+
+
+def verify_deployment(
+    deployment: DeploymentSnapshot,
+    *,
+    revision: str,
+    workspace_id: str,
+) -> None:
+    """Reject stale, incomplete, or foreign deployments before execution.
+
+    Args:
+        deployment (`DeploymentSnapshot`):
+            The deployment an executor was composed with.
+        revision (`str`):
+            The snapshot revision the execution is being prepared for.
+        workspace_id (`str`):
+            The Workspace identity the execution runs in.
+
+    Raises:
+        StaleDeploymentError: If the deployment belongs to another
+            Workspace, was deployed from a different snapshot revision,
+            or did not complete.
+    """
+
+    if deployment.workspace_id != workspace_id:
+        raise StaleDeploymentError(
+            "Deployment belongs to a different Workspace",
+            workspace_id=deployment.workspace_id,
+            revision=deployment.revision,
+        )
+    if deployment.revision != revision:
+        raise StaleDeploymentError(
+            "Deployment is stale for the active capability revision",
+            workspace_id=deployment.workspace_id,
+            revision=deployment.revision,
+        )
+    if not deployment.complete:
+        raise StaleDeploymentError(
+            "Deployment did not complete",
+            workspace_id=deployment.workspace_id,
+            revision=deployment.revision,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _DeploymentManifest:
+    """Completion manifest binding published artifacts to their inputs."""
+
+    workspace_id: str
+    revision: str
+    complete: bool
+    digests: Mapping[str, str]
+
+    @classmethod
+    def decode(cls, content: bytes) -> _DeploymentManifest | None:
+        """Parse one manifest, treating any unreadable content as absent."""
+
+        try:
+            raw = json.loads(content.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(raw, Mapping):
+            return None
+        workspace_id = raw.get("workspace_id")
+        revision = raw.get("revision")
+        complete = raw.get("complete")
+        digests = raw.get("digests")
+        if (
+            not isinstance(workspace_id, str)
+            or not isinstance(revision, str)
+            or not isinstance(complete, bool)
+            or not isinstance(digests, Mapping)
+            or not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in digests.items()
+            )
+        ):
+            return None
+        return cls(
+            workspace_id=workspace_id,
+            revision=revision,
+            complete=complete,
+            digests=dict(digests),
+        )
+
+    def encode(self) -> bytes:
+        """Render the canonical manifest bytes."""
+
+        return (
+            json.dumps(
+                {
+                    "schema_version": DEPLOYMENT_SCHEMA_VERSION,
+                    "workspace_id": self.workspace_id,
+                    "revision": self.revision,
+                    "complete": self.complete,
+                    "digests": dict(sorted(self.digests.items())),
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+
+
+def artifact_digest(artifacts: Mapping[str, bytes]) -> str:
+    """Fingerprint one artifact domain by path and content."""
+
+    hasher = hashlib.sha256()
+    for path in sorted(artifacts):
+        content = artifacts[path]
+        name = path.encode("utf-8")
+        hasher.update(len(name).to_bytes(8, "big"))
+        hasher.update(name)
+        hasher.update(len(content).to_bytes(8, "big"))
+        hasher.update(content)
+    return hasher.hexdigest()
+
+
+async def read_manifest(
+    filesystem: _WorkspaceFilesystem,
+    manifest_path: str,
+) -> _DeploymentManifest | None:
+    """Read the completion manifest; missing or corrupt manifests are absent."""
+
+    try:
+        content = await filesystem.read(manifest_path)
+    except _FilesystemError:
+        return None
+    return _DeploymentManifest.decode(content)
+
+
+async def write_manifest(
+    filesystem: _WorkspaceFilesystem,
+    manifest_path: str,
+    manifest: _DeploymentManifest,
+) -> None:
+    """Atomically publish the completion manifest."""
+
+    await filesystem.write(
+        _FileWriteRequest(path=manifest_path, content=manifest.encode()),
+    )
+
+
+async def publish_artifacts(
+    filesystem: _WorkspaceFilesystem,
+    artifacts: Mapping[str, bytes],
+) -> None:
+    """Atomically publish every artifact file through the Workspace."""
+
+    for path in sorted(artifacts):
+        await filesystem.write(
+            _FileWriteRequest(path=path, content=artifacts[path]),
+        )
+
+
+def domains_match(
+    manifest: _DeploymentManifest | None,
+    *,
+    workspace_id: str,
+    digests: Mapping[str, str],
+) -> bool:
+    """Return whether the manifest already covers the requested domains."""
+
+    if manifest is None or not manifest.complete:
+        return False
+    if manifest.workspace_id != workspace_id:
+        return False
+    return all(manifest.digests.get(key) == value for key, value in digests.items())
+
+
+def volume_path(volume: str, *parts: str) -> str:
+    """Join one Backend-relative path inside the capability volume."""
+
+    return posixpath.join(volume, *parts)

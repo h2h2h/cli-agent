@@ -16,7 +16,6 @@ from dataclasses import replace
 from typing import Literal
 
 from cli_agent.runtime._backend import (
-    _BoundCapabilityView,
     _FilesystemError,
     _FileWriteRequest,
     _WorkspaceFilesystem,
@@ -32,6 +31,7 @@ from cli_agent.runtime._capability.library.parser import (
     LibraryParseError,
     _select_parser,
 )
+from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._database.summary_cache import _SummaryCache
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
@@ -92,7 +92,7 @@ class _LibraryCatalog:
         entries: tuple[LibraryEntry, ...],
         root: str,
         summary_cache: _SummaryCache,
-        view: _BoundCapabilityView | None = None,
+        view: _LogicalCapabilityView | None = None,
         filesystem: _WorkspaceFilesystem | None = None,
     ) -> None:
         """Hold the facts, the effective Library root, and the summary cache."""
@@ -118,14 +118,14 @@ class _LibraryCatalog:
     @classmethod
     async def reconcile(
         cls,
-        capability_view: _BoundCapabilityView,
+        capability_view: _LogicalCapabilityView,
         filesystem: _WorkspaceFilesystem,
         summary_cache: _SummaryCache,
     ) -> _LibraryCatalog:
         """Discover facts, resolve cache hits, and render every index.
 
         Args:
-            capability_view (`_BoundCapabilityView`):
+            capability_view (`_LogicalCapabilityView`):
                 The materialized Bound Capability View; ``library`` is read
                 as an ordinary capability directory with no source-layer
                 restrictions.
@@ -1172,7 +1172,7 @@ def _emit(
 
 
 async def _subtree(
-    capability_view: _BoundCapabilityView,
+    capability_view: _LogicalCapabilityView,
     relative: str,
     kind: Literal["file", "directory"],
 ) -> tuple[LibraryEntry, ...]:
@@ -1212,7 +1212,7 @@ async def _subtree(
 
 
 async def _directory_facts(
-    capability_view: _BoundCapabilityView,
+    capability_view: _LogicalCapabilityView,
     relative: str,
 ) -> tuple[Literal["repertoire", "workspace"], bool]:
     """Return one directory's presence layer and its shadow fact.
@@ -1229,7 +1229,7 @@ async def _directory_facts(
 
 
 async def _directory_subtree(
-    capability_view: _BoundCapabilityView,
+    capability_view: _LogicalCapabilityView,
     relative: str,
 ) -> tuple[LibraryEntry, ...]:
     """Return one directory fact followed by its direct-child subtree facts."""
@@ -1275,7 +1275,7 @@ async def _directory_subtree(
 
 
 async def _file_entry(
-    capability_view: _BoundCapabilityView,
+    capability_view: _LogicalCapabilityView,
     relative: str,
     provenance: Literal["repertoire", "workspace"],
     shadows_repertoire: bool,

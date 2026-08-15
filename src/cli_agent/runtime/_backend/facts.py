@@ -1,9 +1,11 @@
 """Backend-neutral facts for Backend Workspace execution and filesystem.
 
-Host-side ``Path`` values are confined to the ``open_workspace`` input facts
-(``_WorkspaceSource``, ``_CapabilitySource``, ``_CapabilityState``); every
-other fact carries opaque backend paths as ``str`` and never exposes Host
-``Path``, file descriptors, stat objects, or provider responses.
+Host-side ``Path`` values are confined to the ``open_workspace`` input fact
+(``_WorkspaceSource``); every other fact carries opaque backend paths as
+``str`` and never exposes Host ``Path``, file descriptors, stat objects, or
+provider responses. Capability deployment facts live in the deployment
+plane (``cli_agent.runtime._capability.deployment``) and MCP discovery
+facts live with the capability plane (``cli_agent.runtime._capability.mcp``).
 """
 
 from __future__ import annotations
@@ -42,20 +44,6 @@ class _WorkspaceSource:
 
     root: Path
     environment: Path
-
-
-@dataclass(frozen=True, slots=True)
-class _CapabilitySource:
-    """Host-side Capability lower input consumed by Backend open."""
-
-    repertoire: Path
-
-
-@dataclass(frozen=True, slots=True)
-class _CapabilityState:
-    """Host-side persistent Capability state location consumed by Backend open."""
-
-    root: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,28 +120,3 @@ class _FileEditResult:
 
     path: str
     blocks_replaced: int
-
-
-@dataclass(frozen=True, slots=True)
-class _MCPToolFacts:
-    """Provider-neutral facts for one discovered Workspace MCP tool."""
-
-    name: str
-    description: str
-    input_schema: dict[str, object]
-
-
-@dataclass(frozen=True, slots=True)
-class _MCPServerFacts:
-    """Provider-neutral facts for one discovered Workspace MCP server."""
-
-    name: str
-    tools: tuple[_MCPToolFacts, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ToolRuntimeStatus:
-    """Backend-neutral Tool Runtime availability facts."""
-
-    available: bool
-    error: str | None

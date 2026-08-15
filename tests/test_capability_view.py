@@ -17,13 +17,14 @@ from interaction_fakes import _ScriptedInteraction
 from policy_fakes import _AskForWritesPolicy
 
 from cli_agent.runtime import ToolCall, ToolResult
-from cli_agent.runtime._backend import _BoundCapabilityView, _CapabilityInspection
+from cli_agent.runtime._backend import _CapabilityInspection
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
     _LocalCapabilityView,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.source import _prepare_capability_source
+from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
@@ -74,7 +75,7 @@ def test_materialized_view_implements_the_bound_capability_contract(
 
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
 
-    assert isinstance(view, _BoundCapabilityView)
+    assert isinstance(view, _LogicalCapabilityView)
     assert view.root == str(workspace / ".workspace")
 
     async def scenario() -> None:

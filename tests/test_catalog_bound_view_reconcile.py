@@ -14,7 +14,6 @@ import importlib
 from pathlib import Path
 
 from cli_agent.runtime._backend import (
-    _BoundCapabilityView,
     _CapabilityInspection,
     _DirectoryEntry,
     _FileMetadata,
@@ -26,6 +25,7 @@ from cli_agent.runtime._capability.projections import (
     write_tool_index,
 )
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 
 _LOWER = {
@@ -47,6 +47,8 @@ _UPPER = {
 }
 
 _WHITEOUTS = frozenset({"skills/hidden/SKILL.md"})
+
+VOLUME = "/workspace"
 
 
 class _InMemoryCapabilityView:
@@ -175,7 +177,7 @@ def test_tool_catalog_reconciles_against_in_memory_bound_view() -> None:
     async def scenario() -> None:
         catalog = await _reconcile_tools(view, filesystem)
 
-        assert isinstance(view, _BoundCapabilityView)
+        assert isinstance(view, _LogicalCapabilityView)
         math = catalog.get("math")
         assert math is not None
         assert math.path == "tools/math.py"
@@ -281,11 +283,11 @@ def test_catalog_entries_hold_only_logical_path_facts() -> None:
 
 async def _reconcile_tools(view, filesystem, on_diagnostic=None):
     catalog = await _ToolCatalog.discover(view, on_diagnostic)
-    await write_tool_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    await write_tool_index(volume=VOLUME, filesystem=filesystem, catalog=catalog)
     return catalog
 
 
 async def _reconcile_skills(view, filesystem):
     catalog = await _SkillCatalog.discover(view)
-    await write_skill_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    await write_skill_index(volume=VOLUME, filesystem=filesystem, catalog=catalog)
     return catalog

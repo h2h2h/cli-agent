@@ -2,11 +2,15 @@
 
 The Local Backend is the reference RFC-0012 implementation: it owns the Host
 ``Path`` used for filesystem operations, the Host ambient environment merge
-strategy, every ordinary Shell subprocess, the file-level Capability View
-materialization, the Tool Runtime (Workspace-private venv, materialized
-worker, worker subprocesses), and the Workspace MCP Runtime (server
-discovery and the worker-side invocation binding), while exposing only
-backend-neutral facts and contracts.
+strategy, every ordinary Shell subprocess, and Tool worker subprocess
+spawning, while exposing only backend-neutral facts and contracts.
+
+Capability materialization is owned by the CapabilityDeployment plane
+(RFC-0014): the Local Backend accepts the materialized Capability View and
+the reconciled Local Tool Runtime through explicit Local-only bind seams so
+filesystem copy-up, Shell mutation preparation, and ``prepare_tool`` keep
+working without hosting any capability discovery, binding, or reconcile
+logic themselves.
 """
 
 from __future__ import annotations
@@ -17,32 +21,21 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from cli_agent.runtime._backend.facts import (
-    _CapabilitySource,
-    _CapabilityState,
     _ShellExecutionRequest,
     _ToolExecutionRequest,
-    _ToolRuntimeStatus,
     _WorkspaceSource,
 )
 from cli_agent.runtime._backend.local.filesystem import (
     _LocalWorkspaceFilesystem,
     _resolve_path,
 )
-from cli_agent.runtime._backend.local.mcp_runtime import _LocalMCPRuntime
 from cli_agent.runtime._backend.local.shell import (
     _LocalShellExecution,
     _ProcessExecution,
     _tool_worker_spawner,
 )
 from cli_agent.runtime._backend.local.tool_runtime import _LocalToolRuntime
-from cli_agent.runtime._backend.local.view import (
-    _LocalCapabilityView,
-    _UnimplementedCapabilityView,
-)
-from cli_agent.runtime._backend.protocol import (
-    _BoundCapabilityView,
-    _WorkspaceMCPRuntime,
-)
+from cli_agent.runtime._backend.local.view import _LocalCapabilityView
 from cli_agent.runtime._capability.workspace import _load_workspace_env
 from cli_agent.runtime._environment.handlers.executions import _text_execution
 from cli_agent.runtime._execution import ExecutionHandle
@@ -54,38 +47,26 @@ class _LocalBackend:
     async def open_workspace(
         self,
         source: _WorkspaceSource,
-        capability_source: _CapabilitySource,
-        capability_state: _CapabilityState,
     ) -> _LocalBackendWorkspace:
         """Open the Local Workspace; any open failure must fail closed.
 
         Args:
             source (`_WorkspaceSource`):
                 Host Workspace root and environment file.
-            capability_source (`_CapabilitySource`):
-                Host Capability lower input; the Local Bound Capability View
-                is materialized from it during open.
-            capability_state (`_CapabilityState`):
-                Host persistent Capability state root; the materialized View
-                and its whiteouts live under it.
 
         Returns:
             The opened Local Backend Workspace.
 
         Raises:
-            ValueError: If the Workspace root or Repertoire is missing, or
-                the environment file is unreadable.
+            ValueError: If the Workspace root is missing or the environment
+                file is unreadable.
         """
 
         root = source.root.resolve()
         if not root.is_dir():
             raise ValueError(f"workspace must be an existing directory: {root}")
         environment = _load_workspace_env(source.environment)
-        view = _LocalCapabilityView.materialize(
-            state_root=capability_state.root,
-            repertoire=capability_source.repertoire,
-        )
-        return _LocalBackendWorkspace(root, environment, view)
+        return _LocalBackendWorkspace(root, environment)
 
 
 class _LocalBackendWorkspace:
@@ -100,23 +81,13 @@ class _LocalBackendWorkspace:
         self.root = str(root)
         self._root = root
         self._closed = False
+        self._capability_view = capability_view
         self.filesystem = _LocalWorkspaceFilesystem(
             root,
-            capability_view,
+            self._view_provider,
             ensure_open=self._ensure_open,
         )
-        self.capabilities: _BoundCapabilityView = (
-            capability_view
-            if capability_view is not None
-            else _UnimplementedCapabilityView()
-        )
-        self.mcp: _WorkspaceMCPRuntime = _LocalMCPRuntime(
-            self._capability_view_root,
-            self.execution_base_environment,
-            self._ensure_open,
-        )
         self.workspace_environment = environment
-        self._capability_view = capability_view
         self._tool_runtime: _LocalToolRuntime | None = None
 
     def execution_base_environment(self) -> Mapping[str, str]:
@@ -130,12 +101,32 @@ class _LocalBackendWorkspace:
         self._ensure_open()
         return {**os.environ, **self.workspace_environment}
 
-    def _capability_view_root(self) -> Path | None:
-        """Return the Bound Capability View root, if one is materialized."""
+    def _view_provider(self) -> _LocalCapabilityView | None:
+        """Return the deployment-attached Capability View, if any."""
 
         self._ensure_open()
-        view = self._capability_view
-        return Path(view.root) if view is not None else None
+        return self._capability_view
+
+    def _bind_capability_view(self, view: _LocalCapabilityView) -> None:
+        """Accept one materialized Local Capability View (Local-only seam).
+
+        The CapabilityDeployment plane materializes the View and binds it
+        here right after Backend open, before any Session work starts.
+        """
+
+        self._ensure_open()
+        self._capability_view = view
+
+    def _attach_tool_runtime(self, runtime: _LocalToolRuntime) -> None:
+        """Accept one reconciled Local Tool Runtime (Local-only seam).
+
+        The CapabilityDeployment plane reconciles the private venv, the
+        worker, and the dependency environment, then attaches the result
+        here for ``prepare_tool``.
+        """
+
+        self._ensure_open()
+        self._tool_runtime = runtime
 
     def _ensure_open(self) -> None:
         """Reject every operation after this Backend Workspace closes."""
@@ -168,10 +159,10 @@ class _LocalBackendWorkspace:
         """Prepare one Tool worker execution inside this Workspace.
 
         The worker, its venv, and the effective Tools directory come from the
-        reconciled Local Tool Runtime; the Host ambient environment is merged
-        under the Session environment by the Backend. A missing or failed Tool
-        Runtime fails this execution with text output; it never falls back to
-        the Host Python.
+        deployment-attached Local Tool Runtime; the Host ambient environment
+        is merged under the Session environment by the Backend. A missing or
+        failed Tool Runtime fails this execution with text output; it never
+        falls back to the Host Python.
         """
 
         self._ensure_open()
@@ -222,29 +213,6 @@ class _LocalBackendWorkspace:
             _tool_worker_spawner(python, runtime.worker, cwd, environment),
             input_data=payload,
         )
-
-    async def reconcile_tool_runtime(self) -> _ToolRuntimeStatus:
-        """Reconcile the Local Tool Runtime and return its availability.
-
-        The Workspace-private venv and the materialized worker are created
-        under the Bound Capability View root; dependency failures produce an
-        unavailable status instead of raising.
-        """
-
-        self._ensure_open()
-        view = self._capability_view
-        if view is None:
-            runtime = _LocalToolRuntime(
-                root=self._root / ".workspace" / ".tool-environment",
-                python=None,
-                worker=None,
-                tools_directory=None,
-                error="Tool environment is unavailable: no Capability View",
-            )
-        else:
-            runtime = await _LocalToolRuntime.reconcile(Path(view.root))
-        self._tool_runtime = runtime
-        return runtime.status
 
     async def flush(self) -> None:
         """Local Workspace changes are immediately durable; nothing to flush."""

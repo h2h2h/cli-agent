@@ -4,7 +4,8 @@ A Workspace answers "where is the Agent currently working": it owns a
 stable logical identity, an agent-visible root, filesystem access, and
 one Backend binding that stays fixed for the Workspace lifetime (V1 has
 no transparent hot-swap). The Backend answers "how does I/O execute
-here"; the Runtime composes both without conflating them.
+here"; capability materialization belongs to the CapabilityDeployment
+plane, which the Local Workspace feeds from its persisted Host facts.
 """
 
 from __future__ import annotations
@@ -17,13 +18,11 @@ from uuid import uuid4
 
 from cli_agent.runtime._backend import (
     _BackendWorkspace,
-    _CapabilityState,
     _WorkspaceFilesystem,
     _WorkspaceSource,
 )
 from cli_agent.runtime._backend.local import _LocalBackend
 from cli_agent.runtime._capability.source import _prepare_capability_source
-from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 
 _IDENTITY_PATTERN = re.compile(r"local:[0-9a-f]{32}")
@@ -36,7 +35,6 @@ class Workspace(Protocol):
     root: str
     filesystem: _WorkspaceFilesystem
     backend: _BackendWorkspace
-    capability_source: _LogicalCapabilityView
 
     async def close(self) -> None:
         """Flush and close the bound Backend; later use fails closed."""
@@ -60,8 +58,9 @@ class _LocalWorkspaceFactory:
     """Open Local Workspaces over Host project directories.
 
     Each open generates or reads the stable identity persisted beside
-    the project, opens one Local Backend for it, and wraps both into a
-    thin Local Workspace whose Backend binding never changes.
+    the project, opens one Local Backend for it, and exposes the
+    persisted Host facts (state root, Repertoire, capability volume)
+    the Local CapabilityDeployment consumes.
     """
 
     async def open(
@@ -88,13 +87,11 @@ class _LocalWorkspaceFactory:
 
         paths = _prepare_workspace(workspace)
         workspace_id = _load_workspace_identity(paths.state)
-        capability_source = _prepare_capability_source(repertoire, paths.state)
+        repertoire_root = _prepare_capability_source(repertoire, paths.state)
         backend = await _LocalBackend().open_workspace(
             source=_WorkspaceSource(root=paths.root, environment=paths.environment),
-            capability_source=capability_source,
-            capability_state=_CapabilityState(root=paths.state),
         )
-        return _LocalWorkspace(workspace_id, paths.root, backend)
+        return _LocalWorkspace(workspace_id, paths.root, backend, repertoire_root)
 
 
 class _LocalWorkspace:
@@ -105,13 +102,26 @@ class _LocalWorkspace:
         workspace_id: str,
         root: Path,
         backend: _BackendWorkspace,
+        repertoire: Path,
     ) -> None:
         self.id = workspace_id
         self.root = str(root)
         self.root_path = root
         self.filesystem = backend.filesystem
         self.backend = backend
-        self.capability_source = backend.capabilities
+        self.repertoire = repertoire
+
+    @property
+    def state_root(self) -> Path:
+        """Return the persisted Workspace state directory (``.workspace``)."""
+
+        return self.root_path / ".workspace"
+
+    @property
+    def deployment_volume(self) -> str:
+        """Return the Backend-relative capability volume path."""
+
+        return self.state_root.relative_to(self.root_path).as_posix()
 
     async def close(self) -> None:
         """Close the bound Backend idempotently.

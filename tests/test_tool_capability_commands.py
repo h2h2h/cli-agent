@@ -19,6 +19,7 @@ from cli_agent.runtime._backend.local import (
     _LocalCapabilityView,
     _LocalWorkspaceFilesystem,
 )
+from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.projections import write_tool_index
 from cli_agent.runtime._capability.provider import (
@@ -33,6 +34,7 @@ from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.policy import PolicyEvaluation
 from cli_agent.runtime._system_message import assemble_system_message
+from cli_agent.runtime._workspace import _LocalWorkspace
 
 
 def _filesystem(root: Path, view: _LocalCapabilityView) -> _LocalWorkspaceFilesystem:
@@ -607,9 +609,9 @@ def test_unavailable_tool_runtime_fails_run_without_host_fallback(
 
     async def scenario() -> None:
         backend = _LocalBackendWorkspace(tmp_path, {}, view)
-        status = await backend.reconcile_tool_runtime()
-        assert status.available is False
-        assert "sync failed" in (status.error or "")
+        deployed = await _deploy(backend, tmp_path, repertoire, catalog)
+        assert deployed.complete is False
+        assert "sync failed" in (deployed.error or "")
         kernel = EnvironmentKernel(
             tmp_path,
             backend=backend,
@@ -658,16 +660,16 @@ def test_tool_runtime_syncs_user_requirements_plus_runtime_base(
     )
 
     async def scenario() -> None:
-        initial = await backend.reconcile_tool_runtime()
-        assert initial.available
+        initial = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
+        assert initial.complete, initial.error
         assert len(calls) == 1
         assert calls[0][1].read_text() == "mcp\n"
 
         requirements.write_text("example-package==1.2.3\n")
-        changed = await backend.reconcile_tool_runtime()
-        unchanged = await backend.reconcile_tool_runtime()
+        changed = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
+        unchanged = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
 
-        assert changed.available and unchanged.available
+        assert changed.complete and unchanged.complete
         assert len(calls) == 2
         assert calls[0][0] == _runtime_python(backend)
         assert calls[1][1].read_text() == "example-package==1.2.3\nmcp\n"
@@ -681,10 +683,15 @@ def test_tool_runtime_syncs_user_requirements_plus_runtime_base(
             other_workspace / ".workspace", other_repertoire
         )
         other_backend = _LocalBackendWorkspace(other_workspace, {}, other_view)
-        other = await other_backend.reconcile_tool_runtime()
+        other = await _deploy(
+            other_backend,
+            other_workspace,
+            other_repertoire,
+            _ToolCatalog(()),
+        )
         assert _runtime_root(other_backend) != _runtime_root(backend)
         assert _runtime_python(other_backend) != _runtime_python(backend)
-        assert other.available
+        assert other.complete, other.error
 
     asyncio.run(scenario())
 
@@ -727,7 +734,7 @@ def test_effective_requirements_do_not_duplicate_user_declared_base(
     )
 
     async def scenario() -> None:
-        await backend.reconcile_tool_runtime()
+        await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
         effective = (
             Path(view.root) / ".tool-environment" / "effective-requirements.txt"
         ).read_text(encoding="utf-8")
@@ -744,8 +751,8 @@ def test_mcp_is_importable_in_the_worker_venv(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         backend = _LocalBackendWorkspace(tmp_path, {}, view)
-        status = await backend.reconcile_tool_runtime()
-        assert status.available, status.error
+        deployed = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
+        assert deployed.complete, deployed.error
         python = _runtime_python(backend)
         result = subprocess.run(
             [
@@ -790,10 +797,10 @@ def test_dependency_sync_failure_is_fail_soft_for_catalog_operations(
 
     async def scenario() -> None:
         backend = _LocalBackendWorkspace(tmp_path, {}, view)
-        status = await backend.reconcile_tool_runtime()
         catalog = await _reconcile_tools(view, backend.filesystem)
-        assert status.available is False
-        assert "package manager failed" in status.error
+        deployed = await _deploy(backend, tmp_path, repertoire, catalog)
+        assert deployed.complete is False
+        assert "package manager failed" in (deployed.error or "")
 
         kernel = EnvironmentKernel(
             tmp_path,
@@ -1028,6 +1035,37 @@ def test_kill_terminates_tool_worker_through_shared_execution_path(
     asyncio.run(scenario())
 
 
+async def _deploy(
+    backend: _LocalBackendWorkspace,
+    workspace: Path,
+    repertoire: Path,
+    catalog,
+    *,
+    revision: str = "test-revision",
+):
+    deployment = _LocalCapabilityDeployment(
+        state_root=workspace / ".workspace",
+        repertoire=repertoire,
+        volume=".workspace",
+        base_environment=backend.execution_base_environment,
+    )
+    opened = _LocalWorkspace(
+        "local:00000000000000000000000000000000",
+        workspace,
+        backend,
+        repertoire,
+    )
+    snapshot = CapabilitySnapshot(
+        revision=revision,
+        schema_version=CAPABILITY_SCHEMA_VERSION,
+        tools=catalog,
+        skills=_SkillCatalog(()),
+        mcp_servers=(),
+        project_instructions=None,
+    )
+    return await deployment.reconcile(snapshot, opened)
+
+
 async def _kernel(
     workspace: Path,
     repertoire: Path,
@@ -1040,8 +1078,8 @@ async def _kernel(
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     backend = _LocalBackendWorkspace(workspace, {}, view)
     catalog = await _reconcile_tools(view, backend.filesystem)
-    status = await backend.reconcile_tool_runtime()
-    assert status.available, status.error
+    deployed = await _deploy(backend, workspace, repertoire, catalog)
+    assert deployed.complete, deployed.error
     return EnvironmentKernel(
         workspace,
         backend=backend,
@@ -1130,7 +1168,7 @@ async def _wait_for_path(path: Path) -> None:
 
 async def _reconcile_tools(view, filesystem, on_diagnostic=None):
     catalog = await _ToolCatalog.discover(view, on_diagnostic)
-    await write_tool_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    await write_tool_index(volume=view.root, filesystem=filesystem, catalog=catalog)
     return catalog
 
 

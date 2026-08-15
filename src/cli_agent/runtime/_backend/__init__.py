@@ -3,8 +3,6 @@
 from cli_agent.runtime._backend.execution import _FilesystemExecution
 from cli_agent.runtime._backend.facts import (
     _CapabilityInspection,
-    _CapabilitySource,
-    _CapabilityState,
     _DirectoryEntry,
     _FileEdit,
     _FileEditRequest,
@@ -13,30 +11,22 @@ from cli_agent.runtime._backend.facts import (
     _FilesystemError,
     _FileWriteRequest,
     _FileWriteResult,
-    _MCPServerFacts,
-    _MCPToolFacts,
     _ResolvedPath,
     _ShellExecutionRequest,
     _ToolBinding,
     _ToolExecutionRequest,
-    _ToolRuntimeStatus,
     _WorkspaceSource,
 )
 from cli_agent.runtime._backend.protocol import (
     _Backend,
     _BackendWorkspace,
-    _BoundCapabilityView,
     _WorkspaceFilesystem,
-    _WorkspaceMCPRuntime,
 )
 
 __all__ = [
     "_Backend",
     "_BackendWorkspace",
-    "_BoundCapabilityView",
     "_CapabilityInspection",
-    "_CapabilitySource",
-    "_CapabilityState",
     "_DirectoryEntry",
     "_FileEdit",
     "_FileEditRequest",
@@ -46,14 +36,10 @@ __all__ = [
     "_FileWriteResult",
     "_FilesystemError",
     "_FilesystemExecution",
-    "_MCPServerFacts",
-    "_MCPToolFacts",
     "_ResolvedPath",
     "_ShellExecutionRequest",
     "_ToolBinding",
     "_ToolExecutionRequest",
-    "_ToolRuntimeStatus",
     "_WorkspaceFilesystem",
-    "_WorkspaceMCPRuntime",
     "_WorkspaceSource",
 ]

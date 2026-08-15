@@ -22,11 +22,18 @@ from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
     _LocalCapabilityView,
 )
-from cli_agent.runtime._capability.mcp.catalog import _MCPCatalog
+from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
+from cli_agent.runtime._capability.mcp.config import discover_configs
 from cli_agent.runtime._capability.projections import write_tool_index
+from cli_agent.runtime._capability.provider import (
+    CAPABILITY_SCHEMA_VERSION,
+    CapabilitySnapshot,
+)
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
+from cli_agent.runtime._workspace import _LocalWorkspace
 
 _user_interaction = _ScriptedInteraction("allow_once")
 _context_policy = ContextPolicy(
@@ -34,6 +41,8 @@ _context_policy = ContextPolicy(
     output_reserve_tokens=2_048,
     safety_margin_tokens=0,
 )
+
+_WORKSPACE_ID = "local:00000000000000000000000000000000"
 
 
 _FIXTURE = Path(__file__).parent / "mcp_server_fixture.py"
@@ -72,10 +81,27 @@ async def _kernel(workspace: Path, repertoire: Path) -> EnvironmentKernel:
     _prepare_workspace(workspace)
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     backend = _LocalBackendWorkspace(workspace, {}, view)
-    await _MCPCatalog.reconcile(backend)
+    deployment = _LocalCapabilityDeployment(
+        state_root=workspace / ".workspace",
+        repertoire=repertoire,
+        volume=".workspace",
+        base_environment=backend.execution_base_environment,
+    )
+    opened = _LocalWorkspace(_WORKSPACE_ID, workspace, backend, repertoire)
+    configs = await discover_configs(view)
+    facts = await deployment.discover_mcp(configs)
+    await deployment.materialize_stubs(opened, configs, facts)
     catalog = await _reconcile_tools(view, backend.filesystem)
-    status = await backend.reconcile_tool_runtime()
-    assert status.available, status.error
+    snapshot = CapabilitySnapshot(
+        revision="test-revision",
+        schema_version=CAPABILITY_SCHEMA_VERSION,
+        tools=catalog,
+        skills=await _SkillCatalog.discover(view),
+        mcp_servers=configs,
+        project_instructions=None,
+    )
+    deployed = await deployment.reconcile(snapshot, opened)
+    assert deployed.complete, deployed.error
     return EnvironmentKernel(
         workspace,
         backend=backend,
@@ -218,14 +244,14 @@ def test_additional_sessions_do_not_reconcile_mcp_again(
     _server_config(repertoire, "math", _fixture_command())
 
     calls = 0
-    original = _MCPCatalog.reconcile
+    original = _LocalCapabilityDeployment.discover_mcp
 
-    async def counting_reconcile(backend, on_diagnostic=None, *, configs=None):
+    async def counting_discover(self, configs, on_diagnostic=None):
         nonlocal calls
         calls += 1
-        return await original(backend, on_diagnostic, configs=configs)
+        return await original(self, configs, on_diagnostic)
 
-    monkeypatch.setattr(_MCPCatalog, "reconcile", counting_reconcile)
+    monkeypatch.setattr(_LocalCapabilityDeployment, "discover_mcp", counting_discover)
 
     provider = ScriptedModelProvider(
         script=(
@@ -294,5 +320,5 @@ def _text(snapshot: dict[str, object], stream: str) -> str:
 
 async def _reconcile_tools(view, filesystem, on_diagnostic=None):
     catalog = await _ToolCatalog.discover(view, on_diagnostic)
-    await write_tool_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    await write_tool_index(volume=view.root, filesystem=filesystem, catalog=catalog)
     return catalog

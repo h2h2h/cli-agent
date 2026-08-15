@@ -27,8 +27,10 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._backend import _BackendWorkspace, _BoundCapabilityView
+from cli_agent.runtime._backend import _BackendWorkspace
+from cli_agent.runtime._capability.deployment import DeploymentSnapshot
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._resources import _RuntimeResources
 
@@ -539,7 +541,8 @@ def test_runtime_holds_single_resource_aggregate(tmp_path: Path) -> None:
         assert resources.workspace.root == str(tmp_path.resolve())
         assert resources.workspace.id.startswith("local:")
         assert isinstance(resources.backend, _BackendWorkspace)
-        assert isinstance(resources.capability_view, _BoundCapabilityView)
+        assert isinstance(resources.capability_view, _LogicalCapabilityView)
+        assert isinstance(resources.deployment, DeploymentSnapshot)
         assert isinstance(resources.snapshot.tools, _ToolCatalog)
         assert isinstance(resources.snapshot.skills, _SkillCatalog)
         assert not hasattr(runtime, "_workspace")
@@ -586,8 +589,6 @@ def test_sessions_borrow_the_same_workspace_resources(
         resources = runtime._resources
         assert first.backend is resources.backend
         assert second.backend is resources.backend
-        assert first.backend.capabilities is resources.capability_view
-        assert second.backend.capabilities is resources.capability_view
         assert first.tool_catalog is resources.snapshot.tools
         assert second.tool_catalog is resources.snapshot.tools
         await runtime.close()

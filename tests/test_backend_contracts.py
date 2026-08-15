@@ -15,10 +15,7 @@ from typing import get_args, get_origin, get_type_hints
 from cli_agent.runtime._backend import (
     _Backend,
     _BackendWorkspace,
-    _BoundCapabilityView,
     _CapabilityInspection,
-    _CapabilitySource,
-    _CapabilityState,
     _DirectoryEntry,
     _FileEdit,
     _FileEditRequest,
@@ -27,21 +24,18 @@ from cli_agent.runtime._backend import (
     _FilesystemError,
     _FileWriteRequest,
     _FileWriteResult,
-    _MCPServerFacts,
-    _MCPToolFacts,
     _ResolvedPath,
     _ShellExecutionRequest,
     _ToolBinding,
     _ToolExecutionRequest,
-    _ToolRuntimeStatus,
     _WorkspaceFilesystem,
-    _WorkspaceMCPRuntime,
     _WorkspaceSource,
 )
 from cli_agent.runtime._capability.command_parser import (
     ShellParseResult,
     parse_shell_ast,
 )
+from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._execution import (
     ExecutionHandle,
@@ -62,12 +56,9 @@ _BACKEND_NEUTRAL_FACTS = (
     _FileEditRequest,
     _FileEditResult,
     _CapabilityInspection,
-    _MCPServerFacts,
-    _MCPToolFacts,
-    _ToolRuntimeStatus,
 )
 
-_HOST_SOURCE_FACTS = (_WorkspaceSource, _CapabilitySource, _CapabilityState)
+_HOST_SOURCE_FACTS = (_WorkspaceSource,)
 
 
 class _NullOutput:
@@ -131,33 +122,6 @@ class _FakeFilesystem:
         raise _FilesystemError("unsupported", "fake filesystem removes nothing")
 
 
-class _FakeCapabilityView:
-    """Empty in-memory Bound Capability View fake."""
-
-    root = "/workspace"
-
-    async def inspect(self, relative_path: str) -> _CapabilityInspection:
-        return _CapabilityInspection(
-            relative_path=relative_path,
-            provenance=None,
-            shadows_repertoire=False,
-            valid=True,
-            validation_error=None,
-        )
-
-    async def list(self, relative_path: str) -> tuple[_DirectoryEntry, ...]:
-        del relative_path
-        return ()
-
-    async def read(self, relative_path: str) -> bytes:
-        del relative_path
-        return b""
-
-    async def stat(self, relative_path: str) -> _FileMetadata:
-        del relative_path
-        return _FileMetadata(kind="directory", size=0, mtime_ns=0, mode=0o700)
-
-
 class _InMemoryCapabilityView:
     """Bound Capability View fake with no symlink mechanics.
 
@@ -217,26 +181,12 @@ class _InMemoryCapabilityView:
         )
 
 
-class _FakeMCPRuntime:
-    """Empty Workspace MCP Runtime fake."""
-
-    async def discover(self, configs, on_diagnostic=None):
-        del configs, on_diagnostic
-        return ()
-
-    async def materialize_binding(self, configs):
-        del configs
-        return None
-
-
 class _FakeBackendWorkspace:
     """Contract-conforming Backend Workspace fake built on existing Executions."""
 
     def __init__(self) -> None:
         self.root = "/workspace"
         self.filesystem = _FakeFilesystem()
-        self.capabilities = _FakeCapabilityView()
-        self.mcp = _FakeMCPRuntime()
 
     def prepare_shell(
         self,
@@ -258,9 +208,6 @@ class _FakeBackendWorkspace:
 
         return _InlineExecution(execute)
 
-    async def reconcile_tool_runtime(self) -> _ToolRuntimeStatus:
-        return _ToolRuntimeStatus(available=True, error=None)
-
     async def flush(self) -> None:
         return None
 
@@ -274,10 +221,8 @@ class _FakeBackend:
     async def open_workspace(
         self,
         source: _WorkspaceSource,
-        capability_source: _CapabilitySource,
-        capability_state: _CapabilityState,
     ) -> _BackendWorkspace:
-        del source, capability_source, capability_state
+        del source
         return _FakeBackendWorkspace()
 
 
@@ -288,8 +233,6 @@ def test_contracts_cover_execution_and_filesystem() -> None:
     assert isinstance(backend, _Backend)
     assert isinstance(workspace, _BackendWorkspace)
     assert isinstance(workspace.filesystem, _WorkspaceFilesystem)
-    assert isinstance(workspace.capabilities, _BoundCapabilityView)
-    assert isinstance(workspace.mcp, _WorkspaceMCPRuntime)
 
 
 def test_facts_are_frozen_slots_backend_neutral_data() -> None:
@@ -390,8 +333,6 @@ def test_fake_backend_workspace_runs_execution_and_filesystem_flows() -> None:
                 root=Path("/host"),
                 environment=Path("/host/.workspace/env"),
             ),
-            capability_source=_CapabilitySource(repertoire=Path("/host/repertoire")),
-            capability_state=_CapabilityState(root=Path("/host/.workspace")),
         )
         result = await workspace.filesystem.write(
             _FileWriteRequest(path="/workspace/a.txt", content=b"hello")
@@ -407,20 +348,16 @@ def test_fake_backend_workspace_runs_execution_and_filesystem_flows() -> None:
             )
         ) == _FileEditResult(path="/workspace/a.txt", blocks_replaced=1)
         assert await workspace.filesystem.read("/workspace/a.txt") == b"world"
-        assert await workspace.reconcile_tool_runtime() == _ToolRuntimeStatus(
-            available=True,
-            error=None,
-        )
         await workspace.flush()
         await workspace.close()
 
     asyncio.run(scenario())
 
 
-def test_bound_capability_view_contract_needs_no_host_mechanics() -> None:
+def test_logical_capability_view_contract_needs_no_host_mechanics() -> None:
     view = _InMemoryCapabilityView()
 
-    assert isinstance(view, _BoundCapabilityView)
+    assert isinstance(view, _LogicalCapabilityView)
 
     async def scenario() -> None:
         inspection = await view.inspect("tools/math.py")

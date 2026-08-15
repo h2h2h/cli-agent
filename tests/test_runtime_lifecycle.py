@@ -437,12 +437,8 @@ def test_worker_start_failure_rolls_back_opened_resources(
         async def open_workspace(
             self,
             source: object,
-            capability_source: object,
-            capability_state: object,
         ) -> object:
-            workspace = await super().open_workspace(
-                source, capability_source, capability_state
-            )
+            workspace = await super().open_workspace(source)
             opened["workspace"] = workspace
             return workspace
 
@@ -479,10 +475,8 @@ def test_backend_open_failure_never_creates_local_execution(
         async def open_workspace(
             self,
             source: object,
-            capability_source: object,
-            capability_state: object,
         ) -> object:
-            del source, capability_source, capability_state
+            del source
             type(self).calls += 1
             raise ValueError("backend constraint failed")
 

@@ -19,11 +19,45 @@ from cli_agent.runtime._backend.local import (
     _LocalCapabilityView,
     _ProcessExecution,
 )
+from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
 from cli_agent.runtime._capability.projections import write_tool_index
+from cli_agent.runtime._capability.provider import (
+    CAPABILITY_SCHEMA_VERSION,
+    CapabilitySnapshot,
+)
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
+from cli_agent.runtime._workspace import _LocalWorkspace
+
+_WORKSPACE_ID = "local:00000000000000000000000000000000"
+
+
+async def _deploy_runtime(
+    workspace: Path,
+    repertoire: Path,
+    backend: _LocalBackendWorkspace,
+    catalog,
+) -> None:
+    deployment = _LocalCapabilityDeployment(
+        state_root=workspace / ".workspace",
+        repertoire=repertoire,
+        volume=".workspace",
+        base_environment=backend.execution_base_environment,
+    )
+    opened = _LocalWorkspace(_WORKSPACE_ID, workspace, backend, repertoire)
+    snapshot = CapabilitySnapshot(
+        revision="test-revision",
+        schema_version=CAPABILITY_SCHEMA_VERSION,
+        tools=catalog,
+        skills=_SkillCatalog(()),
+        mcp_servers=(),
+        project_instructions=None,
+    )
+    deployed = await deployment.reconcile(snapshot, opened)
+    assert deployed.complete, deployed.error
 
 
 def _repertoire(workspace: Path) -> Path:
@@ -41,8 +75,7 @@ def test_prepare_tool_payload_is_composed_by_the_backend(tmp_path: Path) -> None
     backend = _LocalBackendWorkspace(tmp_path, {}, view)
 
     async def scenario() -> None:
-        status = await backend.reconcile_tool_runtime()
-        assert status.available, status.error
+        await _deploy_runtime(tmp_path, repertoire, backend, _ToolCatalog(()))
 
         execution = backend.prepare_tool(
             _ToolExecutionRequest(
@@ -101,8 +134,7 @@ def test_worker_environment_composes_backend_base_and_session_overlay(
     catalog = asyncio.run(_reconcile_tools(view, backend.filesystem))
 
     async def scenario() -> None:
-        status = await backend.reconcile_tool_runtime()
-        assert status.available, status.error
+        await _deploy_runtime(tmp_path, repertoire, backend, catalog)
         kernel = EnvironmentKernel(tmp_path, backend=backend, tool_catalog=catalog)
         try:
             await _exec(kernel, "export SESSION_KEY=session-value")
@@ -172,8 +204,7 @@ def test_tool_worker_shares_backend_workspace_cwd_with_shell_and_files(
     catalog = asyncio.run(_reconcile_tools(view, backend.filesystem))
 
     async def scenario() -> None:
-        status = await backend.reconcile_tool_runtime()
-        assert status.available, status.error
+        await _deploy_runtime(tmp_path, repertoire, backend, catalog)
         kernel = EnvironmentKernel(tmp_path, backend=backend, tool_catalog=catalog)
         try:
             subdirectory = tmp_path / "shared-dir"
@@ -269,5 +300,5 @@ def _text(snapshot: dict[str, object], stream: str) -> str:
 
 async def _reconcile_tools(view, filesystem, on_diagnostic=None):
     catalog = await _ToolCatalog.discover(view, on_diagnostic)
-    await write_tool_index(view_root=view.root, filesystem=filesystem, catalog=catalog)
+    await write_tool_index(volume=view.root, filesystem=filesystem, catalog=catalog)
     return catalog

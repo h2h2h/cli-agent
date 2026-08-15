@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
+import cli_agent.runtime._resources as resources_module
 import cli_agent.runtime._workspace as workspace_module
 from cli_agent.runtime import (
     AgentRuntime,
@@ -46,8 +47,8 @@ from cli_agent.runtime._backend.facts import (
     _FileWriteRequest,
     _FileWriteResult,
     _ResolvedPath,
-    _ToolRuntimeStatus,
 )
+from cli_agent.runtime._capability.deployment import DeploymentSnapshot
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime._database.summary_cache import _SummaryCache
@@ -563,22 +564,6 @@ def _run_sandbox_code(
         return None
 
 
-class _SandboxMCPRuntime:
-    """Empty Workspace MCP Runtime; discovery is a no-op in the Sandbox."""
-
-    async def discover(
-        self,
-        configs: tuple[object, ...],
-        on_diagnostic: object = None,
-    ) -> tuple[object, ...]:
-        del configs, on_diagnostic
-        return ()
-
-    async def materialize_binding(self, configs: tuple[object, ...]) -> None:
-        del configs
-        return None
-
-
 class _SandboxBackendWorkspace:
     """One live Sandbox Workspace sharing the in-memory namespace."""
 
@@ -599,9 +584,11 @@ class _SandboxBackendWorkspace:
             provenance,
             lower,
         )
-        self.mcp = _SandboxMCPRuntime()
         self.workspace_environment: Mapping[str, str] = {}
         self.closed = False
+
+    def execution_base_environment(self) -> Mapping[str, str]:
+        return dict(self.workspace_environment)
 
     def prepare_shell(
         self,
@@ -625,14 +612,48 @@ class _SandboxBackendWorkspace:
             request,
         )
 
-    async def reconcile_tool_runtime(self) -> _ToolRuntimeStatus:
-        return _ToolRuntimeStatus(available=True, error=None)
-
     async def flush(self) -> None:
         return None
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _SandboxDeployment:
+    """Deployment fake bound to the Sandbox Backend: attach the sandbox
+    view, project nothing, and always report a complete deployment."""
+
+    def __init__(self, **kwargs: object) -> None:
+        del kwargs
+
+    async def attach(self, workspace: object) -> object:
+        return workspace.backend.capabilities  # type: ignore[attr-defined]
+
+    async def discover_mcp(
+        self,
+        configs: tuple[object, ...],
+        on_diagnostic: object = None,
+    ) -> tuple[object, ...]:
+        del configs, on_diagnostic
+        return ()
+
+    async def materialize_stubs(
+        self,
+        workspace: object,
+        configs: tuple[object, ...],
+        facts: tuple[object, ...],
+    ) -> None:
+        del workspace, configs, facts
+        return None
+
+    async def reconcile(self, snapshot: object, workspace: object) -> DeploymentSnapshot:
+        return DeploymentSnapshot(
+            workspace_id=workspace.id,  # type: ignore[attr-defined]
+            revision=snapshot.revision,  # type: ignore[attr-defined]
+            layout_version=1,
+            complete=True,
+            error=None,
+        )
 
 
 class _SandboxBackend:
@@ -659,10 +680,8 @@ class _SandboxBackend:
     async def open_workspace(
         self,
         source: object,
-        capability_source: object,
-        capability_state: object,
     ) -> _SandboxBackendWorkspace:
-        del source, capability_source, capability_state
+        del source
         if self.fail_open:
             raise ValueError("sandbox constraint failed")
         files: dict[str, bytes] = {}
@@ -716,6 +735,11 @@ def test_full_runtime_runs_on_the_sandbox_backend(
     _SandboxBackend.seed("tools/marker.py", _MARKER_TOOL)
     _SandboxBackend.seed("skills/review/SKILL.md", _REVIEW_SKILL)
     monkeypatch.setattr(workspace_module, "_LocalBackend", _SandboxBackend)
+    monkeypatch.setattr(
+        resources_module,
+        "_LocalCapabilityDeployment",
+        _SandboxDeployment,
+    )
 
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
@@ -919,6 +943,11 @@ def test_sandbox_backend_open_failure_does_not_fall_back_to_local(
 ) -> None:
     _SandboxBackend.fail_open = True
     monkeypatch.setattr(workspace_module, "_LocalBackend", _SandboxBackend)
+    monkeypatch.setattr(
+        resources_module,
+        "_LocalCapabilityDeployment",
+        _SandboxDeployment,
+    )
 
     with pytest.raises(ValueError, match="sandbox constraint failed"):
         asyncio.run(
