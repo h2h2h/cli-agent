@@ -10,6 +10,7 @@ from cli_agent.runtime import (
     AssistantMessage,
     ContextPolicy,
     ModelCompletion,
+    ModelMessage,
     ModelUsage,
     ScriptedModelProvider,
     SessionUsage,
@@ -20,7 +21,7 @@ from cli_agent.runtime import (
     UserMessage,
 )
 from cli_agent.runtime._agent_loop import AgentLoop
-from cli_agent.runtime._context.manager import _ContextManager
+from cli_agent.runtime._context.engine import _ContextEngine
 
 SYSTEM_MESSAGE = SystemMessage.text("System")
 SESSION_ID = "test-session"
@@ -55,18 +56,26 @@ def _completion(
     return ModelCompletion(message=message, finish_reason="stop", usage=usage)
 
 
-def _new_manager(provider: ScriptedModelProvider | None = None) -> _ContextManager:
-    return _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_context_policy,
-        provider=provider if provider is not None else ScriptedModelProvider(script=()),
+def _engine(
+    provider: ScriptedModelProvider | None = None,
+    policy: ContextPolicy | None = None,
+) -> _ContextEngine:
+    engine = _ContextEngine(
         session_id=SESSION_ID,
+        context_policy=policy if policy is not None else _context_policy,
+        provider=provider if provider is not None else ScriptedModelProvider(script=()),
     )
+    engine.hydrate(system_message=SYSTEM_MESSAGE, snapshot=None, journal=(), revision=0)
+    return engine
 
 
-def _long_turn(manager: _ContextManager, *, user_text: str, length: int) -> None:
-    manager.append(UserMessage.text(user_text))
-    manager.append(AssistantMessage.text("x" * length))
+def _apply(engine: _ContextEngine, message: ModelMessage) -> None:
+    engine.apply(message, engine.revision + 1)
+
+
+def _long_turn(engine: _ContextEngine, *, user_text: str, length: int) -> None:
+    _apply(engine, UserMessage.text(user_text))
+    _apply(engine, AssistantMessage.text("x" * length))
 
 
 def _tier3_policy() -> ContextPolicy:
@@ -88,31 +97,31 @@ def _failure_policy() -> ContextPolicy:
 
 
 def test_usage_starts_at_zero() -> None:
-    manager = _new_manager()
+    engine = _engine()
 
-    assert manager.usage == SessionUsage(input_tokens=0, output_tokens=0)
+    assert engine.usage == SessionUsage(input_tokens=0, output_tokens=0)
 
 
 def test_observe_accumulates_across_revisions() -> None:
-    manager = _new_manager()
-    prepared = asyncio.run(manager.prepare_request())
-    manager.observe(prepared.revision, _usage(input_tokens=10, output_tokens=20))
-    manager.append(AssistantMessage.text("done"))
-    prepared = asyncio.run(manager.prepare_request())
-    manager.observe(prepared.revision, _usage(input_tokens=5, output_tokens=7))
+    engine = _engine()
+    asyncio.run(engine.prepare())
+    engine.observe_usage(_usage(input_tokens=10, output_tokens=20))
+    _apply(engine, AssistantMessage.text("done"))
+    asyncio.run(engine.prepare())
+    engine.observe_usage(_usage(input_tokens=5, output_tokens=7))
 
-    assert manager.usage == SessionUsage(input_tokens=15, output_tokens=27)
+    assert engine.usage == SessionUsage(input_tokens=15, output_tokens=27)
 
 
 def test_observe_skips_missing_usage() -> None:
-    manager = _new_manager()
-    prepared = asyncio.run(manager.prepare_request())
-    manager.observe(prepared.revision, None)
-    manager.append(AssistantMessage.text("done"))
-    prepared = asyncio.run(manager.prepare_request())
-    manager.observe(prepared.revision, _usage(input_tokens=3, output_tokens=4))
+    engine = _engine()
+    asyncio.run(engine.prepare())
+    engine.observe_usage(None)
+    _apply(engine, AssistantMessage.text("done"))
+    asyncio.run(engine.prepare())
+    engine.observe_usage(_usage(input_tokens=3, output_tokens=4))
 
-    assert manager.usage == SessionUsage(input_tokens=3, output_tokens=4)
+    assert engine.usage == SessionUsage(input_tokens=3, output_tokens=4)
 
 
 def test_tier3_summary_usage_accumulates_on_success() -> None:
@@ -126,20 +135,15 @@ def test_tier3_summary_usage_accumulates_on_success() -> None:
             ),
         )
     )
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_tier3_policy(),
-        provider=provider,
-        session_id=SESSION_ID,
-    )
-    _long_turn(manager, user_text="one", length=80_000)
-    _long_turn(manager, user_text="two", length=80_000)
-    _long_turn(manager, user_text="three", length=80_000)
+    engine = _engine(provider, _tier3_policy())
+    _long_turn(engine, user_text="one", length=80_000)
+    _long_turn(engine, user_text="two", length=80_000)
+    _long_turn(engine, user_text="three", length=80_000)
 
-    prepared = asyncio.run(manager.prepare_request())
+    prepared = asyncio.run(engine.prepare())
 
     assert prepared.operations and prepared.operations[0].tier == 3
-    assert manager.usage == SessionUsage(input_tokens=1_000, output_tokens=200)
+    assert engine.usage == SessionUsage(input_tokens=1_000, output_tokens=200)
     provider.assert_exhausted()
 
 
@@ -154,20 +158,15 @@ def test_tier3_failed_summary_is_not_accumulated() -> None:
             ),
         )
     )
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_failure_policy(),
-        provider=provider,
-        session_id=SESSION_ID,
-    )
-    _long_turn(manager, user_text="one", length=90_000)
-    _long_turn(manager, user_text="two", length=90_000)
-    _long_turn(manager, user_text="three", length=90_000)
+    engine = _engine(provider, _failure_policy())
+    _long_turn(engine, user_text="one", length=90_000)
+    _long_turn(engine, user_text="two", length=90_000)
+    _long_turn(engine, user_text="three", length=90_000)
 
-    prepared = asyncio.run(manager.prepare_request())
+    prepared = asyncio.run(engine.prepare())
 
     assert prepared.operations == ()
-    assert manager.usage == SessionUsage(input_tokens=0, output_tokens=0)
+    assert engine.usage == SessionUsage(input_tokens=0, output_tokens=0)
     provider.assert_exhausted()
 
 
@@ -182,17 +181,33 @@ class _KernelStub:
         return tuple(ToolResult(call_id=call.call_id, output={}) for call in calls)
 
 
-def test_loop_usage_forwards_context_usage(tmp_path: Path) -> None:
-    provider = ScriptedModelProvider(
-        script=((_completion(AssistantMessage.text("Hi"), usage=_usage(input_tokens=4, output_tokens=6)),),)
-    )
-    loop = AgentLoop(
+def _loop(provider: ScriptedModelProvider) -> AgentLoop:
+    engine = _engine(provider)
+
+    def commit(message: ModelMessage) -> int:
+        del message
+        return engine.revision + 1
+
+    return AgentLoop(
         provider,
         _KernelStub(),  # type: ignore[arg-type]
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_context_policy,
-        session_id=SESSION_ID,
+        context=engine,
+        commit=commit,
     )
+
+
+def test_loop_usage_forwards_context_usage(tmp_path: Path) -> None:
+    provider = ScriptedModelProvider(
+        script=(
+            (
+                _completion(
+                    AssistantMessage.text("Hi"),
+                    usage=_usage(input_tokens=4, output_tokens=6),
+                ),
+            ),
+        )
+    )
+    loop = _loop(provider)
 
     assert loop.usage == SessionUsage(input_tokens=0, output_tokens=0)
     asyncio.run(_collect_events(loop, UserMessage.text("Hello")))
@@ -207,18 +222,19 @@ def test_loop_accumulates_every_completion_within_one_turn(tmp_path: Path) -> No
         script=(
             (
                 ToolCallReady(call=call),
-                _completion(tool_message, usage=_usage(input_tokens=100, output_tokens=10)),
+                _completion(
+                    tool_message, usage=_usage(input_tokens=100, output_tokens=10)
+                ),
             ),
-            (_completion(AssistantMessage.text("Done."), usage=_usage(input_tokens=50, output_tokens=5)),),
+            (
+                _completion(
+                    AssistantMessage.text("Done."),
+                    usage=_usage(input_tokens=50, output_tokens=5),
+                ),
+            ),
         )
     )
-    loop = AgentLoop(
-        provider,
-        _KernelStub(),  # type: ignore[arg-type]
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_context_policy,
-        session_id=SESSION_ID,
-    )
+    loop = _loop(provider)
 
     asyncio.run(_collect_events(loop, UserMessage.text("Inspect")))
 

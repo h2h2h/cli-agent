@@ -18,7 +18,6 @@ from cli_agent.runtime import (
     AssistantMessage,
     ContextPolicy,
     ModelCompletion,
-    ModelContextOverflowError,
     ModelEvent,
     ModelRequest,
     RuntimeDiagnostic,
@@ -28,6 +27,7 @@ from cli_agent.runtime import (
     UserMessage,
 )
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
+from cli_agent.runtime.model import ModelContextOverflowSignal
 
 _CONTEXT_POLICY = ContextPolicy(
     context_window_tokens=16_384,
@@ -134,7 +134,7 @@ class _LifecycleProvider:
         if index == self._fail_on:
             raise RuntimeError("boom")
         if index == self._overflow_on:
-            raise ModelContextOverflowError("context overflow")
+            raise ModelContextOverflowSignal("context overflow")
         block = request.messages[1].content[0]
         if not isinstance(block, TextBlock):
             raise AssertionError("summary request user content is not text")

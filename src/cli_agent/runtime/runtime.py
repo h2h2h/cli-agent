@@ -13,7 +13,7 @@ from typing import Any
 from cli_agent.errors import HostFacingError, error_boundary
 from cli_agent.errors.session import SessionConflictError
 from cli_agent.runtime._agent_loop import AgentLoop
-from cli_agent.runtime._context import ContextOverflowError, ContextPolicy, SessionUsage
+from cli_agent.runtime._context import ContextEngineFactory, ContextPolicy, SessionUsage
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.interaction import UserInteraction
 from cli_agent.runtime._environment.policy import ExecutionPolicy
@@ -25,7 +25,6 @@ from cli_agent.runtime._session import SessionConfig, serialize_system_prompt
 from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
-    ModelContextOverflowError,
     ModelEvent,
     ModelMessage,
     ModelProvider,
@@ -35,15 +34,6 @@ from cli_agent.runtime.model import (
 
 class RuntimeClosedError(RuntimeError):
     """Raised when work is requested from a closed Agent Runtime."""
-
-
-# Legacy error types that intentionally cross run_turn today. Their owning
-# issues reclassify them (Context failures become HostFacingError or an
-# internal recovery signal); this tuple shrinks to empty as they migrate.
-_LEGACY_TURN_EXCEPTIONS: tuple[type[Exception], ...] = (
-    ContextOverflowError,
-    ModelContextOverflowError,
-)
 
 
 @dataclass(slots=True)
@@ -78,6 +68,11 @@ class AgentRuntime:
         self._instruction = instruction
         self._on_diagnostic = on_diagnostic
         self._context_policy = context_policy
+        self._context_factory = ContextEngineFactory(
+            store=resources.session_store,
+            context_policy=context_policy,
+            on_diagnostic=on_diagnostic,
+        )
         self._sessions: dict[str, _Session] = {}
         self._closed = False
 
@@ -282,23 +277,25 @@ class AgentRuntime:
                 ) from exc
             kernel = self._new_kernel(session_id)
             try:
-                journal_frontier = [0]
+                context = self._context_factory.create(
+                    session_id,
+                    provider=bound_provider,
+                    system_message=system,
+                )
 
-                def on_append(message: ModelMessage) -> None:
-                    journal_frontier[0] = self._resources.session_store.append(
+                def commit(message: ModelMessage) -> int:
+                    return self._resources.session_store.append(
                         session_id,
                         message,
-                        expected_revision=journal_frontier[0],
+                        expected_revision=context.revision,
                     )
 
                 loop = AgentLoop(
                     bound_provider,
                     kernel,
-                    system_message=system,
-                    context_policy=self._context_policy,
-                    session_id=session_id,
+                    context=context,
+                    commit=commit,
                     on_diagnostic=self._on_diagnostic,
-                    on_append=on_append,
                 )
             except BaseException:
                 await kernel.close()
@@ -322,7 +319,6 @@ class AgentRuntime:
                 with error_boundary(
                     "runtime.run_turn",
                     on_diagnostic=self._boundary_diagnostic,
-                    passthrough=_LEGACY_TURN_EXCEPTIONS,
                 ):
                     async for event in session.loop.run(message):
                         if self._closed or session.closing:
@@ -417,9 +413,14 @@ class AgentRuntime:
 
         error: Exception | None = None
         try:
-            await session.kernel.close()
+            session.loop.close()
         except Exception as exc:
             error = exc
+        try:
+            await session.kernel.close()
+        except Exception as exc:
+            if error is None:
+                error = exc
 
         if active_task is not None and active_task is not current_task:
             with suppress(asyncio.CancelledError, Exception):

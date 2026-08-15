@@ -8,7 +8,6 @@ import pytest
 from cli_agent.runtime import (
     AssistantMessage,
     ModelCompletion,
-    ModelContextOverflowError,
     ModelEvent,
     ModelProvider,
     ModelRequest,
@@ -23,6 +22,7 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
+from cli_agent.runtime.model import ModelContextOverflowSignal
 
 
 def test_streams_a_real_model_request_through_the_provider_neutral_seam() -> None:
@@ -556,7 +556,7 @@ def test_maps_structured_context_overflow_errors(payload: dict[str, object]) -> 
         transport=httpx.MockTransport(lambda request: _error_response(payload)),
     )
 
-    with pytest.raises(ModelContextOverflowError):
+    with pytest.raises(ModelContextOverflowSignal):
         _collect_error(provider)
 
 

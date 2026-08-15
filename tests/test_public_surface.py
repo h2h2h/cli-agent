@@ -23,7 +23,6 @@ def test_exposes_provider_neutral_model_types() -> None:
         "ModelUsage",
         "TextDelta",
         "ModelCompletion",
-        "ModelContextOverflowError",
         "ModelEvent",
         "ModelProvider",
         "JSONValue",
@@ -99,8 +98,19 @@ def test_exposes_host_facing_runtime_lifecycle() -> None:
     assert hasattr(runtime, "RuntimeClosedError")
     assert "RuntimeDiagnostic" in runtime.__all__
     assert hasattr(runtime, "RuntimeDiagnostic")
-    assert "ContextOverflowError" in runtime.__all__
-    assert hasattr(runtime, "ContextOverflowError")
+
+
+def test_exposes_context_exhausted_error_from_errors_package() -> None:
+    from cli_agent import errors
+
+    assert "ContextExhaustedError" in errors.__all__
+    assert hasattr(errors, "ContextExhaustedError")
+
+
+def test_legacy_context_exceptions_are_not_public() -> None:
+    for name in ("ContextOverflowError", "ModelContextOverflowError"):
+        assert name not in runtime.__all__, f"{name} must not be public"
+        assert not hasattr(runtime, name), f"{name} must not be public"
 
 
 def test_keeps_runtime_internals_private() -> None:
@@ -113,7 +123,7 @@ def test_keeps_runtime_internals_private() -> None:
         "PreparedContext",
         "_ContextLedger",
         "_ContextLedgerError",
-        "_ContextManager",
+        "_ContextEngine",
         "_ContextSummarizer",
         "_ToolResultReducer",
         "_RuntimeResources",

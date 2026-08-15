@@ -91,13 +91,46 @@ class _ContextLedger:
             return None
         return selected_start, selected_end
 
+    def hydrate(
+        self,
+        system_message: SystemMessage,
+        messages: tuple[ModelMessage, ...],
+        *,
+        summary: str | None,
+    ) -> None:
+        """Seed the projection from durable context, validating every message.
+
+        The durable projection never contains a SystemMessage: the
+        current one replaces index 0. Every hydrated message still
+        passes the same protocol validation as a live append, so a
+        broken snapshot or journal delta fails closed.
+        """
+
+        self._messages = [system_message]
+        self._summary = summary
+        self._revision = 0
+        for message in messages:
+            self.append(message)
+
+    def project_summary(
+        self,
+        summary_text: str,
+        protected_start: int,
+    ) -> tuple[ModelMessage, ...]:
+        """Return the projection after one summary commit, without mutating.
+
+        The returned tuple excludes the SystemMessage so it can be
+        persisted as the ``ContextSnapshot.context`` derivation.
+        """
+
+        return (summary_message(summary_text), *self._messages[protected_start:])
+
     def commit_summary(self, summary_text: str, protected_start: int) -> None:
         """Atomically replace the summary and delete summarized delta turns."""
 
         self._messages = [
             self._messages[0],
-            summary_message(summary_text),
-            *self._messages[protected_start:],
+            *self.project_summary(summary_text, protected_start),
         ]
         self._summary = summary_text
         self._revision += 1

@@ -10,6 +10,7 @@ from interaction_fakes import _ScriptedInteraction
 from cli_agent.errors import (
     INTERNAL_ERROR_DIAGNOSTIC_KIND,
     CliAgentError,
+    ContextExhaustedError,
     HostFacingError,
     InternalRuntimeError,
     ModelFacingError,
@@ -18,9 +19,7 @@ from cli_agent.errors import (
 )
 from cli_agent.runtime import (
     AgentRuntime,
-    ContextOverflowError,
     ContextPolicy,
-    ModelContextOverflowError,
     ModelRequest,
     RuntimeDiagnostic,
     ToolCall,
@@ -28,6 +27,7 @@ from cli_agent.runtime import (
     UserMessage,
 )
 from cli_agent.runtime._environment import EnvironmentKernel
+from cli_agent.runtime.model import ModelContextOverflowSignal
 
 _context_policy = ContextPolicy(
     context_window_tokens=128_000,
@@ -139,13 +139,16 @@ def test_error_boundary_retains_cancellation() -> None:
 def test_error_boundary_retains_declared_passthrough() -> None:
     diagnostics: list[tuple[str, str, dict[str, object]]] = []
 
-    with pytest.raises(ContextOverflowError):
+    class LegacyTurnError(RuntimeError):
+        pass
+
+    with pytest.raises(LegacyTurnError):
         with error_boundary(
             "runtime.run_turn",
             on_diagnostic=lambda *item: diagnostics.append(item),
-            passthrough=(ContextOverflowError,),
+            passthrough=(LegacyTurnError,),
         ):
-            raise ContextOverflowError("cannot be recovered safely")
+            raise LegacyTurnError("cannot be recovered safely")
 
     assert diagnostics == []
 
@@ -308,7 +311,7 @@ class _OverflowTwiceProvider:
         del request
         if self._failures_left > 0:
             self._failures_left -= 1
-            raise ModelContextOverflowError("provider context overflow")
+            raise ModelContextOverflowSignal("provider context overflow")
         yield  # pragma: no cover
 
 
@@ -354,7 +357,7 @@ def test_run_turn_boundary_wraps_unexpected_exceptions(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_run_turn_boundary_retains_legacy_context_exceptions(tmp_path: Path) -> None:
+def test_run_turn_classifies_second_overflow_as_host_error(tmp_path: Path) -> None:
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
             workspace=tmp_path,
@@ -363,10 +366,13 @@ def test_run_turn_boundary_retains_legacy_context_exceptions(tmp_path: Path) -> 
             context_policy=_context_policy,
         )
         try:
-            with pytest.raises(ModelContextOverflowError):
+            with pytest.raises(ContextExhaustedError) as raised:
                 async for _ in runtime.run_turn("session-a", UserMessage.text("Hi")):
                     pass
         finally:
             await runtime.close()
+
+        assert raised.value.code == "context_exhausted"
+        assert raised.value.details["session_id"] == "session-a"
 
     asyncio.run(scenario())

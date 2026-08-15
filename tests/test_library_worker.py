@@ -9,7 +9,6 @@ from cli_agent.runtime import (
     AssistantMessage,
     ContextPolicy,
     ModelCompletion,
-    ModelContextOverflowError,
     ModelEvent,
     ModelRequest,
     RuntimeDiagnostic,
@@ -31,6 +30,7 @@ from cli_agent.runtime._capability.library.facts import (
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime._database.summary_cache import _SummaryCache
+from cli_agent.runtime.model import ModelContextOverflowSignal
 
 _user_interaction = _ScriptedInteraction("allow_once")
 _context_policy = ContextPolicy(
@@ -309,7 +309,7 @@ def test_context_overflow_marks_entry_failed_with_specific_diagnostic(
     repertoire = _repertoire(tmp_path)
     (repertoire / "library" / "big.md").write_text("content\n", encoding="utf-8")
     diagnostics: list[RuntimeDiagnostic] = []
-    provider = _FailOnceProvider(ModelContextOverflowError("context window exceeded"))
+    provider = _FailOnceProvider(ModelContextOverflowSignal("context window exceeded"))
 
     async def scenario() -> None:
         _prepare_workspace(tmp_path)

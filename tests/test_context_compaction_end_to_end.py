@@ -14,12 +14,12 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
+from cli_agent.errors.context import ContextExhaustedError
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
     ContextPolicy,
     ModelCompletion,
-    ModelContextOverflowError,
     ModelEvent,
     ModelRequest,
     ScriptedModelProvider,
@@ -31,6 +31,7 @@ from cli_agent.runtime import (
 )
 from cli_agent.runtime._context.tokens import estimate_request_tokens
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.model import ModelContextOverflowSignal
 
 _user_interaction = _ScriptedInteraction("deny")
 
@@ -331,7 +332,7 @@ def test_second_overflow_propagates_and_session_stays_closable(
     )
     runtime = asyncio.run(_open_runtime(tmp_path, provider, _STANDARD_BUDGET, None))
     try:
-        with pytest.raises(ModelContextOverflowError):
+        with pytest.raises(ContextExhaustedError):
             asyncio.run(_run_turn(runtime, "session", "Hello"))
         assert len(provider.requests) == 2
     finally:
@@ -441,7 +442,7 @@ class _OverflowThenSuccessProvider:
         self._requests.append(request)
         if self._failures_left > 0:
             self._failures_left -= 1
-            raise ModelContextOverflowError("provider context overflow")
+            raise ModelContextOverflowSignal("provider context overflow")
         if self._stream_index >= len(self._script):
             raise RuntimeError(
                 "provider received more model requests than scripted: "

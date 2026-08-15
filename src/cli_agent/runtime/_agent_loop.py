@@ -8,18 +8,14 @@ import re
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping
 
-from cli_agent.runtime._context import (
-    ContextOverflowError,
-    ContextPolicy,
-    SessionUsage,
-    _ContextManager,
-)
+from cli_agent.errors.context import ContextExhaustedError
+from cli_agent.runtime._context import ContextEngine, SessionUsage
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     AssistantMessage,
     ModelCompletion,
-    ModelContextOverflowError,
+    ModelContextOverflowSignal,
     ModelEvent,
     ModelMessage,
     ModelProvider,
@@ -51,13 +47,13 @@ def _render_history(history: tuple[ModelMessage, ...]) -> str:
                     lines.append(f"    {block.text}")
                 else:
                     lines.append(f"    -> {block.name} [{block.call_id}]")
-                    lines.append(f"       {json.dumps(block.arguments, sort_keys=True)}")
+                    lines.append(
+                        f"       {json.dumps(block.arguments, sort_keys=True)}"
+                    )
         elif isinstance(message, ToolResultMessage):
             for result in message.content:
                 body = (
-                    result.output
-                    if result.error is None
-                    else {"error": result.error}
+                    result.output if result.error is None else {"error": result.error}
                 )
                 lines.append(f"    <- {result.call_id}")
                 lines.append(f"       {json.dumps(body, sort_keys=True)}")
@@ -66,31 +62,30 @@ def _render_history(history: tuple[ModelMessage, ...]) -> str:
 
 
 class AgentLoop:
-    """Orchestrate model turns against a Session-scoped Context Manager."""
+    """Orchestrate model turns against a Session-scoped ContextEngine.
+
+    The loop never persists conversation state itself: ``commit``
+    durably appends one message through the SessionStore and returns the
+    new journal revision, and only then is the message applied to the
+    ContextEngine, so the in-memory projection can never run ahead of
+    the canonical journal.
+    """
 
     def __init__(
         self,
         provider: ModelProvider,
         kernel: EnvironmentKernel,
         *,
-        system_message: SystemMessage,
-        context_policy: ContextPolicy,
-        session_id: str,
+        context: ContextEngine,
+        commit: Callable[[ModelMessage], int],
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
-        on_append: Callable[[ModelMessage], None] | None = None,
     ) -> None:
         self._provider = provider
         self._kernel = kernel
-        self._session_id = session_id
+        self._context = context
+        self._commit = commit
+        self._session_id = context.session_id
         self._on_diagnostic = on_diagnostic
-        self._context = _ContextManager(
-            system_message=system_message,
-            context_policy=context_policy,
-            provider=provider,
-            session_id=session_id,
-            on_diagnostic=on_diagnostic,
-            on_append=on_append,
-        )
 
     @property
     def history(self) -> tuple[ModelMessage, ...]:
@@ -104,14 +99,19 @@ class AgentLoop:
 
         return self._context.usage
 
+    def close(self) -> None:
+        """Release the bound ContextEngine resources."""
+
+        self._context.close()
+
     async def run(self, message: UserMessage) -> AsyncIterator[ModelEvent]:
         """Run one model turn, dispatching Tool Calls in message order."""
 
-        self._context.append(message)
+        self._context.apply(message, self._commit(message))
         while True:
             await self._kernel.reconcile_library()
             completion = None
-            prepared = await self._context.prepare_request()
+            prepared = await self._context.prepare()
             request = prepared.request
             retried = False
             while True:
@@ -123,15 +123,17 @@ class AgentLoop:
 
                         yield event
                     break
-                except ModelContextOverflowError as exc:
+                except ModelContextOverflowSignal as exc:
                     if retried:
-                        raise
+                        raise ContextExhaustedError(
+                            session_id=self._session_id,
+                            projected_input_tokens=(
+                                prepared.pressure.projected_input_tokens
+                            ),
+                            input_budget=prepared.pressure.input_budget,
+                        ) from exc
                     retried = True
                     recovered = await self._context.force_prepare()
-                    if recovered is None:
-                        raise ContextOverflowError(
-                            "context overflow cannot be recovered safely"
-                        ) from exc
                     request = recovered.request
                     prepared = recovered
                     self._emit_diagnostic(
@@ -158,15 +160,18 @@ class AgentLoop:
                 for block in completion.message.content
                 if isinstance(block, ToolCall)
             )
-            self._context.observe(prepared.revision, completion.usage)
-            self._context.append(completion.message)
+            self._context.observe_usage(completion.usage)
+            self._context.apply(completion.message, self._commit(completion.message))
             if not tool_calls:
                 self._print_history()
                 yield completion
                 return
 
             results = await self._kernel.dispatch_batch(tool_calls)
-            self._context.append(ToolResultMessage(content=results))
+            self._context.apply(
+                ToolResultMessage(content=results),
+                self._commit(ToolResultMessage(content=results)),
+            )
             self._print_history()
 
     def _print_history(self) -> None:

@@ -6,7 +6,6 @@ from pathlib import Path
 from cli_agent.runtime import (
     AssistantMessage,
     ModelCompletion,
-    ModelContextOverflowError,
     ModelEvent,
     ModelRequest,
     RuntimeDiagnostic,
@@ -25,6 +24,7 @@ from cli_agent.runtime._capability.library.facts import (
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._database.state import _StateDatabase
 from cli_agent.runtime._database.summary_cache import _SummaryCache
+from cli_agent.runtime.model import ModelContextOverflowSignal
 
 
 def _repertoire(workspace: Path) -> Path:
@@ -428,7 +428,7 @@ def test_directory_failure_only_affects_directory(tmp_path: Path) -> None:
     (repertoire / "library" / "d1").mkdir()
     (repertoire / "library" / "d1" / "f1.md").write_text("content\n", encoding="utf-8")
     diagnostics: list[RuntimeDiagnostic] = []
-    provider = _FailOnCallProvider(2, ModelContextOverflowError("too big"))
+    provider = _FailOnCallProvider(2, ModelContextOverflowSignal("too big"))
 
     async def scenario() -> None:
         _prepare_workspace(tmp_path)

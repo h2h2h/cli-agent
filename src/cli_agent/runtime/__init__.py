@@ -2,7 +2,6 @@
 
 from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._context import (
-    ContextOverflowError,
     ContextPolicy,
     SessionUsage,
 )
@@ -23,7 +22,6 @@ from cli_agent.runtime.model import (
     AssistantMessage,
     JSONValue,
     ModelCompletion,
-    ModelContextOverflowError,
     ModelEvent,
     ModelMessage,
     ModelProvider,
@@ -48,12 +46,10 @@ __all__ = (
     "AgentRuntime",
     "AssistantMessage",
     "ShellParseResult",
-    "ContextOverflowError",
     "ContextPolicy",
     "ExecutionPolicy",
     "JSONValue",
     "ModelCompletion",
-    "ModelContextOverflowError",
     "ModelEvent",
     "ModelMessage",
     "ModelProvider",

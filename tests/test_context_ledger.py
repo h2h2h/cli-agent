@@ -5,6 +5,7 @@ import pytest
 from cli_agent.runtime import (
     AssistantMessage,
     ContextPolicy,
+    ModelMessage,
     ModelRequest,
     ModelUsage,
     ScriptedModelProvider,
@@ -14,8 +15,8 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
+from cli_agent.runtime._context.engine import _ContextEngine
 from cli_agent.runtime._context.ledger import _ContextLedger, _ContextLedgerError
-from cli_agent.runtime._context.manager import _ContextManager
 from cli_agent.runtime._context.tokens import (
     estimate_message_tokens,
     estimate_request_tokens,
@@ -32,6 +33,20 @@ SESSION_ID = "test-session"
 
 _exec = ToolCall(call_id="call_exec", name="exec", arguments={"command": "ls"})
 _output = ToolCall(call_id="call_output", name="output", arguments={"exec_id": "e1"})
+
+
+def _engine() -> _ContextEngine:
+    engine = _ContextEngine(
+        session_id=SESSION_ID,
+        context_policy=CONTEXT_POLICY,
+        provider=PROVIDER,
+    )
+    engine.hydrate(system_message=SYSTEM_MESSAGE, snapshot=None, journal=(), revision=0)
+    return engine
+
+
+def _apply(engine: _ContextEngine, message: ModelMessage) -> None:
+    engine.apply(message, engine.revision + 1)
 
 
 def test_ledger_starts_with_system_message_and_tracks_revision() -> None:
@@ -164,17 +179,12 @@ def test_ledger_allows_new_user_turn_after_abandoned_active_turn() -> None:
     assert ledger.revision == 3
 
 
-def test_manager_prepares_immutable_requests_with_pressure() -> None:
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
-        provider=PROVIDER,
-        session_id=SESSION_ID,
-    )
+def test_engine_prepares_immutable_requests_with_pressure() -> None:
+    engine = _engine()
     user_message = UserMessage.text("Hello")
-    manager.append(user_message)
+    _apply(engine, user_message)
 
-    prepared = asyncio.run(manager.prepare_request())
+    prepared = asyncio.run(engine.prepare())
 
     assert prepared.revision == 1
     assert prepared.request == ModelRequest(messages=(SYSTEM_MESSAGE, user_message))
@@ -186,21 +196,17 @@ def test_manager_prepares_immutable_requests_with_pressure() -> None:
     assert prepared.pressure.ratio == prepared.pressure.projected_input_tokens / 14_336
 
 
-def test_manager_prepares_before_every_model_step() -> None:
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
-        provider=PROVIDER,
-        session_id=SESSION_ID,
+def test_engine_prepares_before_every_model_step() -> None:
+    engine = _engine()
+    _apply(engine, UserMessage.text("Run"))
+    first = asyncio.run(engine.prepare())
+    _apply(engine, AssistantMessage(content=(_exec,)))
+    second = asyncio.run(engine.prepare())
+    _apply(
+        engine,
+        ToolResultMessage(content=(ToolResult(call_id=_exec.call_id, output={}),)),
     )
-    manager.append(UserMessage.text("Run"))
-    first = asyncio.run(manager.prepare_request())
-    manager.append(AssistantMessage(content=(_exec,)))
-    second = asyncio.run(manager.prepare_request())
-    manager.append(
-        ToolResultMessage(content=(ToolResult(call_id=_exec.call_id, output={}),))
-    )
-    third = asyncio.run(manager.prepare_request())
+    third = asyncio.run(engine.prepare())
 
     assert (first.revision, second.revision, third.revision) == (1, 2, 3)
     assert second.request.messages == (
@@ -213,22 +219,16 @@ def test_manager_prepares_before_every_model_step() -> None:
     )
 
 
-def test_manager_uses_reported_anchor_and_estimates_the_delta() -> None:
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
-        provider=PROVIDER,
-        session_id=SESSION_ID,
-    )
-    manager.append(UserMessage.text("Hello"))
-    prepared = asyncio.run(manager.prepare_request())
-    manager.observe(
-        prepared.revision,
+def test_engine_uses_reported_anchor_and_estimates_the_delta() -> None:
+    engine = _engine()
+    _apply(engine, UserMessage.text("Hello"))
+    asyncio.run(engine.prepare())
+    engine.observe_usage(
         ModelUsage(input_tokens=100, output_tokens=20, total_tokens=120),
     )
     assistant_message = AssistantMessage.text("World")
-    manager.append(assistant_message)
-    next_prepared = asyncio.run(manager.prepare_request())
+    _apply(engine, assistant_message)
+    next_prepared = asyncio.run(engine.prepare())
 
     assert (
         next_prepared.pressure.projected_input_tokens
@@ -238,38 +238,27 @@ def test_manager_uses_reported_anchor_and_estimates_the_delta() -> None:
     assert next_prepared.revision == 2
 
 
-def test_manager_reports_exact_anchor_when_nothing_was_appended() -> None:
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
-        provider=PROVIDER,
-        session_id=SESSION_ID,
-    )
-    manager.append(UserMessage.text("Hello"))
-    prepared = asyncio.run(manager.prepare_request())
-    manager.observe(
-        prepared.revision,
+def test_engine_reports_exact_anchor_when_nothing_was_appended() -> None:
+    engine = _engine()
+    _apply(engine, UserMessage.text("Hello"))
+    asyncio.run(engine.prepare())
+    engine.observe_usage(
         ModelUsage(input_tokens=100, output_tokens=20, total_tokens=120),
     )
 
-    next_prepared = asyncio.run(manager.prepare_request())
+    next_prepared = asyncio.run(engine.prepare())
 
     assert next_prepared.pressure.projected_input_tokens == 100
     assert next_prepared.pressure.usage_source == "reported"
 
 
-def test_manager_ignores_missing_usage_without_anchoring() -> None:
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
-        provider=PROVIDER,
-        session_id=SESSION_ID,
-    )
-    manager.append(UserMessage.text("Hello"))
-    prepared = asyncio.run(manager.prepare_request())
-    manager.observe(prepared.revision, None)
+def test_engine_ignores_missing_usage_without_anchoring() -> None:
+    engine = _engine()
+    _apply(engine, UserMessage.text("Hello"))
+    asyncio.run(engine.prepare())
+    engine.observe_usage(None)
 
-    next_prepared = asyncio.run(manager.prepare_request())
+    next_prepared = asyncio.run(engine.prepare())
 
     assert next_prepared.pressure.usage_source == "estimated"
     assert next_prepared.pressure.projected_input_tokens == estimate_request_tokens(
@@ -277,24 +266,30 @@ def test_manager_ignores_missing_usage_without_anchoring() -> None:
     )
 
 
-def test_manager_rejects_stale_and_duplicate_observations() -> None:
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
-        provider=PROVIDER,
-        session_id=SESSION_ID,
-    )
-    manager.append(UserMessage.text("Hello"))
-    prepared = asyncio.run(manager.prepare_request())
+def test_engine_rejects_observation_before_prepare_and_duplicates() -> None:
+    engine = _engine()
+    _apply(engine, UserMessage.text("Hello"))
 
-    with pytest.raises(_ContextLedgerError, match="un-prepared revision"):
-        manager.observe(prepared.revision + 1, None)
-    with pytest.raises(_ContextLedgerError, match="un-prepared revision"):
-        manager.observe(prepared.revision - 1, None)
+    with pytest.raises(_ContextLedgerError, match="before prepare"):
+        engine.observe_usage(None)
 
-    manager.observe(prepared.revision, None)
+    asyncio.run(engine.prepare())
+    engine.observe_usage(None)
     with pytest.raises(_ContextLedgerError, match="called twice"):
-        manager.observe(prepared.revision, None)
+        engine.observe_usage(None)
+
+
+def test_engine_rejects_apply_with_wrong_revision() -> None:
+    engine = _engine()
+
+    with pytest.raises(_ContextLedgerError, match="expects revision 1"):
+        engine.apply(UserMessage.text("Hello"), 2)
+    with pytest.raises(_ContextLedgerError, match="expects revision 1"):
+        engine.apply(UserMessage.text("Hello"), 0)
+
+    _apply(engine, UserMessage.text("Hello"))
+    with pytest.raises(_ContextLedgerError, match="expects revision 2"):
+        engine.apply(UserMessage.text("Skipped"), 3)
 
 
 def test_text_estimator_pins_cjk_and_ascii_formula() -> None:

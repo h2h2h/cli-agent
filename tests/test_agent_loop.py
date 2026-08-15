@@ -5,12 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from cli_agent.errors.context import ContextExhaustedError
 from cli_agent.runtime import (
     AssistantMessage,
     ContextPolicy,
     ModelCompletion,
-    ModelContextOverflowError,
     ModelEvent,
+    ModelMessage,
     ModelRequest,
     ScriptedModelProvider,
     SystemMessage,
@@ -27,7 +28,9 @@ from cli_agent.runtime._agent_loop import (
     AgentLoop,
     _render_history,
 )
+from cli_agent.runtime._context.engine import _ContextEngine
 from cli_agent.runtime._environment import EnvironmentKernel
+from cli_agent.runtime.model import ModelContextOverflowSignal
 
 SYSTEM_MESSAGE = SystemMessage.text("Test Runtime instruction")
 CONTEXT_POLICY = ContextPolicy(
@@ -35,6 +38,34 @@ CONTEXT_POLICY = ContextPolicy(
     output_reserve_tokens=2_048,
     safety_margin_tokens=0,
 )
+
+
+def _new_loop(
+    provider: object,
+    kernel: object,
+    *,
+    session_id: str = "test-session",
+    on_diagnostic: object = None,
+) -> AgentLoop:
+    engine = _ContextEngine(
+        session_id=session_id,
+        context_policy=CONTEXT_POLICY,
+        provider=provider,  # type: ignore[arg-type]
+        on_diagnostic=on_diagnostic,  # type: ignore[arg-type]
+    )
+    engine.hydrate(system_message=SYSTEM_MESSAGE, snapshot=None, journal=(), revision=0)
+
+    def commit(message: ModelMessage) -> int:
+        del message
+        return engine.revision + 1
+
+    return AgentLoop(
+        provider,  # type: ignore[arg-type]
+        kernel,  # type: ignore[arg-type]
+        context=engine,
+        commit=commit,
+        on_diagnostic=on_diagnostic,  # type: ignore[arg-type]
+    )
 
 
 def test_completes_a_text_only_turn(tmp_path: Path) -> None:
@@ -52,13 +83,7 @@ def test_completes_a_text_only_turn(tmp_path: Path) -> None:
             ),
         )
     )
-    loop = AgentLoop(
-        provider,
-        EnvironmentKernel(tmp_path),
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
-        session_id="test-session",
-    )
+    loop = _new_loop(provider, EnvironmentKernel(tmp_path))
 
     events = asyncio.run(_collect_events(loop, user_message))
 
@@ -105,14 +130,7 @@ def test_continues_generation_after_exec_tool_result(tmp_path: Path) -> None:
             ),
         )
     )
-    kernel = EnvironmentKernel(tmp_path)
-    loop = AgentLoop(
-        provider,
-        kernel,
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
-        session_id="test-session",
-    )
+    loop = _new_loop(provider, EnvironmentKernel(tmp_path))
 
     events = asyncio.run(_collect_events(loop, user_message))
 
@@ -188,13 +206,7 @@ def test_dispatches_tool_calls_in_order_and_preserves_dependencies(
             ),
         )
     )
-    loop = AgentLoop(
-        provider,
-        EnvironmentKernel(tmp_path),
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
-        session_id="test-session",
-    )
+    loop = _new_loop(provider, EnvironmentKernel(tmp_path))
 
     events = asyncio.run(_collect_events(loop, user_message))
 
@@ -247,13 +259,7 @@ def test_tool_call_ready_order_does_not_change_dispatch_order(
             ),
         )
     )
-    loop = AgentLoop(
-        provider,
-        EnvironmentKernel(tmp_path),
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
-        session_id="test-session",
-    )
+    loop = _new_loop(provider, EnvironmentKernel(tmp_path))
 
     events = asyncio.run(_collect_events(loop, user_message))
 
@@ -321,11 +327,9 @@ def test_recovers_from_provider_context_overflow_and_retries_once(
         success_events=(TextDelta(text="Recovered"), _completion(assistant_message)),
     )
     received: list[object] = []
-    loop = AgentLoop(
+    loop = _new_loop(
         provider,
         EnvironmentKernel(tmp_path),
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
         session_id="overflow-session",
         on_diagnostic=received.append,
     )
@@ -355,16 +359,17 @@ def test_raises_stable_error_after_second_provider_overflow(tmp_path: Path) -> N
         success_events=(),
         fail_twice=True,
     )
-    loop = AgentLoop(
+    loop = _new_loop(
         provider,
         EnvironmentKernel(tmp_path),
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
         session_id="overflow-session",
     )
 
-    with pytest.raises(ModelContextOverflowError):
+    with pytest.raises(ContextExhaustedError) as raised:
         asyncio.run(_collect_events(loop, UserMessage.text("Hello")))
+
+    assert raised.value.code == "context_exhausted"
+    assert raised.value.details["session_id"] == "overflow-session"
 
     assert len(provider.requests) == 2
 
@@ -393,7 +398,7 @@ class _OverflowThenSuccessProvider:
         self._requests.append(request)
         if self._failures_left > 0:
             self._failures_left -= 1
-            raise ModelContextOverflowError("provider context overflow")
+            raise ModelContextOverflowSignal("provider context overflow")
         for event in self._success_events:
             yield event
 
@@ -430,13 +435,7 @@ def test_reconcile_runs_before_every_model_request() -> None:
         )
     )
     kernel = _RecordingKernel()
-    loop = AgentLoop(
-        provider,
-        kernel,  # type: ignore[arg-type]
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
-        session_id="test-session",
-    )
+    loop = _new_loop(provider, kernel)
 
     asyncio.run(_collect_events(loop, user_message))
 
@@ -470,13 +469,7 @@ def _two_step_loop(kernel: EnvironmentKernel | _RecordingKernel) -> AgentLoop:
             ),
         )
     )
-    return AgentLoop(
-        provider,
-        kernel,  # type: ignore[arg-type]
-        system_message=SYSTEM_MESSAGE,
-        context_policy=CONTEXT_POLICY,
-        session_id="test-session",
-    )
+    return _new_loop(provider, kernel)
 
 
 def test_history_print_is_disabled_by_default(

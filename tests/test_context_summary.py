@@ -12,7 +12,7 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._context.manager import _ContextManager
+from cli_agent.runtime._context.engine import _ContextEngine
 from cli_agent.runtime._context.summarizer import (
     SUMMARY_DELIMITER_CLOSE,
     SUMMARY_DELIMITER_OPEN,
@@ -47,9 +47,27 @@ def _failure_policy() -> ContextPolicy:
     )
 
 
-def _long_turn(manager: _ContextManager, *, user_text: str, length: int) -> None:
-    manager.append(UserMessage.text(user_text))
-    manager.append(AssistantMessage.text("x" * length))
+def _engine(
+    policy: ContextPolicy,
+    provider: object,
+) -> _ContextEngine:
+    engine = _ContextEngine(
+        session_id=SESSION_ID,
+        context_policy=policy,
+        provider=provider,  # type: ignore[arg-type]
+    )
+    engine.hydrate(system_message=SYSTEM_MESSAGE, snapshot=None, journal=(), revision=0)
+    return engine
+
+
+def _apply(engine: _ContextEngine, message: object) -> None:
+    assert isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage))
+    engine.apply(message, engine.revision + 1)
+
+
+def _long_turn(manager: _ContextEngine, *, user_text: str, length: int) -> None:
+    _apply(manager, UserMessage.text(user_text))
+    _apply(manager, AssistantMessage.text("x" * length))
 
 
 def _run(prepare_coroutine):
@@ -67,17 +85,12 @@ def test_tier3_summarizes_old_turns_and_projects_assistant_data() -> None:
     provider = ScriptedModelProvider(
         script=((TextDelta(text="s"), _summary_completion()),)
     )
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(),
-        provider=provider,
-        session_id=SESSION_ID,
-    )
+    manager = _engine(_policy(), provider)
     _long_turn(manager, user_text="one", length=80_000)
     _long_turn(manager, user_text="two", length=80_000)
     _long_turn(manager, user_text="three", length=80_000)
 
-    prepared = _run(manager.prepare_request())
+    prepared = _run(manager.prepare())
 
     assert len(provider.requests) == 1
     summary_request = provider.requests[0]
@@ -123,19 +136,14 @@ def test_tier3_merges_old_summary_with_new_delta() -> None:
             ),
         )
     )
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(),
-        provider=provider,
-        session_id=SESSION_ID,
-    )
+    manager = _engine(_policy(), provider)
     _long_turn(manager, user_text="one", length=80_000)
     _long_turn(manager, user_text="two", length=80_000)
     _long_turn(manager, user_text="three", length=80_000)
 
-    _run(manager.prepare_request())
+    _run(manager.prepare())
     _long_turn(manager, user_text="four", length=80_000)
-    second = _run(manager.prepare_request())
+    second = _run(manager.prepare())
 
     assert len(provider.requests) == 2
     second_request = provider.requests[1]
@@ -165,28 +173,24 @@ def test_tier3_never_splits_a_parallel_tool_exchange() -> None:
     provider = ScriptedModelProvider(
         script=((TextDelta(text="s"), _summary_completion()),)
     )
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(),
-        provider=provider,
-        session_id=SESSION_ID,
-    )
+    manager = _engine(_policy(), provider)
     first_call = ToolCall(call_id="call_a", name="exec", arguments={"command": "a"})
     second_call = ToolCall(call_id="call_b", name="exec", arguments={"command": "b"})
-    manager.append(UserMessage.text("one"))
-    manager.append(AssistantMessage(content=(first_call, second_call)))
-    manager.append(
+    _apply(manager, UserMessage.text("one"))
+    _apply(manager, AssistantMessage(content=(first_call, second_call)))
+    _apply(
+        manager,
         ToolResultMessage(
             content=(
                 ToolResult(call_id="call_a", output={"ok": True, "chunks": [1]}),
                 ToolResult(call_id="call_b", output={"ok": True, "chunks": [1]}),
             )
-        )
+        ),
     )
-    manager.append(AssistantMessage.text("x" * 160_000))
+    _apply(manager, AssistantMessage.text("x" * 160_000))
     _long_turn(manager, user_text="two", length=80_000)
 
-    _run(manager.prepare_request())
+    _run(manager.prepare())
 
     summary_request = provider.requests[0]
     assert summary_request.messages[1] == UserMessage.text(
@@ -207,24 +211,20 @@ def test_tier3_keeps_the_active_turn_out_of_the_summary() -> None:
     provider = ScriptedModelProvider(
         script=((TextDelta(text="s"), _summary_completion()),)
     )
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(),
-        provider=provider,
-        session_id=SESSION_ID,
-    )
+    manager = _engine(_policy(), provider)
     _long_turn(manager, user_text="one", length=80_000)
     _long_turn(manager, user_text="two", length=80_000)
     active_call = ToolCall(call_id="call_x", name="exec", arguments={"command": "x"})
-    manager.append(UserMessage.text("three"))
-    manager.append(AssistantMessage(content=(active_call,)))
-    manager.append(
+    _apply(manager, UserMessage.text("three"))
+    _apply(manager, AssistantMessage(content=(active_call,)))
+    _apply(
+        manager,
         ToolResultMessage(
             content=(ToolResult(call_id="call_x", output={"ok": True, "chunks": [1]}),)
-        )
+        ),
     )
 
-    _run(manager.prepare_request())
+    _run(manager.prepare())
 
     summary_request = provider.requests[0]
     delta = summary_request.messages[2:]
@@ -242,12 +242,7 @@ def test_tier3_keeps_the_active_turn_out_of_the_summary() -> None:
 
 def test_tier3_does_not_run_when_deterministic_tiers_suffice() -> None:
     provider = ScriptedModelProvider(script=())
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(),
-        provider=provider,
-        session_id=SESSION_ID,
-    )
+    manager = _engine(_policy(), provider)
     result = {
         "ok": True,
         "exec_id": "exec_1",
@@ -268,15 +263,16 @@ def test_tier3_does_not_run_when_deterministic_tiers_suffice() -> None:
         "available_from": 0,
     }
     old_call = ToolCall(call_id="call_old", name="exec", arguments={"command": "old"})
-    manager.append(UserMessage.text("zero"))
-    manager.append(AssistantMessage(content=(old_call,)))
-    manager.append(
-        ToolResultMessage(content=(ToolResult(call_id="call_old", output=result),))
+    _apply(manager, UserMessage.text("zero"))
+    _apply(manager, AssistantMessage(content=(old_call,)))
+    _apply(
+        manager,
+        ToolResultMessage(content=(ToolResult(call_id="call_old", output=result),)),
     )
-    manager.append(AssistantMessage.text("done"))
+    _apply(manager, AssistantMessage.text("done"))
     _long_turn(manager, user_text="two", length=80_000)
 
-    prepared = _run(manager.prepare_request())
+    prepared = _run(manager.prepare())
 
     assert provider.requests == ()
     assert prepared.operations
@@ -286,15 +282,10 @@ def test_tier3_does_not_run_when_deterministic_tiers_suffice() -> None:
 
 def test_tier3_skips_when_no_complete_turns_are_available() -> None:
     provider = ScriptedModelProvider(script=())
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(),
-        provider=provider,
-        session_id=SESSION_ID,
-    )
+    manager = _engine(_policy(), provider)
     _long_turn(manager, user_text="one", length=152_000)
 
-    prepared = _run(manager.prepare_request())
+    prepared = _run(manager.prepare())
 
     assert provider.requests == ()
     assert manager._ledger.summary is None
@@ -308,18 +299,13 @@ def test_tier3_failure_is_atomic_and_not_retried_until_new_content() -> None:
             (TextDelta(text="s"), _summary_completion("## Progress\nonly progress")),
         )
     )
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_failure_policy(),
-        provider=provider,
-        session_id=SESSION_ID,
-    )
+    manager = _engine(_failure_policy(), provider)
     _long_turn(manager, user_text="one", length=90_000)
     _long_turn(manager, user_text="two", length=90_000)
     _long_turn(manager, user_text="three", length=90_000)
 
-    first = _run(manager.prepare_request())
-    second = _run(manager.prepare_request())
+    first = _run(manager.prepare())
+    second = _run(manager.prepare())
 
     assert first.operations == ()
     assert manager.history[1] == UserMessage.text("one")
@@ -341,17 +327,12 @@ def test_tier3_fails_atomically_on_provider_exception() -> None:
             yield
 
     provider = ExplodingProvider()
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_failure_policy(),
-        provider=provider,  # type: ignore[arg-type]
-        session_id=SESSION_ID,
-    )
+    manager = _engine(_failure_policy(), provider)
     _long_turn(manager, user_text="one", length=90_000)
     _long_turn(manager, user_text="two", length=90_000)
     _long_turn(manager, user_text="three", length=90_000)
 
-    prepared = _run(manager.prepare_request())
+    prepared = _run(manager.prepare())
 
     assert prepared.operations == ()
     assert manager._ledger.summary is None
@@ -365,17 +346,12 @@ def test_tier3_fails_atomically_when_summary_exceeds_budget() -> None:
     provider = ScriptedModelProvider(
         script=((TextDelta(text="s"), _summary_completion(oversized)),)
     )
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_failure_policy(),
-        provider=provider,
-        session_id=SESSION_ID,
-    )
+    manager = _engine(_failure_policy(), provider)
     _long_turn(manager, user_text="one", length=90_000)
     _long_turn(manager, user_text="two", length=90_000)
     _long_turn(manager, user_text="three", length=90_000)
 
-    prepared = _run(manager.prepare_request())
+    prepared = _run(manager.prepare())
 
     assert prepared.operations == ()
     assert manager._ledger.summary is None
@@ -386,22 +362,18 @@ def test_tier3_preserves_call_id_pairing_after_commit() -> None:
     provider = ScriptedModelProvider(
         script=((TextDelta(text="s"), _summary_completion()),)
     )
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(),
-        provider=provider,
-        session_id=SESSION_ID,
-    )
+    manager = _engine(_policy(), provider)
     call = ToolCall(call_id="call_x", name="exec", arguments={"command": "x"})
-    manager.append(UserMessage.text("one"))
-    manager.append(AssistantMessage(content=(call,)))
-    manager.append(
-        ToolResultMessage(content=(ToolResult(call_id="call_x", output={"ok": True}),))
+    _apply(manager, UserMessage.text("one"))
+    _apply(manager, AssistantMessage(content=(call,)))
+    _apply(
+        manager,
+        ToolResultMessage(content=(ToolResult(call_id="call_x", output={"ok": True}),)),
     )
-    manager.append(AssistantMessage.text("x" * 80_000))
+    _apply(manager, AssistantMessage.text("x" * 80_000))
     _long_turn(manager, user_text="two", length=80_000)
 
-    _run(manager.prepare_request())
+    _run(manager.prepare())
 
     history = manager.history
     assert history[1].content[0].text.startswith(SUMMARY_DELIMITER_OPEN)

@@ -1,15 +1,17 @@
-"""Session context policy and management."""
+"""Session context policy, engine, and management."""
 
-from cli_agent.runtime._context.manager import (
-    ContextOverflowError,
+from cli_agent.runtime._context.engine import (
+    CONTEXT_DERIVATION_VERSION,
+    ContextEngine,
+    ContextEngineFactory,
     SessionUsage,
-    _ContextManager,
 )
 from cli_agent.runtime._context.policy import ContextPolicy
 
 __all__ = (
-    "ContextOverflowError",
+    "CONTEXT_DERIVATION_VERSION",
+    "ContextEngine",
+    "ContextEngineFactory",
     "ContextPolicy",
     "SessionUsage",
-    "_ContextManager",
 )

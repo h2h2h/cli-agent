@@ -12,7 +12,7 @@ from cli_agent.runtime._syscalls import SyscallSchema
 from cli_agent.runtime.model import (
     AssistantMessage,
     ModelCompletion,
-    ModelContextOverflowError,
+    ModelContextOverflowSignal,
     ModelEvent,
     ModelMessage,
     ModelRequest,
@@ -76,7 +76,7 @@ class OpenAICompatibleModelProvider:
                     response.raise_for_status()
                 except httpx.HTTPStatusError as exc:
                     if _is_context_overflow(exc.response):
-                        raise ModelContextOverflowError(
+                        raise ModelContextOverflowSignal(
                             "provider reported that the request exceeds its "
                             "context window"
                         ) from exc

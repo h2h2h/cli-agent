@@ -1,5 +1,8 @@
 import asyncio
 
+import pytest
+
+from cli_agent.errors.context import ContextExhaustedError
 from cli_agent.runtime import (
     AssistantMessage,
     ContextPolicy,
@@ -13,7 +16,7 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._context.manager import _ContextManager
+from cli_agent.runtime._context.engine import _ContextEngine
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 SYSTEM_MESSAGE = SystemMessage.text("System")
@@ -36,6 +39,26 @@ def _policy(*, budget: int = 40_000, **overrides: object) -> ContextPolicy:
     }
     kwargs.update(overrides)
     return ContextPolicy(**kwargs)  # type: ignore[arg-type]
+
+
+def _engine(
+    policy: ContextPolicy,
+    provider: ScriptedModelProvider,
+    received: list[RuntimeDiagnostic] | None = None,
+) -> _ContextEngine:
+    engine = _ContextEngine(
+        session_id=SESSION_ID,
+        context_policy=policy,
+        provider=provider,
+        on_diagnostic=received.append if received is not None else None,
+    )
+    engine.hydrate(system_message=SYSTEM_MESSAGE, snapshot=None, journal=(), revision=0)
+    return engine
+
+
+def _apply(engine: _ContextEngine, message: object) -> None:
+    assert isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage))
+    engine.apply(message, engine.revision + 1)
 
 
 def _snapshot(chunk_count: int = 200, chunk_chars: int = 400) -> dict[str, object]:
@@ -65,36 +88,38 @@ def _call(call_id: str = "call_1") -> ToolCall:
 
 
 def _append_old_turn(
-    manager: _ContextManager,
+    engine: _ContextEngine,
     *,
     chunk_count: int = 200,
     chunk_chars: int = 400,
 ) -> None:
     call = _call()
-    manager.append(UserMessage.text("one"))
-    manager.append(AssistantMessage(content=(call,)))
-    manager.append(
+    _apply(engine, UserMessage.text("one"))
+    _apply(engine, AssistantMessage(content=(call,)))
+    _apply(
+        engine,
         ToolResultMessage(
             content=(
                 ToolResult(
                     call_id=call.call_id, output=_snapshot(chunk_count, chunk_chars)
                 ),
             )
-        )
+        ),
     )
-    manager.append(AssistantMessage.text("done"))
+    _apply(engine, AssistantMessage.text("done"))
 
 
-def _append_recent_turn(manager: _ContextManager) -> None:
+def _append_recent_turn(engine: _ContextEngine) -> None:
     call = _call("call_two")
-    manager.append(UserMessage.text("two"))
-    manager.append(AssistantMessage(content=(call,)))
-    manager.append(
+    _apply(engine, UserMessage.text("two"))
+    _apply(engine, AssistantMessage(content=(call,)))
+    _apply(
+        engine,
         ToolResultMessage(
             content=(ToolResult(call_id=call.call_id, output=_snapshot(200, 4000)),)
-        )
+        ),
     )
-    manager.append(AssistantMessage.text("done"))
+    _apply(engine, AssistantMessage.text("done"))
 
 
 def _run(prepare_coroutine):
@@ -103,33 +128,29 @@ def _run(prepare_coroutine):
 
 def test_force_prepare_invalidates_anchor_and_exhausts_tiers() -> None:
     received: list[RuntimeDiagnostic] = []
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(budget=250_000, minimum_reclaim_tokens=100_000),
-        provider=ScriptedModelProvider(script=()),
-        session_id=SESSION_ID,
-        on_diagnostic=received.append,
+    engine = _engine(
+        _policy(budget=250_000, minimum_reclaim_tokens=100_000),
+        ScriptedModelProvider(script=()),
+        received,
     )
-    _append_old_turn(manager)
-    _append_recent_turn(manager)
-    manager.append(UserMessage.text("three"))
-    manager.append(AssistantMessage.text("final"))
+    _append_old_turn(engine)
+    _append_recent_turn(engine)
+    _apply(engine, UserMessage.text("three"))
+    _apply(engine, AssistantMessage.text("final"))
 
-    prepared = _run(manager.prepare_request())
+    prepared = _run(engine.prepare())
     assert prepared.operations == ()
-    manager.observe(
-        prepared.revision,
+    engine.observe_usage(
         ModelUsage(input_tokens=1_000, output_tokens=10, total_tokens=1_010),
     )
 
-    recovered = _run(manager.force_prepare())
+    recovered = _run(engine.force_prepare())
 
-    assert recovered is not None
-    assert manager._anchor_input_tokens is None
     assert recovered.pressure.usage_source == "estimated"
+    assert engine._anchor_input_tokens is None
     assert recovered.pressure.projected_input_tokens <= 250_000
     results = [
-        message for message in manager.history if isinstance(message, ToolResultMessage)
+        message for message in engine.history if isinstance(message, ToolResultMessage)
     ]
     old = results[0].content[0]
     output = old.output
@@ -144,57 +165,48 @@ def test_force_prepare_invalidates_anchor_and_exhausts_tiers() -> None:
     )
 
 
-def test_force_prepare_returns_none_when_unrecoverable() -> None:
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(),
-        provider=ScriptedModelProvider(script=()),
-        session_id=SESSION_ID,
-    )
-    manager.append(UserMessage.text("x" * 200_000))
+def test_force_prepare_raises_host_error_when_unrecoverable() -> None:
+    engine = _engine(_policy(), ScriptedModelProvider(script=()))
+    _apply(engine, UserMessage.text("x" * 200_000))
 
-    assert _run(manager.force_prepare()) is None
+    with pytest.raises(ContextExhaustedError) as raised:
+        _run(engine.force_prepare())
+
+    assert raised.value.code == "context_exhausted"
+    assert raised.value.details["session_id"] == SESSION_ID
 
 
 def test_force_prepare_runs_tier3_with_a_complete_prefix() -> None:
     provider = ScriptedModelProvider(
         script=((TextDelta(text="s"), _summary_completion()),)
     )
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(),
-        provider=provider,
-        session_id=SESSION_ID,
-    )
-    manager.append(UserMessage.text("one"))
-    manager.append(AssistantMessage.text("x" * 80_000))
-    manager.append(UserMessage.text("two"))
-    manager.append(AssistantMessage.text("x" * 80_000))
+    engine = _engine(_policy(), provider)
+    _apply(engine, UserMessage.text("one"))
+    _apply(engine, AssistantMessage.text("x" * 80_000))
+    _apply(engine, UserMessage.text("two"))
+    _apply(engine, AssistantMessage.text("x" * 80_000))
 
-    recovered = _run(manager.force_prepare())
+    recovered = _run(engine.force_prepare())
 
-    assert recovered is not None
     assert recovered.pressure.projected_input_tokens <= 40_000
-    assert manager._ledger.summary == SUMMARY_TEXT
+    assert engine._ledger.summary == SUMMARY_TEXT
     assert len(provider.requests) == 1
     provider.assert_exhausted()
 
 
 def test_watermark_operations_emit_safe_diagnostics() -> None:
     received: list[RuntimeDiagnostic] = []
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(budget=250_000),
-        provider=ScriptedModelProvider(script=()),
-        session_id=SESSION_ID,
-        on_diagnostic=received.append,
+    engine = _engine(
+        _policy(budget=250_000),
+        ScriptedModelProvider(script=()),
+        received,
     )
-    _append_old_turn(manager)
-    _append_recent_turn(manager)
-    manager.append(UserMessage.text("three"))
-    manager.append(AssistantMessage.text("final"))
+    _append_old_turn(engine)
+    _append_recent_turn(engine)
+    _apply(engine, UserMessage.text("three"))
+    _apply(engine, AssistantMessage.text("final"))
 
-    prepared = _run(manager.prepare_request())
+    prepared = _run(engine.prepare())
 
     assert prepared.operations
     kinds = [diagnostic.kind for diagnostic in received]
@@ -211,23 +223,18 @@ def test_watermark_operations_emit_safe_diagnostics() -> None:
 
 def test_oversized_guard_emits_oversized_result_diagnostic() -> None:
     received: list[RuntimeDiagnostic] = []
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(),
-        provider=ScriptedModelProvider(script=()),
-        session_id=SESSION_ID,
-        on_diagnostic=received.append,
-    )
-    manager.append(UserMessage.text("one"))
+    engine = _engine(_policy(), ScriptedModelProvider(script=()), received)
+    _apply(engine, UserMessage.text("one"))
     call = _call()
-    manager.append(AssistantMessage(content=(call,)))
-    manager.append(
+    _apply(engine, AssistantMessage(content=(call,)))
+    _apply(
+        engine,
         ToolResultMessage(
             content=(ToolResult(call_id=call.call_id, output=_snapshot(400, 400)),)
-        )
+        ),
     )
 
-    _run(manager.prepare_request())
+    _run(engine.prepare())
 
     assert [diagnostic.kind for diagnostic in received] == ["context.oversized_result"]
     assert received[0].detail["reason"] == "oversized_result"
@@ -238,19 +245,13 @@ def test_tier3_failure_emits_compaction_failed_diagnostic() -> None:
     provider = ScriptedModelProvider(
         script=((TextDelta(text="s"), _summary_completion("## Progress\npartial")),)
     )
-    manager = _ContextManager(
-        system_message=SYSTEM_MESSAGE,
-        context_policy=_policy(budget=60_000),
-        provider=provider,
-        session_id=SESSION_ID,
-        on_diagnostic=received.append,
-    )
-    manager.append(UserMessage.text("one"))
-    manager.append(AssistantMessage.text("x" * 115_000))
-    manager.append(UserMessage.text("two"))
-    manager.append(AssistantMessage.text("x" * 115_000))
+    engine = _engine(_policy(budget=60_000), provider, received)
+    _apply(engine, UserMessage.text("one"))
+    _apply(engine, AssistantMessage.text("x" * 115_000))
+    _apply(engine, UserMessage.text("two"))
+    _apply(engine, AssistantMessage.text("x" * 115_000))
 
-    _run(manager.prepare_request())
+    _run(engine.prepare())
 
     assert [diagnostic.kind for diagnostic in received] == ["context.compaction_failed"]
     assert received[0].detail["session_id"] == SESSION_ID

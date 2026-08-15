@@ -36,7 +36,7 @@ from cli_agent.runtime._database.summary_cache import _SummaryCache
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     ModelCompletion,
-    ModelContextOverflowError,
+    ModelContextOverflowSignal,
     ModelProvider,
     ModelRequest,
     SystemMessage,
@@ -600,7 +600,7 @@ class _LibraryCatalog:
                 provider,
                 _file_summary_request(text),
             )
-        except ModelContextOverflowError:
+        except ModelContextOverflowSignal:
             await self._mark_failed(
                 path,
                 "context overflow",
@@ -647,7 +647,7 @@ class _LibraryCatalog:
                 provider,
                 _directory_summary_request(children),
             )
-        except ModelContextOverflowError:
+        except ModelContextOverflowSignal:
             await self._mark_failed(
                 path,
                 "context overflow",

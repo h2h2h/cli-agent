@@ -141,8 +141,14 @@ class ModelCompletion:
 ModelEvent: TypeAlias = TextDelta | ToolCallReady | ModelCompletion
 
 
-class ModelContextOverflowError(RuntimeError):
-    """Raised when the Provider reports a request exceeds its context window."""
+class ModelContextOverflowSignal(Exception):
+    """Internal signal that a Provider rejected a request for being too large.
+
+    This is a recovery signal consumed by the ContextEngine, never a
+    public error: the engine answers with forced compaction and one
+    retry, and only an unrecoverable overflow crosses the Runtime
+    boundary as `ContextExhaustedError`.
+    """
 
 
 class ModelProvider(Protocol):

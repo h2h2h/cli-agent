@@ -1,11 +1,14 @@
-"""Session-scoped Context ownership and request preparation."""
+"""Hydratable session Context Engine: protocol, factory, and default engine."""
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import AbstractSet, Literal
+from datetime import datetime, timezone
+from typing import AbstractSet, Literal, Protocol, TypeAlias
 
+from cli_agent.errors.context import ContextExhaustedError
 from cli_agent.runtime._context.ledger import _ContextLedger, _ContextLedgerError
 from cli_agent.runtime._context.policy import ContextPolicy
 from cli_agent.runtime._context.summarizer import (
@@ -18,6 +21,8 @@ from cli_agent.runtime._context.tokens import (
     estimate_request_tokens,
 )
 from cli_agent.runtime._context.tool_results import _ToolResultReducer
+from cli_agent.runtime._database.session_store import SessionStore
+from cli_agent.runtime._session import ContextSnapshot, ModelCallUsage
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     AssistantMessage,
@@ -33,12 +38,10 @@ from cli_agent.runtime.model import (
     UserMessage,
 )
 
+CONTEXT_DERIVATION_VERSION = "cli-agent-context-engine-v1"
+
 UsageSource = Literal["reported", "estimated"]
 OperationReason = Literal["watermark", "oversized_result", "overflow_recovery"]
-
-
-class ContextOverflowError(RuntimeError):
-    """Raised when the projected request exceeds the Input Budget safely."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,26 +94,162 @@ class PreparedContext:
     operations: tuple[ContextOperation, ...] = ()
 
 
-class _ContextManager:
-    """Own Context History, revisions, usage anchors, and request preparation."""
+class ContextEngine(Protocol):
+    """Session-scoped projection of durable context into Model Requests.
+
+    The engine owns the in-memory conversation projection; the
+    canonical journal stays in the SessionStore. Messages reach the
+    projection only through ``apply`` with the revision of the already
+    committed journal append, and compaction commits delegated snapshot
+    proposals before mutating the projection, so the in-memory state can
+    never run ahead of the durable state.
+    """
+
+    @property
+    def session_id(self) -> str:
+        """Return the bound durable session id."""
+        ...
+
+    @property
+    def history(self) -> tuple[ModelMessage, ...]:
+        """Return the immutable conversation projection."""
+        ...
+
+    @property
+    def usage(self) -> SessionUsage:
+        """Return the session-cumulative token usage snapshot."""
+        ...
+
+    @property
+    def revision(self) -> int:
+        """Return the current durable journal revision."""
+        ...
+
+    def hydrate(
+        self,
+        *,
+        system_message: SystemMessage,
+        snapshot: ContextSnapshot | None,
+        journal: tuple[ModelMessage, ...],
+        revision: int,
+    ) -> None:
+        """Rebuild the projection from the current SystemMessage, the
+        valid ContextSnapshot, and the raw journal after its source
+        revision; without a snapshot the full journal is the projection.
+        """
+        ...
+
+    def apply(self, message: ModelMessage, revision: int) -> None:
+        """Apply one durably committed message at the given revision."""
+        ...
+
+    async def prepare(self) -> PreparedContext:
+        """Project the next normal Model Request, compacting as needed."""
+        ...
+
+    async def force_prepare(self) -> PreparedContext:
+        """Recover a reported Context Overflow with aggressive compaction."""
+        ...
+
+    def observe_usage(self, usage: ModelUsage | None) -> None:
+        """Anchor Provider-reported usage to the last prepared revision."""
+        ...
+
+    def close(self) -> None:
+        """Release engine-owned resources."""
+        ...
+
+
+SnapshotCommit: TypeAlias = Callable[
+    [ContextSnapshot, ModelCallUsage | None, int], None
+]
+
+
+class ContextEngineFactory:
+    """Load durable context and build one fresh ContextEngine per binding.
+
+    Each ``create`` call loads the session journal and its usable
+    snapshot through the SessionStore and returns a newly hydrated
+    engine, so a session replacement can never leak the previous
+    binding's projection or summary state.
+    """
 
     def __init__(
         self,
         *,
+        store: SessionStore,
+        context_policy: ContextPolicy,
+        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+    ) -> None:
+        self._store = store
+        self._context_policy = context_policy
+        self._on_diagnostic = on_diagnostic
+
+    def create(
+        self,
+        session_id: str,
+        *,
+        provider: ModelProvider,
         system_message: SystemMessage,
+    ) -> ContextEngine:
+        """Load and hydrate one engine for the given session.
+
+        Args:
+            session_id (`str`): The durable session to bind.
+            provider (`ModelProvider`): The provider serving this
+                binding's model calls, including compaction summaries.
+            system_message (`SystemMessage`): The current dynamic system
+                instruction; it replaces any older captured prompt.
+
+        Returns:
+            The hydrated `ContextEngine`.
+        """
+
+        session, journal = self._store.load(session_id)
+        snapshot = self._store.load_snapshot(
+            session_id,
+            derivation_version=CONTEXT_DERIVATION_VERSION,
+        )
+        engine: _ContextEngine = _ContextEngine(
+            session_id=session_id,
+            context_policy=self._context_policy,
+            provider=provider,
+            on_diagnostic=self._on_diagnostic,
+            commit_snapshot=lambda proposal, usage, expected: self._store.save_snapshot(
+                proposal,
+                expected_revision=expected,
+                usage=usage,
+            ),
+        )
+        engine.hydrate(
+            system_message=system_message,
+            snapshot=snapshot,
+            journal=journal,
+            revision=session.revision,
+        )
+        return engine
+
+
+class _ContextEngine:
+    """Own the conversation projection, usage anchors, and request prep."""
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
         context_policy: ContextPolicy,
         provider: ModelProvider,
-        session_id: str,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
-        on_append: Callable[[ModelMessage], None] | None = None,
+        commit_snapshot: SnapshotCommit | None = None,
     ) -> None:
-        self._ledger = _ContextLedger(system_message)
+        self._session_id = session_id
         self._policy = context_policy
         self._reducer = _ToolResultReducer()
         self._summarizer = _ContextSummarizer(provider)
-        self._session_id = session_id
         self._on_diagnostic = on_diagnostic
-        self._on_append = on_append
+        self._commit_snapshot = commit_snapshot
+        self._ledger: _ContextLedger | None = None
+        self._revision = 0
         self._anchor_revision: int | None = None
         self._anchor_message_count = 0
         self._anchor_input_tokens: int | None = None
@@ -118,6 +257,12 @@ class _ContextManager:
         self._observed_revision: int | None = None
         self._last_summarize_revision: int | None = None
         self._usage = SessionUsage(input_tokens=0, output_tokens=0)
+
+    @property
+    def session_id(self) -> str:
+        """Return the bound durable session id."""
+
+        return self._session_id
 
     @property
     def usage(self) -> SessionUsage:
@@ -133,32 +278,71 @@ class _ContextManager:
 
     @property
     def revision(self) -> int:
-        """Return the current Context Revision."""
+        """Return the current durable journal revision."""
 
-        return self._ledger.revision
+        return self._revision
 
-    def append(self, message: ModelMessage) -> None:
-        """Append one message; the only write entry to Context History."""
+    def hydrate(
+        self,
+        *,
+        system_message: SystemMessage,
+        snapshot: ContextSnapshot | None,
+        journal: tuple[ModelMessage, ...],
+        revision: int,
+    ) -> None:
+        """Rebuild the projection from durable context.
 
-        self._ledger.append(message)
-        if self._on_append is not None:
-            self._on_append(message)
-
-    def observe(self, revision: int, usage: ModelUsage | None) -> None:
-        """Anchor Provider-reported usage to one prepared request revision.
-
-        Raises:
-            _ContextLedgerError: If the revision was not the last prepared one,
-                or the same revision is observed twice.
+        The fixed load order is: current dynamic SystemMessage, then a
+        valid ContextSnapshot, then the raw journal after the
+        snapshot's source revision. Without a usable snapshot the full
+        raw journal becomes the projection.
         """
 
-        if revision != self._last_prepared_revision:
-            raise _ContextLedgerError(
-                f"observe called for un-prepared revision {revision}; "
-                f"last prepared revision is {self._last_prepared_revision}"
+        if snapshot is not None:
+            self._ledger = _ContextLedger(system_message)
+            self._ledger.hydrate(
+                system_message,
+                snapshot.context,
+                summary=snapshot.summary,
             )
+            for message in journal[snapshot.source_revision :]:
+                self._ledger.append(message)
+        else:
+            self._ledger = _ContextLedger(system_message)
+            self._ledger.hydrate(system_message, journal, summary=None)
+        self._revision = revision
+
+    def apply(self, message: ModelMessage, revision: int) -> None:
+        """Apply one durably committed message at the given revision.
+
+        Raises:
+            _ContextLedgerError: If ``revision`` does not continue the
+                current durable frontier; the message must already be
+                committed through the SessionStore.
+        """
+
+        if revision != self._revision + 1:
+            raise _ContextLedgerError(
+                f"apply expects revision {self._revision + 1}, received {revision}"
+            )
+        self._ledger.append(message)
+        self._revision = revision
+
+    def observe_usage(self, usage: ModelUsage | None) -> None:
+        """Anchor Provider-reported usage to the last prepared revision.
+
+        Raises:
+            _ContextLedgerError: If no request was prepared, or the same
+                durable revision is observed twice.
+        """
+
+        revision = self._last_prepared_revision
+        if revision is None:
+            raise _ContextLedgerError("observe_usage called before prepare")
         if revision == self._observed_revision:
-            raise _ContextLedgerError(f"observe called twice for revision {revision}")
+            raise _ContextLedgerError(
+                f"observe_usage called twice for revision {revision}"
+            )
         self._observed_revision = revision
         if usage is None:
             return
@@ -167,8 +351,13 @@ class _ContextManager:
         self._anchor_input_tokens = usage.input_tokens
         self._accumulate(usage)
 
-    async def prepare_request(self) -> PreparedContext:
-        """Project the next normal Model Request, compacting as needed."""
+    async def prepare(self) -> PreparedContext:
+        """Project the next normal Model Request, compacting as needed.
+
+        Raises:
+            ContextExhaustedError: If the projection cannot be reduced
+                below the hard Input Budget.
+        """
 
         operations: list[ContextOperation] = []
 
@@ -221,10 +410,10 @@ class _ContextManager:
             operations.extend(oversized_operations)
             projected, source = self._projected()
             if projected > self._policy.input_budget:
-                raise ContextOverflowError(
-                    f"projected input of {projected} tokens exceeds the input "
-                    f"budget of {self._policy.input_budget} tokens and cannot "
-                    "be reduced safely"
+                raise ContextExhaustedError(
+                    session_id=self._session_id,
+                    projected_input_tokens=projected,
+                    input_budget=self._policy.input_budget,
                 )
 
         # ====================================================================
@@ -239,22 +428,25 @@ class _ContextManager:
             projected_input_tokens=projected,
             usage_source=source,
         )
-        self._last_prepared_revision = self._ledger.revision
+        self._last_prepared_revision = self._revision
         self._emit_operations(operations)
         return PreparedContext(
             request=request,
-            revision=self._ledger.revision,
+            revision=self._revision,
             pressure=pressure,
             operations=tuple(operations),
         )
 
-    async def force_prepare(self) -> PreparedContext | None:
+    async def force_prepare(self) -> PreparedContext:
         """Recover a reported Context Overflow with aggressive compaction.
 
         Invalidates the reported usage anchor, exhausts all deterministic
         reductions, runs Tier 3 when a complete prefix exists, and re-checks
-        the hard Input Budget. Returns ``None`` when the request cannot be
-        reduced safely.
+        the hard Input Budget.
+
+        Raises:
+            ContextExhaustedError: If the request cannot be reduced
+                safely.
         """
 
         self._invalidate_anchor()
@@ -278,17 +470,24 @@ class _ContextManager:
             projected, oversized_operations = self._compact_oversized()
             self._emit_operations(oversized_operations)
             if projected > self._policy.input_budget:
-                return None
-        self._last_prepared_revision = self._ledger.revision
+                raise ContextExhaustedError(
+                    session_id=self._session_id,
+                    projected_input_tokens=projected,
+                    input_budget=self._policy.input_budget,
+                )
+        self._last_prepared_revision = self._revision
         return PreparedContext(
             request=ModelRequest(messages=self._ledger.history),
-            revision=self._ledger.revision,
+            revision=self._revision,
             pressure=ContextPressure(
                 input_budget=self._policy.input_budget,
                 projected_input_tokens=projected,
                 usage_source=source,
             ),
         )
+
+    def close(self) -> None:
+        """Release engine-owned resources; the default engine holds none."""
 
     def _run_tier1(
         self,
@@ -398,7 +597,7 @@ class _ContextManager:
         # complete Turns after the current summary frontier and before the
         # protected recent suffix; active Turns and tool exchanges stay intact.
         policy = self._policy
-        if not force and self._ledger.revision == self._last_summarize_revision:
+        if not force and self._revision == self._last_summarize_revision:
             return False, ()
         protected_start = self._protected_start()
         demand = (
@@ -429,7 +628,7 @@ class _ContextManager:
             max_tokens=max_summary_tokens,
         )
         summary_result = await self._summarizer.summarize(prompt)
-        self._last_summarize_revision = self._ledger.revision
+        self._last_summarize_revision = self._revision
         if summary_result is None:
             self._emit_compaction_failed()
             return False, ()
@@ -449,12 +648,34 @@ class _ContextManager:
             if isinstance(message, UserMessage)
         )
         revision_before = self._ledger.revision
-        # Validate the complete summary before atomically replacing the old
-        # summary and summarized Turns. Any failed validation leaves history
-        # unchanged and allows the caller to continue with the hard-budget
-        # fallback.
-        self._ledger.commit_summary(text.strip(), protected_start)
-        self._last_summarize_revision = self._ledger.revision
+        # Delegate the durable snapshot commit before touching the
+        # projection: a failed or conflicting commit leaves history
+        # unchanged and surfaces the Host-facing store error.
+        summary_text = text.strip()
+        projection = self._ledger.project_summary(summary_text, protected_start)
+        usage_record = None
+        if summary_result.usage is not None:
+            usage_record = ModelCallUsage(
+                model_call_id=uuid.uuid4().hex,
+                session_id=self._session_id,
+                purpose="compaction",
+                input_tokens=summary_result.usage.input_tokens,
+                output_tokens=summary_result.usage.output_tokens,
+                created_at=datetime.now(timezone.utc),
+            )
+        if self._commit_snapshot is not None:
+            self._commit_snapshot(
+                ContextSnapshot(
+                    session_id=self._session_id,
+                    source_revision=self._revision,
+                    summary=summary_text,
+                    context=projection,
+                    derivation_version=CONTEXT_DERIVATION_VERSION,
+                ),
+                usage_record,
+                self._revision,
+            )
+        self._ledger.commit_summary(summary_text, protected_start)
         self._invalidate_anchor()
         self._accumulate(summary_result.usage)
         projected_after, _ = self._projected()
@@ -683,7 +904,7 @@ class _ContextManager:
                 message="tier 3 summarization failed; history is unchanged",
                 detail={
                     "session_id": self._session_id,
-                    "revision": self._ledger.revision,
+                    "revision": self._revision,
                     "tier": 3,
                 },
             )
