@@ -117,3 +117,20 @@ def _no_change_error(path: str, total: int) -> str:
             "the text not existing as expected."
         )
     return f"No changes made to {path}. The replacements produced identical content."
+
+
+def _split_bom(content: str) -> tuple[str, str]:
+    """Return the leading BOM (if any) and the content without it."""
+
+    if content.startswith("\ufeff"):
+        return "\ufeff", content[1:]
+    return "", content
+
+
+def _detect_line_ending(content: str) -> str:
+    """Return ``\\r\\n`` when the first newline is CRLF, else ``\\n``."""
+
+    first_newline = content.find("\n")
+    if first_newline > 0 and content[first_newline - 1] == "\r":
+        return "\r\n"
+    return "\n"

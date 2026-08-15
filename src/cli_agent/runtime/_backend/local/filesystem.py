@@ -19,7 +19,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from cli_agent.runtime._backend.edit import apply_edits
+from cli_agent.runtime._backend.edit import _detect_line_ending, _split_bom, apply_edits
 from cli_agent.runtime._backend.facts import (
     _DirectoryEntry,
     _FileEditRequest,
@@ -217,23 +217,6 @@ def _filesystem_error(path: str, exc: OSError) -> _FilesystemError:
     if error == errno.EEXIST:
         return _FilesystemError("already_exists", f"path already exists: {path}")
     return _FilesystemError("internal", f"filesystem error for {path}: {exc}")
-
-
-def _split_bom(content: str) -> tuple[str, str]:
-    """Return the leading BOM (if any) and the content without it."""
-
-    if content.startswith("﻿"):
-        return "﻿", content[1:]
-    return "", content
-
-
-def _detect_line_ending(content: str) -> str:
-    """Return ``\\r\\n`` when the first newline is CRLF, else ``\\n``."""
-
-    first_newline = content.find("\n")
-    if first_newline > 0 and content[first_newline - 1] == "\r":
-        return "\r\n"
-    return "\n"
 
 
 def _atomic_write(path: Path, content: bytes) -> None:
