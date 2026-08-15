@@ -10,7 +10,8 @@ cannot be provisioned; execution-time daemon failures surface as
 ``BackendExecutionError`` and never masquerade as command exit codes.
 
 Capability materialization and Tool worker execution are out of scope for
-this backend (RFC-0017); ``prepare_tool`` fails closed with text output.
+this backend (RFC-0017); the Docker ToolExecutor arrives with the Docker
+CapabilityDeployment.
 """
 
 from __future__ import annotations
@@ -33,9 +34,7 @@ from cli_agent.runtime._backend.docker.stream import _write_stdin_eof
 from cli_agent.runtime._backend.facts import (
     _FilesystemError,
     _ShellExecutionRequest,
-    _ToolExecutionRequest,
 )
-from cli_agent.runtime._environment.handlers.executions import _text_execution
 from cli_agent.runtime._execution import BackendExecutionError, ExecutionHandle
 
 if TYPE_CHECKING:
@@ -148,24 +147,6 @@ class _DockerBackendWorkspace:
 
         self._ensure_open()
         return _DockerShellExecution(self, request)
-
-    def prepare_tool(
-        self,
-        request: _ToolExecutionRequest,
-    ) -> ExecutionHandle:
-        """Fail closed: Tool workers are not part of the Docker Backend yet.
-
-        Tool execution inside Docker is the CapabilityDeployment work of
-        RFC-0017; until then every ``tools run`` reports the missing
-        environment instead of inventing a partial fallback.
-        """
-
-        del request
-        self._ensure_open()
-        return _text_execution(
-            "Tool execution is not available in the Docker Backend yet\n",
-            success=False,
-        )
 
     async def flush(self) -> None:
         """Volume writes are immediately durable; nothing to flush."""

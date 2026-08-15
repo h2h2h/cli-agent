@@ -601,22 +601,38 @@ class _SandboxBackendWorkspace:
             request.command.raw_command,
         )
 
-    def prepare_tool(
-        self,
-        request: object,
-    ) -> ExecutionHandle:
-        return _SandboxToolExecution(
-            self._files,
-            self.capabilities.root,
-            request.cwd,
-            request,
-        )
-
     async def flush(self) -> None:
         return None
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _SandboxToolExecutor:
+    """One ToolExecutor converting Tool requests into Sandbox executions."""
+
+    def __init__(
+        self,
+        workspace: object,
+        *,
+        revision: str,
+        deployment: DeploymentSnapshot,
+    ) -> None:
+        del revision, deployment
+        self._workspace = workspace
+
+    def prepare(
+        self,
+        request: object,
+        context: object,
+    ) -> ExecutionHandle:
+        backend = self._workspace.backend  # type: ignore[attr-defined]
+        return _SandboxToolExecution(
+            backend._files,
+            backend.capabilities.root,
+            context.cwd,
+            request,
+        )
 
 
 class _SandboxDeployment:
@@ -625,6 +641,7 @@ class _SandboxDeployment:
 
     def __init__(self, **kwargs: object) -> None:
         del kwargs
+        self._deployment: DeploymentSnapshot | None = None
 
     async def attach(self, workspace: object) -> object:
         return workspace.backend.capabilities  # type: ignore[attr-defined]
@@ -646,14 +663,31 @@ class _SandboxDeployment:
         del workspace, configs, facts
         return None
 
-    async def reconcile(self, snapshot: object, workspace: object) -> DeploymentSnapshot:
-        return DeploymentSnapshot(
+    def executor(self, workspace: object, *, revision: str) -> object:
+        return _SandboxToolExecutor(
+            workspace,
+            revision=revision,
+            deployment=self._deployment
+            or DeploymentSnapshot(
+                workspace_id=workspace.id,  # type: ignore[attr-defined]
+                revision=revision,
+                layout_version=1,
+                complete=True,
+                error=None,
+            ),
+        )
+
+    async def reconcile(
+        self, snapshot: object, workspace: object
+    ) -> DeploymentSnapshot:
+        self._deployment = DeploymentSnapshot(
             workspace_id=workspace.id,  # type: ignore[attr-defined]
             revision=snapshot.revision,  # type: ignore[attr-defined]
             layout_version=1,
             complete=True,
             error=None,
         )
+        return self._deployment
 
 
 class _SandboxBackend:

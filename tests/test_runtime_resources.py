@@ -238,6 +238,12 @@ def test_reconcile_runs_steps_in_documented_order(
                 error=None,
             )
 
+        @staticmethod
+        def executor(workspace: object, *, revision: str) -> object:
+            del workspace, revision
+            order.append("tool_executor")
+            return object()
+
     class _FakeStateDatabase:
         @staticmethod
         def open() -> object:
@@ -304,6 +310,7 @@ def test_reconcile_runs_steps_in_documented_order(
             "summary_cache",
             "session_store",
             "library_catalog",
+            "tool_executor",
         ]
         assert resources.workspace.root == str(_FakePaths.root)
         assert dict(resources.base_env) == {"TOKEN": "secret"}
@@ -332,6 +339,7 @@ def test_aggregate_pins_the_deployment_snapshot(
             "capability_view",
             "snapshot",
             "deployment",
+            "tool_executor",
             "session_store",
         }
 
@@ -573,6 +581,11 @@ class _NoopDeployment:
             error=None,
         )
 
+    @staticmethod
+    def executor(workspace: object, *, revision: str) -> object:
+        del workspace, revision
+        return object()
+
 
 class _NoopLibraryCatalog:
     @staticmethod
@@ -627,7 +640,9 @@ def test_reconcile_failure_closes_opened_resources_in_reverse_order(
             raise RuntimeError("mcp discovery exploded")
 
     order = _install_noop_reconcile_fakes(monkeypatch)
-    monkeypatch.setattr(resources_module, "_LocalCapabilityDeployment", FailingDeployment)
+    monkeypatch.setattr(
+        resources_module, "_LocalCapabilityDeployment", FailingDeployment
+    )
 
     with pytest.raises(RuntimeError, match="mcp discovery exploded"):
         asyncio.run(
@@ -769,6 +784,7 @@ def test_aggregate_close_follows_reverse_dependency_order(tmp_path: Path) -> Non
         capability_view=object(),
         snapshot=_fake_snapshot(FakeLibraryCatalog()),  # type: ignore[arg-type]
         deployment=_fake_deployment(),
+        tool_executor=object(),  # type: ignore[arg-type]
         session_store=object(),  # type: ignore[arg-type]
     )
 
@@ -810,6 +826,7 @@ def test_aggregate_close_attempts_every_step_and_surfaces_failure(
         capability_view=object(),
         snapshot=_fake_snapshot(FakeLibraryCatalog()),  # type: ignore[arg-type]
         deployment=_fake_deployment(),
+        tool_executor=object(),  # type: ignore[arg-type]
         session_store=object(),  # type: ignore[arg-type]
     )
 

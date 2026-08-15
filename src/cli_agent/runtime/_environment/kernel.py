@@ -15,6 +15,7 @@ from cli_agent.runtime._capability.command_parser import (
     ShellParseResult,
     parse_shell_ast,
 )
+from cli_agent.runtime._capability.deployment import ToolExecutor
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._environment.handlers.base import _ExecutionRequest
@@ -79,6 +80,7 @@ class EnvironmentKernel:
         session_id: str | None = None,
         library_catalog: _LibraryCatalog | None = None,
         tool_catalog: _ToolCatalog | None = None,
+        tool_executor: ToolExecutor | None = None,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> None:
         host_workspace = Path(workspace).resolve()
@@ -105,7 +107,7 @@ class EnvironmentKernel:
                 ),
             )
         )
-        entries.append(("tools", _ToolSource(tool_catalog, backend)))
+        entries.append(("tools", _ToolSource(tool_catalog, tool_executor)))
         entries.extend(custom_sources)
         self._router = _CommandRouter(
             shell_source=_ShellSource(

@@ -20,6 +20,7 @@ from cli_agent.runtime._backend import (
     _WorkspaceFilesystem,
 )
 from cli_agent.runtime._capability.command_parser import ShellParseResult
+from cli_agent.runtime._capability.deployment import ToolExecutor
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.grammar import parse_tool_command
 from cli_agent.runtime._environment.handlers.base import (
@@ -244,7 +245,7 @@ class _ShellSource:
 
 
 class _ToolSource:
-    """The reserved tools command family backed by a fresh worker."""
+    """The reserved tools command family routed through a ToolExecutor."""
 
     name = "tools"
     isolated = True
@@ -252,10 +253,10 @@ class _ToolSource:
     def __init__(
         self,
         catalog: _ToolCatalog | None,
-        backend: _BackendWorkspace | None,
+        executor: ToolExecutor | None,
     ) -> None:
         self._catalog = catalog
-        self._backend = backend
+        self._executor = executor
 
     def parallel_safe(self, command: ShellParseResult) -> bool:
         """Return the scheduling fact for one parsed tools command."""
@@ -311,22 +312,21 @@ class _ToolSource:
                 (facts.validation_error or "Invalid Tool invocation") + "\n",
                 success=False,
             )
-        backend = self._backend
-        if backend is None:
+        executor = self._executor
+        if executor is None:
             return _text_execution(
                 "Tool environment is unavailable\n",
                 success=False,
             )
-        return backend.prepare_tool(
+        return executor.prepare(
             _ToolExecutionRequest(
                 code=facts.code,
-                cwd=context.cwd,
-                environment=context.environment,
                 bindings=tuple(
                     _ToolBinding(name=entry.name, path=entry.path)
                     for entry in catalog.valid_entries
                 ),
-            )
+            ),
+            context,
         )
 
 

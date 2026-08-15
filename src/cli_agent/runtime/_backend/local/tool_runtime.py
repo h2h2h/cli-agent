@@ -5,8 +5,8 @@ the Local mechanical detail of keeping the private virtual environment in
 sync with the effective Tool requirements. The materialized worker and the
 effective requirements file are published by the deployment through the
 Workspace filesystem; ``ensure`` validates the venv, runs the digest-gated
-dependency synchronization, and returns the Host paths that
-``prepare_tool`` needs to spawn one fresh worker.
+dependency synchronization, and returns the Host paths the Local
+ToolExecutor needs to spawn one fresh worker.
 """
 
 from __future__ import annotations
@@ -59,7 +59,11 @@ class _LocalToolRuntime:
 def worker_template() -> bytes:
     """Return the packaged Runtime-owned worker template bytes."""
 
-    return files("cli_agent.runtime._backend.local").joinpath(_WORKER_FILENAME).read_bytes()
+    return (
+        files("cli_agent.runtime._backend.local")
+        .joinpath(_WORKER_FILENAME)
+        .read_bytes()
+    )
 
 
 async def ensure_tool_runtime(

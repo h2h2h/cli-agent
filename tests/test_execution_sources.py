@@ -117,7 +117,7 @@ class _ControlledFilesystem:
 
 
 class _ControlledBackend:
-    """One Backend whose shell and tool executions are controlled handles."""
+    """One Backend whose shell executions are controlled handles."""
 
     def __init__(self, record: _CaseRecord, root: str) -> None:
         self.root = root
@@ -129,8 +129,15 @@ class _ControlledBackend:
         self._record.shell_inputs.append(request.input_data or b"")
         return _ControlledHandle(self._record)
 
-    def prepare_tool(self, request) -> ExecutionOutputSink:
-        del request
+
+class _ControlledToolExecutor:
+    """One ToolExecutor whose tool executions are controlled handles."""
+
+    def __init__(self, record: _CaseRecord) -> None:
+        self._record = record
+
+    def prepare(self, request, context) -> ExecutionOutputSink:
+        del request, context
         self._record.tool_prepares += 1
         return _ControlledHandle(self._record)
 
@@ -281,6 +288,7 @@ def case(request, tmp_path: Path) -> _SourceCase:
             tmp_path,
             backend=backend,
             tool_catalog=catalog,
+            tool_executor=_ControlledToolExecutor(record),
             **overrides,
         )
 

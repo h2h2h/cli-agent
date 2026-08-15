@@ -764,6 +764,7 @@ class _TrackingEnvironmentKernel:
         policy: object,
         library_catalog: object,
         tool_catalog: object,
+        tool_executor: object,
         user_interaction: object,
         session_id: str,
         parallel_commands: frozenset[str],
@@ -775,6 +776,7 @@ class _TrackingEnvironmentKernel:
         self.policy = policy
         self.library_catalog = library_catalog
         self.tool_catalog = tool_catalog
+        self.tool_executor = tool_executor
         self.user_interaction = user_interaction
         self.session_id = session_id
         self.parallel_commands = parallel_commands

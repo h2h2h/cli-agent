@@ -609,13 +609,14 @@ def test_unavailable_tool_runtime_fails_run_without_host_fallback(
 
     async def scenario() -> None:
         backend = _LocalBackendWorkspace(tmp_path, {}, view)
-        deployed = await _deploy(backend, tmp_path, repertoire, catalog)
+        deployed, executor = await _deploy(backend, tmp_path, repertoire, catalog)
         assert deployed.complete is False
         assert "sync failed" in (deployed.error or "")
         kernel = EnvironmentKernel(
             tmp_path,
             backend=backend,
             tool_catalog=catalog,
+            tool_executor=executor,
         )
         try:
             listed = _output(await _exec(kernel, "tools list"))
@@ -660,14 +661,14 @@ def test_tool_runtime_syncs_user_requirements_plus_runtime_base(
     )
 
     async def scenario() -> None:
-        initial = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
+        initial, _ = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
         assert initial.complete, initial.error
         assert len(calls) == 1
         assert calls[0][1].read_text() == "mcp\n"
 
         requirements.write_text("example-package==1.2.3\n")
-        changed = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
-        unchanged = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
+        changed, _ = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
+        unchanged, _ = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
 
         assert changed.complete and unchanged.complete
         assert len(calls) == 2
@@ -683,7 +684,7 @@ def test_tool_runtime_syncs_user_requirements_plus_runtime_base(
             other_workspace / ".workspace", other_repertoire
         )
         other_backend = _LocalBackendWorkspace(other_workspace, {}, other_view)
-        other = await _deploy(
+        other, _ = await _deploy(
             other_backend,
             other_workspace,
             other_repertoire,
@@ -751,7 +752,7 @@ def test_mcp_is_importable_in_the_worker_venv(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         backend = _LocalBackendWorkspace(tmp_path, {}, view)
-        deployed = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
+        deployed, _ = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
         assert deployed.complete, deployed.error
         python = _runtime_python(backend)
         result = subprocess.run(
@@ -798,7 +799,7 @@ def test_dependency_sync_failure_is_fail_soft_for_catalog_operations(
     async def scenario() -> None:
         backend = _LocalBackendWorkspace(tmp_path, {}, view)
         catalog = await _reconcile_tools(view, backend.filesystem)
-        deployed = await _deploy(backend, tmp_path, repertoire, catalog)
+        deployed, executor = await _deploy(backend, tmp_path, repertoire, catalog)
         assert deployed.complete is False
         assert "package manager failed" in (deployed.error or "")
 
@@ -806,6 +807,7 @@ def test_dependency_sync_failure_is_fail_soft_for_catalog_operations(
             tmp_path,
             backend=backend,
             tool_catalog=catalog,
+            tool_executor=executor,
         )
         try:
             listed = _output(await _exec(kernel, "tools list"))
@@ -1063,7 +1065,8 @@ async def _deploy(
         mcp_servers=(),
         project_instructions=None,
     )
-    return await deployment.reconcile(snapshot, opened)
+    deployed = await deployment.reconcile(snapshot, opened)
+    return deployed, deployment.executor(opened, revision=revision)
 
 
 async def _kernel(
@@ -1078,12 +1081,13 @@ async def _kernel(
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     backend = _LocalBackendWorkspace(workspace, {}, view)
     catalog = await _reconcile_tools(view, backend.filesystem)
-    deployed = await _deploy(backend, workspace, repertoire, catalog)
+    deployed, executor = await _deploy(backend, workspace, repertoire, catalog)
     assert deployed.complete, deployed.error
     return EnvironmentKernel(
         workspace,
         backend=backend,
         tool_catalog=catalog,
+        tool_executor=executor,
         policy=policy,
         parallel_commands=parallel_commands,
         parallel_limit=parallel_limit,

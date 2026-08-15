@@ -390,6 +390,7 @@ class AgentRuntime:
             backend=self._resources.backend,
             library_catalog=self._resources.snapshot.library,
             tool_catalog=self._resources.snapshot.tools,
+            tool_executor=self._resources.tool_executor,
             base_env=self._resources.base_env,
             policy=self._policy,
             user_interaction=self._user_interaction,

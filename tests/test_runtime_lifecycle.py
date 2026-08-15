@@ -53,13 +53,15 @@ class _TrackingEnvironmentKernel:
         policy: object,
         library_catalog: object,
         tool_catalog: object,
+        tool_executor: object,
         user_interaction: object,
         session_id: str,
         parallel_commands: frozenset[str],
         on_diagnostic: object | None,
     ) -> None:
         del workspace, backend, base_env, policy, library_catalog, tool_catalog
-        del user_interaction, session_id, parallel_commands, on_diagnostic
+        del tool_executor, user_interaction, session_id, parallel_commands
+        del on_diagnostic
         self.close_count = 0
         self.events: list[str] = []
         self.instances.append(self)

@@ -37,9 +37,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from cli_agent.runtime._backend import _FileWriteRequest, _WorkspaceFilesystem
+from cli_agent.runtime._backend import (
+    _FileWriteRequest,
+    _ToolExecutionRequest,
+    _WorkspaceFilesystem,
+)
 from cli_agent.runtime._capability.facts import _FilesystemError
 from cli_agent.runtime._capability.provider import CapabilitySnapshot
+from cli_agent.runtime._environment.handlers.base import _CommandContext
+from cli_agent.runtime._execution import ExecutionHandle
 
 if TYPE_CHECKING:
     from cli_agent.runtime._workspace import Workspace
@@ -66,6 +72,26 @@ class DeploymentSnapshot:
     layout_version: int
     complete: bool
     error: str | None
+
+
+@runtime_checkable
+class ToolExecutor(Protocol):
+    """Convert one deployed Tool request into one ``ExecutionHandle``.
+
+    An executor is composed by the Runtime with the active Workspace
+    identity, the active Capability snapshot revision, and the reconciled
+    ``DeploymentSnapshot``. ``prepare`` is synchronous and free of external
+    side effects: it validates the deployment before any side effect and
+    returns a handle whose worker or transport starts only in ``run``.
+    """
+
+    def prepare(
+        self,
+        request: _ToolExecutionRequest,
+        context: _CommandContext,
+    ) -> ExecutionHandle:
+        """Prepare one Tool execution without starting work or resources."""
+        ...
 
 
 @runtime_checkable

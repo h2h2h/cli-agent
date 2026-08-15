@@ -66,11 +66,13 @@ class _ToolBinding:
 
 @dataclass(frozen=True, slots=True)
 class _ToolExecutionRequest:
-    """Backend-neutral facts for one Tool worker execution."""
+    """One Tool worker execution request: the code and its logical bindings.
+
+    Execution facts (cwd, environment) come from the Session CommandContext;
+    the ToolExecutor composes the worker payload.
+    """
 
     code: str
-    cwd: str
-    environment: Mapping[str, str]
     bindings: tuple[_ToolBinding, ...]
 
 

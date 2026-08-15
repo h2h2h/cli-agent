@@ -2,13 +2,14 @@
 
 These private protocols are the Backend-neutral seam of RFC-0012: command
 Handlers, Capability Catalogs, and cwd validation depend on these contracts
-without reading a concrete Backend type. ``prepare_shell`` and
-``prepare_tool`` are synchronous and free of external side effects; resource
-creation is deferred to the returned ``ExecutionHandle.run()``.
+without reading a concrete Backend type. ``prepare_shell`` is synchronous
+and free of external side effects; resource creation is deferred to the
+returned ``ExecutionHandle.run()``.
 
-Capability materialization is NOT part of the Backend contract: the
-CapabilityDeployment plane owns Capability View attach, Tool worker and
-dependency materialization, and MCP bindings (RFC-0014).
+Tool execution is NOT part of the Backend contract: the ToolExecutor
+converts deployed Tool requests into ``ExecutionHandle`` objects
+(RFC-0015), and Capability materialization is owned by the
+CapabilityDeployment plane (RFC-0014).
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ from cli_agent.runtime._backend.facts import (
     _FileWriteResult,
     _ResolvedPath,
     _ShellExecutionRequest,
-    _ToolExecutionRequest,
     _WorkspaceSource,
 )
 from cli_agent.runtime._execution import ExecutionHandle
@@ -54,13 +54,6 @@ class _BackendWorkspace(Protocol):
         request: _ShellExecutionRequest,
     ) -> ExecutionHandle:
         """Prepare one Shell execution without starting work or resources."""
-        ...
-
-    def prepare_tool(
-        self,
-        request: _ToolExecutionRequest,
-    ) -> ExecutionHandle:
-        """Prepare one Tool worker execution without starting work."""
         ...
 
     async def flush(self) -> None:

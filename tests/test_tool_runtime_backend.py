@@ -1,10 +1,11 @@
-"""Issue 08: Tool Runtime runs inside the Backend Workspace.
+"""Issue 15: deployed Tools execute through the ToolExecutor.
 
-These tests pin the acceptance criteria of RFC-0012 issue 08: the Tool worker
-shares the Backend Workspace and cwd with Shell/Files, the Handler only
-produces backend-neutral Tool requests (no Host Python, worker path, Tool
-path, or ``os.environ``), dependency failure stays fail-soft without a Host
-Python fallback, and Command Handlers never create Host subprocesses.
+These tests pin the RFC-0015 acceptance criteria: the Backend Workspace no
+longer exposes Tool execution, the ToolExecutor validates the active
+deployment before any side effect and composes the worker payload, the
+worker shares the Backend Workspace and cwd with Shell/Files, dependency
+failure stays fail-soft without a Host Python fallback, and Command
+Handlers never create Host subprocesses.
 """
 
 import asyncio
@@ -20,6 +21,8 @@ from cli_agent.runtime._backend.local import (
     _ProcessExecution,
 )
 from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
+from cli_agent.runtime._backend.local.executor import _LocalToolExecutor
+from cli_agent.runtime._capability.deployment import DeploymentSnapshot
 from cli_agent.runtime._capability.projections import write_tool_index
 from cli_agent.runtime._capability.provider import (
     CAPABILITY_SCHEMA_VERSION,
@@ -29,10 +32,12 @@ from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
+from cli_agent.runtime._environment.handlers.base import _CommandContext
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._workspace import _LocalWorkspace
 
 _WORKSPACE_ID = "local:00000000000000000000000000000000"
+_REVISION = "test-revision"
 
 
 async def _deploy_runtime(
@@ -40,7 +45,7 @@ async def _deploy_runtime(
     repertoire: Path,
     backend: _LocalBackendWorkspace,
     catalog,
-) -> None:
+):
     deployment = _LocalCapabilityDeployment(
         state_root=workspace / ".workspace",
         repertoire=repertoire,
@@ -49,7 +54,7 @@ async def _deploy_runtime(
     )
     opened = _LocalWorkspace(_WORKSPACE_ID, workspace, backend, repertoire)
     snapshot = CapabilitySnapshot(
-        revision="test-revision",
+        revision=_REVISION,
         schema_version=CAPABILITY_SCHEMA_VERSION,
         tools=catalog,
         skills=_SkillCatalog(()),
@@ -58,6 +63,7 @@ async def _deploy_runtime(
     )
     deployed = await deployment.reconcile(snapshot, opened)
     assert deployed.complete, deployed.error
+    return opened, deployment.executor(opened, revision=_REVISION)
 
 
 def _repertoire(workspace: Path) -> Path:
@@ -67,7 +73,7 @@ def _repertoire(workspace: Path) -> Path:
     return repertoire
 
 
-def test_prepare_tool_payload_is_composed_by_the_backend(tmp_path: Path) -> None:
+def test_executor_composes_the_worker_payload(tmp_path: Path) -> None:
     repertoire = _repertoire(tmp_path)
     (repertoire / "tools" / "math.py").write_text("def add(a, b):\n    return a + b\n")
     _prepare_workspace(tmp_path)
@@ -75,15 +81,20 @@ def test_prepare_tool_payload_is_composed_by_the_backend(tmp_path: Path) -> None
     backend = _LocalBackendWorkspace(tmp_path, {}, view)
 
     async def scenario() -> None:
-        await _deploy_runtime(tmp_path, repertoire, backend, _ToolCatalog(()))
+        _, executor = await _deploy_runtime(
+            tmp_path, repertoire, backend, _ToolCatalog(())
+        )
 
-        execution = backend.prepare_tool(
+        execution = executor.prepare(
             _ToolExecutionRequest(
                 code="tools.math.add(1, 2)",
+                bindings=(_ToolBinding(name="math", path="tools/math.py"),),
+            ),
+            _CommandContext(
+                workspace=str(tmp_path),
                 cwd="subdir",
                 environment={"SESSION_KEY": "session-value"},
-                bindings=(_ToolBinding(name="math", path="tools/math.py"),),
-            )
+            ),
         )
 
         assert isinstance(execution, _ProcessExecution)
@@ -96,21 +107,36 @@ def test_prepare_tool_payload_is_composed_by_the_backend(tmp_path: Path) -> None
     asyncio.run(scenario())
 
 
-def test_prepare_tool_without_reconciled_runtime_fails_soft(tmp_path: Path) -> None:
+def test_executor_without_reconciled_runtime_fails_soft(tmp_path: Path) -> None:
     repertoire = _repertoire(tmp_path)
     (repertoire / "tools" / "example.py").write_text("VALUE = 1\n")
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
     backend = _LocalBackendWorkspace(tmp_path, {}, view)
+    executor = _LocalToolExecutor(
+        backend,
+        workspace_id=_WORKSPACE_ID,
+        revision=_REVISION,
+        deployment=DeploymentSnapshot(
+            workspace_id=_WORKSPACE_ID,
+            revision=_REVISION,
+            layout_version=1,
+            complete=False,
+            error="Tool environment is unavailable: sync failed",
+        ),
+    )
 
     async def scenario() -> None:
-        execution = backend.prepare_tool(
+        execution = executor.prepare(
             _ToolExecutionRequest(
                 code="tools.example.VALUE",
+                bindings=(),
+            ),
+            _CommandContext(
+                workspace=str(tmp_path),
                 cwd="/workspace",
                 environment={},
-                bindings=(),
-            )
+            ),
         )
 
         assert isinstance(execution, _InlineExecution)
@@ -134,8 +160,13 @@ def test_worker_environment_composes_backend_base_and_session_overlay(
     catalog = asyncio.run(_reconcile_tools(view, backend.filesystem))
 
     async def scenario() -> None:
-        await _deploy_runtime(tmp_path, repertoire, backend, catalog)
-        kernel = EnvironmentKernel(tmp_path, backend=backend, tool_catalog=catalog)
+        _, executor = await _deploy_runtime(tmp_path, repertoire, backend, catalog)
+        kernel = EnvironmentKernel(
+            tmp_path,
+            backend=backend,
+            tool_catalog=catalog,
+            tool_executor=executor,
+        )
         try:
             await _exec(kernel, "export SESSION_KEY=session-value")
 
@@ -204,8 +235,13 @@ def test_tool_worker_shares_backend_workspace_cwd_with_shell_and_files(
     catalog = asyncio.run(_reconcile_tools(view, backend.filesystem))
 
     async def scenario() -> None:
-        await _deploy_runtime(tmp_path, repertoire, backend, catalog)
-        kernel = EnvironmentKernel(tmp_path, backend=backend, tool_catalog=catalog)
+        _, executor = await _deploy_runtime(tmp_path, repertoire, backend, catalog)
+        kernel = EnvironmentKernel(
+            tmp_path,
+            backend=backend,
+            tool_catalog=catalog,
+            tool_executor=executor,
+        )
         try:
             subdirectory = tmp_path / "shared-dir"
             subdirectory.mkdir()

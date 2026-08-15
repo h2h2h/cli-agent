@@ -198,16 +198,6 @@ class _FakeBackendWorkspace:
 
         return _InlineExecution(execute)
 
-    def prepare_tool(
-        self,
-        request: _ToolExecutionRequest,
-    ) -> ExecutionHandle:
-        async def execute(output: ExecutionOutputSink) -> ExitStatus:
-            await output.write("stdout", request.code.encode())
-            return ExitStatus(0)
-
-        return _InlineExecution(execute)
-
     async def flush(self) -> None:
         return None
 
@@ -272,11 +262,9 @@ def test_shell_request_carries_parse_facts_and_opaque_paths() -> None:
     )
 
 
-def test_tool_request_carries_only_logical_bindings() -> None:
+def test_tool_request_carries_only_code_and_logical_bindings() -> None:
     request = _ToolExecutionRequest(
         code="greet()",
-        cwd="/workspace",
-        environment={},
         bindings=(_ToolBinding(name="greeter", path="tools/greeter"),),
     )
 
@@ -296,8 +284,6 @@ def test_requests_have_no_backend_discriminator_fields() -> None:
     )
     assert tuple(f.name for f in fields(_ToolExecutionRequest)) == (
         "code",
-        "cwd",
-        "environment",
         "bindings",
     )
 

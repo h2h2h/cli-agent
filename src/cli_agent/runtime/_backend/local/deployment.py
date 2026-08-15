@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cli_agent.runtime._backend.local.backend import _LocalBackendWorkspace
+from cli_agent.runtime._backend.local.executor import _LocalToolExecutor
 from cli_agent.runtime._backend.local.mcp_runtime import (
     binding_filename,
     discover_servers,
@@ -40,6 +41,7 @@ from cli_agent.runtime._capability.deployment import (
     DEPLOYMENT_SCHEMA_VERSION,
     TOOL_RUNTIME_DIRECTORY,
     DeploymentSnapshot,
+    ToolExecutor,
     _DeploymentManifest,
     artifact_digest,
     domains_match,
@@ -95,6 +97,40 @@ class _LocalCapabilityDeployment:
         self._manifest: _DeploymentManifest | None = None
         self._manifest_loaded = False
         self._realized: dict[str, str] = {}
+        self._deployment: DeploymentSnapshot | None = None
+
+    def executor(
+        self,
+        workspace: Workspace,
+        *,
+        revision: str,
+    ) -> ToolExecutor:
+        """Return the ToolExecutor bound to the latest reconciled deployment.
+
+        The executor validates the active deployment before every Tool
+        execution; a Runtime-open reconcile failure is stored as an
+        incomplete deployment so Tool runs fail classified instead of
+        running a stale worker.
+        """
+
+        local_backend = workspace.backend
+        if not isinstance(local_backend, _LocalBackendWorkspace):
+            raise ValueError(
+                "Local ToolExecutor requires a Local Backend Workspace",
+            )
+        deployment = self._deployment or DeploymentSnapshot(
+            workspace_id=workspace.id,
+            revision=revision,
+            layout_version=DEPLOYMENT_SCHEMA_VERSION,
+            complete=False,
+            error="Tool environment is unavailable",
+        )
+        return _LocalToolExecutor(
+            local_backend,
+            workspace_id=workspace.id,
+            revision=revision,
+            deployment=deployment,
+        )
 
     async def attach(
         self,
@@ -275,20 +311,24 @@ class _LocalCapabilityDeployment:
                 error = f"Tool environment is unavailable: {exc}"
 
             if runtime is None or not runtime.available:
-                reason = error or (
-                    runtime.error if runtime is not None else None
-                ) or "Tool environment is unavailable"
+                reason = (
+                    error
+                    or (runtime.error if runtime is not None else None)
+                    or "Tool environment is unavailable"
+                )
                 if runtime is not None:
                     local_backend = workspace.backend
                     if isinstance(local_backend, _LocalBackendWorkspace):
                         local_backend._attach_tool_runtime(runtime)
-                return DeploymentSnapshot(
+                snapshot_result = DeploymentSnapshot(
                     workspace_id=workspace.id,
                     revision=snapshot.revision,
                     layout_version=DEPLOYMENT_SCHEMA_VERSION,
                     complete=False,
                     error=reason,
                 )
+                self._deployment = snapshot_result
+                return snapshot_result
 
             published = _DeploymentManifest(
                 workspace_id=workspace.id,
@@ -305,13 +345,15 @@ class _LocalCapabilityDeployment:
             local_backend = workspace.backend
             if isinstance(local_backend, _LocalBackendWorkspace):
                 local_backend._attach_tool_runtime(runtime)
-            return DeploymentSnapshot(
+            snapshot_result = DeploymentSnapshot(
                 workspace_id=workspace.id,
                 revision=snapshot.revision,
                 layout_version=DEPLOYMENT_SCHEMA_VERSION,
                 complete=True,
                 error=None,
             )
+            self._deployment = snapshot_result
+            return snapshot_result
 
     async def _load_manifest(
         self,

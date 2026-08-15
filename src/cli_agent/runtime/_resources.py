@@ -8,7 +8,10 @@ from pathlib import Path
 
 from cli_agent.runtime._backend import _BackendWorkspace
 from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
-from cli_agent.runtime._capability.deployment import DeploymentSnapshot
+from cli_agent.runtime._capability.deployment import (
+    DeploymentSnapshot,
+    ToolExecutor,
+)
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.provider import (
     CapabilityProvider,
@@ -40,6 +43,7 @@ class _RuntimeResources:
     capability_view: _LogicalCapabilityView
     snapshot: CapabilitySnapshot
     deployment: DeploymentSnapshot
+    tool_executor: ToolExecutor
     session_store: SessionStore
 
     async def close(self) -> None:
@@ -176,6 +180,10 @@ async def _reconcile_runtime_resources(
             capability_view=view,
             snapshot=snapshot,
             deployment=deployment_snapshot,
+            tool_executor=deployment.executor(
+                opened_workspace,
+                revision=snapshot.revision,
+            ),
             session_store=session_store,
         )
     except BaseException:

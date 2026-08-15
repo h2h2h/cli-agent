@@ -106,6 +106,7 @@ async def _kernel(workspace: Path, repertoire: Path) -> EnvironmentKernel:
         workspace,
         backend=backend,
         tool_catalog=catalog,
+        tool_executor=deployment.executor(opened, revision=snapshot.revision),
     )
 
 

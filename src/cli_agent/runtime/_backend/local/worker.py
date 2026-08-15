@@ -1,8 +1,8 @@
 """Fixed stdlib-only worker executed by a Workspace Tool venv.
 
-The Local Backend materializes this template into the Workspace Tool
-environment during Tool Runtime reconcile; the Handler only references the
-materialized worker through ``BackendWorkspace.prepare_tool``.
+The Local deployment materializes this template into the Workspace Tool
+environment during Tool Runtime reconcile; the ToolExecutor only references
+the materialized worker path when composing one worker execution.
 """
 
 from __future__ import annotations
