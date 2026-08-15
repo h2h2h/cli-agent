@@ -7,10 +7,13 @@ import os
 import re
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping
+from datetime import datetime, timezone
+from uuid import uuid4
 
 from cli_agent.errors.context import ContextExhaustedError
 from cli_agent.runtime._context import ContextEngine, SessionUsage
 from cli_agent.runtime._environment import EnvironmentKernel
+from cli_agent.runtime._session import ModelCallUsage
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
     AssistantMessage,
@@ -78,12 +81,16 @@ class AgentLoop:
         *,
         context: ContextEngine,
         commit: Callable[[ModelMessage], int],
+        commit_completion: Callable[
+            [AssistantMessage, ModelCallUsage | None], int
+        ] | None = None,
         on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
     ) -> None:
         self._provider = provider
         self._kernel = kernel
         self._context = context
         self._commit = commit
+        self._commit_completion = commit_completion
         self._session_id = context.session_id
         self._on_diagnostic = on_diagnostic
 
@@ -115,6 +122,7 @@ class AgentLoop:
             request = prepared.request
             retried = False
             while True:
+                model_call_id = uuid4().hex
                 try:
                     async for event in self._provider.generate(request):
                         if isinstance(event, ModelCompletion):
@@ -160,8 +168,22 @@ class AgentLoop:
                 for block in completion.message.content
                 if isinstance(block, ToolCall)
             )
+            usage = None
+            if completion.usage is not None:
+                usage = ModelCallUsage(
+                    model_call_id=model_call_id,
+                    session_id=self._session_id,
+                    purpose="agent",
+                    input_tokens=completion.usage.input_tokens,
+                    output_tokens=completion.usage.output_tokens,
+                    created_at=datetime.now(timezone.utc),
+                )
+            if self._commit_completion is None:
+                revision = self._commit(completion.message)
+            else:
+                revision = self._commit_completion(completion.message, usage)
             self._context.observe_usage(completion.usage)
-            self._context.apply(completion.message, self._commit(completion.message))
+            self._context.apply(completion.message, revision)
             if not tool_calls:
                 self._print_history()
                 yield completion

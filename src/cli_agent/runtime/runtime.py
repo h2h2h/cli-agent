@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
@@ -49,16 +49,19 @@ from cli_agent.runtime._resources import (
     _RuntimeResources,
 )
 from cli_agent.runtime._session import (
+    ModelCallUsage,
     Session,
     SessionConfig,
     serialize_system_prompt,
 )
 from cli_agent.runtime._system_message import assemble_system_message
+from cli_agent.runtime._turn import TurnStream
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.model import (
-    ModelEvent,
+    AssistantMessage,
     ModelMessage,
     ModelProvider,
+    ToolCall,
     UserMessage,
 )
 
@@ -149,6 +152,7 @@ class AgentRuntime:
         self._state = RuntimeState.NO_SESSION
         self._binding: _ActiveBinding | None = None
         self._turn_task: asyncio.Task[Any] | None = None
+        self._turn_stream: TurnStream | None = None
         self._lifecycle_op_lock = asyncio.Lock()
         self._state_lock = threading.Lock()
         self._closed = False
@@ -421,10 +425,10 @@ class AgentRuntime:
         """Close all Runtime-owned resources idempotently.
 
         New lifecycle operations are rejected first, a running turn is
-        cancelled (unless close is called from the turn consumer itself),
-        the active binding closes its Kernel, then the Workspace-lifetime
-        resources close in reverse dependency order: Library worker,
-        Backend Workspace flush, Backend Workspace close. Every step is
+        cancelled and joined, the active binding closes its Kernel, then the
+        Workspace-lifetime resources close in reverse dependency order:
+        Library worker, Backend Workspace flush, Backend Workspace close.
+        Every step is
         attempted even when an earlier close fails, so no resource leaks;
         the first failure is surfaced to the Host through a safe
         diagnostic and the original exception. The Runtime stays closed
@@ -438,14 +442,20 @@ class AgentRuntime:
                 self._closed = True
                 self._transition_locked(RuntimeState.CLOSING, action="close")
                 turn_task = self._turn_task
+                turn_stream = self._turn_stream
                 binding = self._binding
                 current = asyncio.current_task()
-            if (
-                turn_task is not None
-                and turn_task is not current
-                and not turn_task.done()
-            ):
-                turn_task.cancel()
+            await self._cancel_and_join(turn_task)
+            if turn_stream is not None and not turn_stream._terminal_queued:
+                terminal_error = (
+                    None
+                    if (
+                        turn_stream._consumer_task is current
+                        or self._has_durable_tool_frontier(binding)
+                    )
+                    else asyncio.CancelledError()
+                )
+                turn_stream._put_terminal(terminal_error, force=True)
             errors: list[Exception] = []
             if binding is not None:
                 try:
@@ -464,9 +474,7 @@ class AgentRuntime:
                 self._transition_locked(RuntimeState.CLOSED, action="close")
                 self._binding = None
                 self._turn_task = None
-            if turn_task is not None and turn_task is not current:
-                with suppress(asyncio.CancelledError, Exception):
-                    await turn_task
+                self._turn_stream = None
             if errors:
                 self._emit_diagnostic(
                     "runtime.close_failed",
@@ -475,20 +483,20 @@ class AgentRuntime:
                 )
                 raise errors[0]
 
-    async def run_turn(self, message: UserMessage) -> AsyncIterator[ModelEvent]:
+    def run_turn(self, message: UserMessage) -> TurnStream:
         """Run one model turn in the active Session.
 
         The Runtime must be in ``ACTIVE_IDLE``: a turn while another turn
-        is already running is an illegal transition. The turn completes
-        back to ``ACTIVE_IDLE``, or unwinds early when a lifecycle
-        operation (detach, replacement, close) changes the state.
+        is already running is an illegal transition. The producer task is
+        created before the stream is returned; the caller only consumes the
+        stream and never owns the AgentLoop task.
 
         Args:
             message (`UserMessage`):
                 User-authored message to append to the Session history.
 
-        Yields:
-            Model events streamed by the active Session's Agent Loop.
+        Returns:
+            A bounded, consumer-only stream of Model events.
 
         Raises:
             RuntimeClosedError: If the Runtime is closed.
@@ -496,6 +504,7 @@ class AgentRuntime:
                 already running.
         """
 
+        loop = asyncio.get_running_loop()
         with self._state_lock:
             if self._closed:
                 raise RuntimeClosedError("AgentRuntime is closed")
@@ -518,22 +527,18 @@ class AgentRuntime:
                     ),
                 )
             self._state = RuntimeState.RUNNING_TURN
-            self._turn_task = asyncio.current_task()
-        try:
-            with error_boundary(
-                "runtime.run_turn",
-                on_diagnostic=self._boundary_diagnostic,
-            ):
-                async for event in binding.loop.run(message):
-                    with self._state_lock:
-                        if self._state is not RuntimeState.RUNNING_TURN:
-                            return
-                    yield event
-        finally:
-            with self._state_lock:
-                if self._state is RuntimeState.RUNNING_TURN:
-                    self._state = RuntimeState.ACTIVE_IDLE
-                self._turn_task = None
+            stream = TurnStream(
+                queue=asyncio.Queue(maxsize=64),
+                on_close=self._close_turn_stream,
+                on_finish=self._finish_turn_stream,
+            )
+            task = loop.create_task(
+                self._produce_turn(binding, message, stream),
+                name="cli-agent-turn-producer",
+            )
+            self._turn_task = task
+            self._turn_stream = stream
+        return stream
 
     def session_usage(self) -> SessionUsage | None:
         """Return the active Session's cumulative usage, or ``None``.
@@ -588,18 +593,99 @@ class AgentRuntime:
     async def _cancel_active_turn(self, *, action: str) -> None:
         """Move to REPLACING and cancel the running turn, joining it.
 
-        The cancelled generator releases the turn task reference itself;
-        nothing is awaited while the state lock is held.
+        The producer task is cancelled and joined before the binding is
+        detached; nothing is awaited while the state lock is held.
         """
 
         with self._state_lock:
             self._transition_locked(RuntimeState.REPLACING, action=action)
             turn_task = self._turn_task
-            current = asyncio.current_task()
-        if turn_task is not None and turn_task is not current and not turn_task.done():
-            turn_task.cancel()
+            turn_stream = self._turn_stream
+        await self._cancel_and_join(turn_task)
+        if turn_stream is not None and not turn_stream._terminal_seen:
+            turn_stream._put_terminal(asyncio.CancelledError(), force=True)
+        with self._state_lock:
+            if self._turn_task is turn_task:
+                self._turn_task = None
+            if self._turn_stream is turn_stream:
+                self._turn_stream = None
+
+    async def _cancel_and_join(self, task: asyncio.Task[Any] | None) -> None:
+        """Cancel one producer and wait until its cleanup has completed."""
+
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+
+    async def _produce_turn(
+        self,
+        binding: _ActiveBinding,
+        message: UserMessage,
+        stream: TurnStream,
+    ) -> None:
+        """Drive AgentLoop in the Runtime-owned producer task."""
+
+        terminal_error: BaseException | None = None
+        cancelled = False
+        try:
+            with error_boundary(
+                "runtime.run_turn",
+                on_diagnostic=self._boundary_diagnostic,
+            ):
+                async for event in binding.loop.run(message):
+                    await stream._put_event(event)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        except BaseException as exc:
+            terminal_error = exc
+        finally:
+            if not cancelled and terminal_error is not None and not stream._closed:
+                stream._put_terminal(terminal_error)
+            elif not cancelled and terminal_error is None and not stream._closed:
+                stream._put_terminal(None)
+            with self._state_lock:
+                if self._turn_task is asyncio.current_task() and stream._closed:
+                    self._turn_task = None
+                    if self._turn_stream is stream:
+                        self._turn_stream = None
+                    if self._state is RuntimeState.RUNNING_TURN:
+                        self._state = RuntimeState.ACTIVE_IDLE
+
+    async def _close_turn_stream(self, stream: TurnStream) -> None:
+        """Cancel a producer when a consumer abandons its stream."""
+
+        with self._state_lock:
+            if self._turn_stream is not stream:
+                return
+            turn_task = self._turn_task
+        await self._cancel_and_join(turn_task)
+        with self._state_lock:
+            if self._turn_stream is stream:
+                self._turn_stream = None
+                self._turn_task = None
+                if self._state is RuntimeState.RUNNING_TURN:
+                    self._state = RuntimeState.ACTIVE_IDLE
+
+    async def _finish_turn_stream(self, stream: TurnStream) -> None:
+        """Join a normally terminal producer and release Runtime state."""
+
+        with self._state_lock:
+            if self._turn_stream is not stream:
+                return
+            turn_task = self._turn_task
+        if turn_task is not None:
             with suppress(asyncio.CancelledError, Exception):
                 await turn_task
+        with self._state_lock:
+            if self._turn_stream is stream:
+                self._turn_stream = None
+                self._turn_task = None
+                if self._state is RuntimeState.RUNNING_TURN:
+                    self._state = RuntimeState.ACTIVE_IDLE
 
     def _transition_locked(self, target: RuntimeState, *, action: str) -> None:
         """Transition to one state, rejecting illegal predecessors.
@@ -715,11 +801,23 @@ class AgentRuntime:
                     expected_revision=context.revision,
                 )
 
+            def commit_completion(
+                message: ModelMessage,
+                usage: ModelCallUsage | None,
+            ) -> int:
+                return store.append(
+                    session.session_id,
+                    message,
+                    expected_revision=context.revision,
+                    usage=usage,
+                )
+
             loop = AgentLoop(
                 provider,
                 kernel,
                 context=context,
                 commit=commit,
+                commit_completion=commit_completion,
                 on_diagnostic=self._on_diagnostic,
             )
         except BaseException:
@@ -746,6 +844,22 @@ class AgentRuntime:
             parallel_commands=self._parallel_commands,
             on_diagnostic=self._on_diagnostic,
         )
+
+    @staticmethod
+    def _has_durable_tool_frontier(binding: _ActiveBinding | None) -> bool:
+        """Treat a post-tool-barrier close as an ordinary stream end.
+
+        The Assistant tool call is already durable at this point. The
+        interrupted execution frontier is therefore recoverable from the
+        journal, while the consumer still receives no successful completion.
+        """
+
+        if binding is None:
+            return False
+        history = binding.loop.history
+        if not history or not isinstance(history[-1], AssistantMessage):
+            return False
+        return any(isinstance(block, ToolCall) for block in history[-1].content)
 
     def _boundary_diagnostic(
         self,
