@@ -53,13 +53,12 @@ async def run_agent(
     )
 
     try:
-        interaction = _TerminalUserInteraction(
-            stdin=stdin,
-            stderr=stderr,
-            tui_session=tui_session,
-        )
         components = local_runtime_components(
-            interaction=interaction,
+            interaction=_TerminalUserInteraction(
+                stdin=stdin,
+                stderr=stderr,
+                tui_session=tui_session,
+            ),
             context_policy=build_context_policy(config),
             policy=execution_policy,
             events=_TerminalEventSink(stderr),
