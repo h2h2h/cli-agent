@@ -44,7 +44,7 @@ class _MarkdownRenderer(Protocol):
 
 
 _REFRESH_PER_SECOND = 5
-_MARKDOWN_THEME = _Theme({"markdown.code": "bold yellow"})
+_MARKDOWN_THEME = _Theme({"markdown.code": "bold #a0522d"})
 
 _HOST_ERROR_MESSAGES = {
     "session_not_found": "Session was not found.",
