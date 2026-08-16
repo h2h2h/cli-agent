@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-import cli_agent.runtime._backend.local.tool_runtime as tool_runtime_module
+import cli_agent._adapters.local.tool_runtime as tool_runtime_module
 
 
 @pytest.fixture(autouse=True)

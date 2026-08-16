@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import posixpath
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from typing import Literal
 
@@ -31,9 +31,10 @@ from cli_agent.runtime._capability.library.parser import (
     LibraryParseError,
     _select_parser,
 )
-from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
+from cli_agent.runtime._capability.source_view import CapabilitySource
 from cli_agent.runtime._database.summary_cache import _SummaryCache
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.host import NULL_EVENTS, EventSink, emit_event
 from cli_agent.runtime.model import (
     ModelCompletion,
     ModelContextOverflowSignal,
@@ -92,7 +93,7 @@ class _LibraryCatalog:
         entries: tuple[LibraryEntry, ...],
         root: str,
         summary_cache: _SummaryCache,
-        view: _LogicalCapabilityView | None = None,
+        view: CapabilitySource | None = None,
         filesystem: _WorkspaceFilesystem | None = None,
     ) -> None:
         """Hold the facts, the effective Library root, and the summary cache."""
@@ -118,14 +119,14 @@ class _LibraryCatalog:
     @classmethod
     async def reconcile(
         cls,
-        capability_view: _LogicalCapabilityView,
+        capability_view: CapabilitySource,
         filesystem: _WorkspaceFilesystem,
         summary_cache: _SummaryCache,
     ) -> _LibraryCatalog:
         """Discover facts, resolve cache hits, and render every index.
 
         Args:
-            capability_view (`_LogicalCapabilityView`):
+            capability_view (`CapabilitySource`):
                 The materialized Bound Capability View; ``library`` is read
                 as an ordinary capability directory with no source-layer
                 restrictions.
@@ -465,7 +466,7 @@ class _LibraryCatalog:
     def start(
         self,
         provider: ModelProvider,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+        events: EventSink = NULL_EVENTS,
     ) -> None:
         """Start the serial background summary worker without waiting.
 
@@ -478,8 +479,8 @@ class _LibraryCatalog:
         Args:
             provider (`ModelProvider`):
                 The Runtime default provider used for every summary request.
-            on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
-                Optional Host callback receiving bounded failure notices.
+            events (`EventSink`):
+                Host event sink receiving bounded failure notices.
         """
 
         if self._worker_task is not None:
@@ -506,15 +507,17 @@ class _LibraryCatalog:
                 queue.put_nowait(path)
         self._queue = queue
         self._worker_task = asyncio.create_task(
-            self._run_worker(queue, provider, on_diagnostic)
+            self._run_worker(queue, provider, events)
         )
 
     async def close(self) -> None:
-        """Cancel the worker, wait for it, then close the state database.
+        """Cancel the worker and wait for it to stop.
 
         Committed SQLite summaries survive; unfinished tasks are rediscovered
         as ``pending`` on the next Runtime open. After ``close`` returns the
         worker has stopped and never touches the Backend Filesystem again.
+        The Runtime composition root owns the shared state database and closes
+        it only after every dependent resource has stopped.
         """
 
         worker_task = self._worker_task
@@ -525,13 +528,12 @@ class _LibraryCatalog:
                 await worker_task
             except asyncio.CancelledError:
                 pass
-        self._summary_cache.close()
 
     async def _run_worker(
         self,
         queue: asyncio.Queue[str],
         provider: ModelProvider,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+        events: EventSink,
     ) -> None:
         """Consume summary tasks serially until the Runtime closes."""
 
@@ -539,7 +541,7 @@ class _LibraryCatalog:
             path = await queue.get()
             try:
                 self._queued.discard(path)
-                await self._summarize_path(path, provider, on_diagnostic)
+                await self._summarize_path(path, provider, events)
             finally:
                 queue.task_done()
 
@@ -547,7 +549,7 @@ class _LibraryCatalog:
         self,
         path: str,
         provider: ModelProvider,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+        events: EventSink,
     ) -> None:
         """Dispatch one queued task to the matching summary generator."""
 
@@ -555,15 +557,15 @@ class _LibraryCatalog:
         if entry is None:
             return
         if entry.kind == "file":
-            await self._summarize_file(path, provider, on_diagnostic)
+            await self._summarize_file(path, provider, events)
         else:
-            await self._summarize_directory(path, provider, on_diagnostic)
+            await self._summarize_directory(path, provider, events)
 
     async def _summarize_file(
         self,
         path: str,
         provider: ModelProvider,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+        events: EventSink,
     ) -> None:
         """Generate, cache, and apply one file summary in the background."""
 
@@ -582,18 +584,18 @@ class _LibraryCatalog:
             await self._mark_failed(
                 path,
                 f"no parser supports file type: {filename}",
-                on_diagnostic,
+                events,
             )
             return
         try:
             content = await view.read(_view_relative(path))
         except _FilesystemError as exc:
-            await self._mark_failed(path, f"cannot read file: {exc}", on_diagnostic)
+            await self._mark_failed(path, f"cannot read file: {exc}", events)
             return
         try:
             text = await parser.parse(content, filename)
         except LibraryParseError as exc:
-            await self._mark_failed(path, str(exc), on_diagnostic)
+            await self._mark_failed(path, str(exc), events)
             return
         try:
             completion = await _collect_completion(
@@ -604,7 +606,7 @@ class _LibraryCatalog:
             await self._mark_failed(
                 path,
                 "context overflow",
-                on_diagnostic,
+                events,
                 kind="library.summary_context_overflow",
             )
             return
@@ -612,7 +614,7 @@ class _LibraryCatalog:
             await self._mark_failed(
                 path,
                 _bounded_error(exc),
-                on_diagnostic,
+                events,
             )
             return
         summary = _completion_text(completion)
@@ -623,7 +625,7 @@ class _LibraryCatalog:
         self,
         path: str,
         provider: ModelProvider,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+        events: EventSink,
     ) -> None:
         """Generate, cache, and apply one directory summary in the background.
 
@@ -651,7 +653,7 @@ class _LibraryCatalog:
             await self._mark_failed(
                 path,
                 "context overflow",
-                on_diagnostic,
+                events,
                 kind="library.summary_context_overflow",
             )
             return
@@ -659,7 +661,7 @@ class _LibraryCatalog:
             await self._mark_failed(
                 path,
                 _bounded_error(exc),
-                on_diagnostic,
+                events,
             )
             return
         summary = _completion_text(completion)
@@ -670,7 +672,7 @@ class _LibraryCatalog:
         self,
         path: str,
         error: str,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+        events: EventSink,
         *,
         kind: str = "library.summary_failed",
     ) -> None:
@@ -686,7 +688,7 @@ class _LibraryCatalog:
             else:
                 await self._render_ancestors(path)
         _emit(
-            on_diagnostic,
+            events,
             kind,
             (
                 f"library directory summary failed: {path}"
@@ -1159,20 +1161,21 @@ def _bounded_error(exc: Exception) -> str:
 
 
 def _emit(
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+    events: EventSink,
     kind: str,
     message: str,
     detail: Mapping[str, object],
 ) -> None:
     """Send one structured notice when a Host callback is configured."""
 
-    if on_diagnostic is None:
-        return
-    on_diagnostic(RuntimeDiagnostic(kind=kind, message=message, detail=detail))
+    emit_event(
+        events,
+        RuntimeDiagnostic(kind=kind, message=message, detail=detail),
+    )
 
 
 async def _subtree(
-    capability_view: _LogicalCapabilityView,
+    capability_view: CapabilitySource,
     relative: str,
     kind: Literal["file", "directory"],
 ) -> tuple[LibraryEntry, ...]:
@@ -1212,7 +1215,7 @@ async def _subtree(
 
 
 async def _directory_facts(
-    capability_view: _LogicalCapabilityView,
+    capability_view: CapabilitySource,
     relative: str,
 ) -> tuple[Literal["repertoire", "workspace"], bool]:
     """Return one directory's presence layer and its shadow fact.
@@ -1229,7 +1232,7 @@ async def _directory_facts(
 
 
 async def _directory_subtree(
-    capability_view: _LogicalCapabilityView,
+    capability_view: CapabilitySource,
     relative: str,
 ) -> tuple[LibraryEntry, ...]:
     """Return one directory fact followed by its direct-child subtree facts."""
@@ -1275,7 +1278,7 @@ async def _directory_subtree(
 
 
 async def _file_entry(
-    capability_view: _LogicalCapabilityView,
+    capability_view: CapabilitySource,
     relative: str,
     provenance: Literal["repertoire", "workspace"],
     shadows_repertoire: bool,

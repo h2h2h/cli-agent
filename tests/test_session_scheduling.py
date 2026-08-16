@@ -3,6 +3,9 @@ import shlex
 import sys
 from pathlib import Path
 
+from host_fakes import _environment_kernel
+from workspace_fakes import _kernel_workspace
+
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -62,13 +65,13 @@ def test_foreign_and_missing_handles_are_indistinguishable(
         running_started = tmp_path / "private-running-started"
         running_release = tmp_path / "private-running-release"
         queued_proof = tmp_path / "private-queued-proof"
-        owner = EnvironmentKernel(
-            tmp_path,
+        owner = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=policy,
             queue_limit=1,
         )
-        stranger = EnvironmentKernel(
-            tmp_path,
+        stranger = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=policy,
             queue_limit=1,
         )
@@ -191,8 +194,8 @@ def test_foreign_and_missing_handles_are_indistinguishable(
                 str(snapshot["exec_id"]) for snapshot in (terminal, running, queued)
             )
             await owner.close()
-            replacement = EnvironmentKernel(
-                tmp_path,
+            replacement = _environment_kernel(
+                _kernel_workspace(tmp_path),
                 policy=policy,
                 queue_limit=1,
             )
@@ -228,8 +231,8 @@ def test_sessions_run_shell_work_concurrently_without_cross_session_hol(
         b_release = tmp_path / "session-b-release"
         b_promoted = tmp_path / "session-b-promoted"
         b_observed = tmp_path / "session-b-observed"
-        binding_a = EnvironmentKernel(tmp_path, queue_limit=1)
-        binding_b = EnvironmentKernel(tmp_path, queue_limit=1)
+        binding_a = _environment_kernel(_kernel_workspace(tmp_path), queue_limit=1)
+        binding_b = _environment_kernel(_kernel_workspace(tmp_path), queue_limit=1)
         try:
             running_a = _output(
                 await binding_a.dispatch(
@@ -372,7 +375,7 @@ def test_close_prevents_admission_after_async_policy_returns(
     async def scenario() -> None:
         policy = _BlockingPolicy()
         must_not_run = tmp_path / "close-policy-must-not-run"
-        kernel = EnvironmentKernel(tmp_path, policy=policy)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path), policy=policy)
         dispatch = asyncio.create_task(
             kernel.dispatch(
                 ToolCall(
@@ -409,8 +412,8 @@ def test_close_cancels_owned_work_and_recreation_is_fresh(
         queued_must_not_run = tmp_path / "closing-queued-must-not-run"
         peer_started = tmp_path / "peer-session-started"
         peer_release = tmp_path / "peer-session-release"
-        closing = EnvironmentKernel(tmp_path, queue_limit=1)
-        peer = EnvironmentKernel(tmp_path, queue_limit=1)
+        closing = _environment_kernel(_kernel_workspace(tmp_path), queue_limit=1)
+        peer = _environment_kernel(_kernel_workspace(tmp_path), queue_limit=1)
         replacement: EnvironmentKernel | None = None
         try:
             running = _output(
@@ -507,8 +510,8 @@ def test_close_cancels_owned_work_and_recreation_is_fresh(
             assert _error(closed_binding_result)["code"] == "internal"
             await closing.close()
 
-            replacement = EnvironmentKernel(
-                tmp_path,
+            replacement = _environment_kernel(
+                _kernel_workspace(tmp_path),
                 queue_limit=1,
             )
             for index, old_exec_id in enumerate(
@@ -563,7 +566,7 @@ def test_close_wakes_concurrent_running_cancellation_waiter(
 ) -> None:
     async def scenario() -> None:
         started = tmp_path / "close-kill-waiter-started"
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         running = _output(
             await kernel.dispatch(
                 ToolCall(
@@ -609,8 +612,8 @@ def test_each_kernel_close_cancels_its_running_and_queued_work(
 ) -> None:
     async def scenario() -> None:
         kernels = (
-            EnvironmentKernel(tmp_path, queue_limit=1),
-            EnvironmentKernel(tmp_path, queue_limit=1),
+            _environment_kernel(_kernel_workspace(tmp_path), queue_limit=1),
+            _environment_kernel(_kernel_workspace(tmp_path), queue_limit=1),
         )
         states = []
         queued_proofs = []

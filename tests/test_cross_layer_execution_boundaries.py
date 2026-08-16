@@ -13,9 +13,12 @@ import shlex
 import sys
 from pathlib import Path
 
+from host_fakes import _environment_kernel
 from interaction_fakes import _BlockingInteraction, _ScriptedInteraction
 from policy_fakes import _AllowAllPolicy, _AskExecutablePolicy, _DenyExecutablePolicy
+from workspace_fakes import _kernel_workspace
 
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -29,7 +32,6 @@ from cli_agent.runtime import (
     ToolResultMessage,
     UserMessage,
 )
-from cli_agent.runtime._environment import EnvironmentKernel
 
 _context_policy = ContextPolicy(
     context_window_tokens=16_384,
@@ -41,7 +43,7 @@ _context_policy = ContextPolicy(
 def test_unsupported_valid_syntax_falls_back_to_shell(tmp_path: Path) -> None:
     async def scenario() -> None:
         proof = tmp_path / "unsupported-syntax-proof"
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             result = await kernel.dispatch(
                 ToolCall(
@@ -73,10 +75,10 @@ def test_policy_none_runs_end_to_end_without_interaction(tmp_path: Path) -> None
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=interaction,
+            interaction=interaction,
             context_policy=_context_policy,
         )
         try:
@@ -96,7 +98,7 @@ def test_configured_policy_paths_end_to_end(tmp_path: Path) -> None:
     allowed_proof = tmp_path / "allowed-proof"
 
     async def scenario() -> None:
-        deny_runtime = await AgentRuntime.open(
+        deny_runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=_provider_script(
                 ToolCall(
@@ -106,8 +108,8 @@ def test_configured_policy_paths_end_to_end(tmp_path: Path) -> None:
                 ),
                 "Denied.",
             ),
-            user_interaction=_ScriptedInteraction("allow_once"),
-            execution_policy=_DenyExecutablePolicy(
+            interaction=_ScriptedInteraction("allow_once"),
+            policy=_DenyExecutablePolicy(
                 frozenset({"touch"}),
                 reason="touch is denied by policy",
             ),
@@ -118,7 +120,7 @@ def test_configured_policy_paths_end_to_end(tmp_path: Path) -> None:
         finally:
             await deny_runtime.close()
 
-        allow_runtime = await AgentRuntime.open(
+        allow_runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=_provider_script(
                 ToolCall(
@@ -128,8 +130,8 @@ def test_configured_policy_paths_end_to_end(tmp_path: Path) -> None:
                 ),
                 "Allowed.",
             ),
-            user_interaction=_ScriptedInteraction("allow_once"),
-            execution_policy=_AllowAllPolicy(),
+            interaction=_ScriptedInteraction("allow_once"),
+            policy=_AllowAllPolicy(),
             context_policy=_context_policy,
         )
         try:
@@ -150,7 +152,7 @@ def test_ask_interaction_allow_once_and_deny_end_to_end(tmp_path: Path) -> None:
     deny_interaction = _ScriptedInteraction("deny")
 
     async def scenario() -> None:
-        allow_runtime = await AgentRuntime.open(
+        allow_runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=_provider_script(
                 ToolCall(
@@ -160,8 +162,8 @@ def test_ask_interaction_allow_once_and_deny_end_to_end(tmp_path: Path) -> None:
                 ),
                 "Allowed once.",
             ),
-            user_interaction=allow_interaction,
-            execution_policy=_ask_python_policy(),
+            interaction=allow_interaction,
+            policy=_ask_python_policy(),
             context_policy=_context_policy,
         )
         try:
@@ -169,7 +171,7 @@ def test_ask_interaction_allow_once_and_deny_end_to_end(tmp_path: Path) -> None:
         finally:
             await allow_runtime.close()
 
-        deny_runtime = await AgentRuntime.open(
+        deny_runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=_provider_script(
                 ToolCall(
@@ -179,8 +181,8 @@ def test_ask_interaction_allow_once_and_deny_end_to_end(tmp_path: Path) -> None:
                 ),
                 "Denied.",
             ),
-            user_interaction=deny_interaction,
-            execution_policy=_ask_python_policy(),
+            interaction=deny_interaction,
+            policy=_ask_python_policy(),
             context_policy=_context_policy,
         )
         try:
@@ -213,11 +215,11 @@ def test_parse_failure_through_public_runtime_creates_no_execution(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_ScriptedInteraction("allow_once"),
-            execution_policy=_AskExecutablePolicy(
+            interaction=_ScriptedInteraction("allow_once"),
+            policy=_AskExecutablePolicy(
                 frozenset({"echo"}),
                 rule_id="test.ask-echo",
                 reason="echo requires approval",
@@ -251,11 +253,11 @@ def test_runtime_close_cancels_pending_ask_without_closing_interaction(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=interaction,
-            execution_policy=_ask_python_policy(),
+            interaction=interaction,
+            policy=_ask_python_policy(),
             context_policy=_context_policy,
         )
         turn = asyncio.create_task(
@@ -317,11 +319,11 @@ def test_session_remains_usable_after_denial(tmp_path: Path) -> None:
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_ScriptedInteraction("allow_once"),
-            execution_policy=_DenyExecutablePolicy(
+            interaction=_ScriptedInteraction("allow_once"),
+            policy=_DenyExecutablePolicy(
                 frozenset({"touch"}),
                 reason="touch is denied by policy",
             ),

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from cli_agent.runtime._backend.facts import _ToolExecutionRequest
 from cli_agent.runtime._backend.local.backend import _LocalBackendWorkspace
@@ -23,12 +25,17 @@ from cli_agent.runtime._backend.local.shell import (
 from cli_agent.runtime._capability.deployment import (
     DeploymentSnapshot,
     StaleDeploymentError,
+    ToolRuntimeSnapshot,
     validate_tool_bindings,
     verify_deployment,
 )
 from cli_agent.runtime._environment.handlers.base import _CommandContext
 from cli_agent.runtime._environment.handlers.executions import _text_execution
 from cli_agent.runtime._execution import ExecutionHandle
+
+if TYPE_CHECKING:
+    from cli_agent.runtime._capability.snapshot import CapabilitySnapshot
+    from cli_agent.runtime._workspace import Workspace
 
 
 class _LocalToolExecutor:
@@ -50,11 +57,13 @@ class _LocalToolExecutor:
         workspace_id: str,
         revision: str,
         deployment: DeploymentSnapshot,
+        runtime: ToolRuntimeSnapshot | None,
     ) -> None:
         self._backend = backend
         self._workspace_id = workspace_id
         self._revision = revision
         self._deployment = deployment
+        self._runtime = runtime
 
     def prepare(
         self,
@@ -101,7 +110,7 @@ class _LocalToolExecutor:
                 f"Tool environment is unavailable: {invalid_binding}\n",
                 success=False,
             )
-        runtime = self._backend._tool_runtime
+        runtime = self._runtime
         if (
             runtime is None
             or not runtime.available
@@ -120,25 +129,27 @@ class _LocalToolExecutor:
             )
 
         cwd = _resolve_path(self._backend._root, context.cwd)
+        assert runtime.binding_directory is not None
         payload = json.dumps(
             {
                 "code": request.code,
                 "workspace": self._backend.root,
                 "cwd": str(cwd),
-                "tools_directory": str(runtime.tools_directory),
-                "binding_directory": str(runtime.root),
+                "tools_directory": runtime.tools_directory,
+                "binding_directory": runtime.binding_directory,
                 "tool_paths": {
                     binding.name: binding.path for binding in request.bindings
                 },
             },
             ensure_ascii=False,
         ).encode("utf-8")
-        python = runtime.python
+        python = Path(runtime.python)
+        worker = Path(runtime.worker)
         environment = {
             **self._backend.execution_base_environment(),
             **context.environment,
         }
-        environment["VIRTUAL_ENV"] = str(runtime.root / ".venv")
+        environment["VIRTUAL_ENV"] = str(Path(runtime.binding_directory) / ".venv")
         environment["PYTHONNOUSERSITE"] = "1"
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         bin_directory = str(python.parent)
@@ -149,7 +160,7 @@ class _LocalToolExecutor:
             else bin_directory + os.pathsep + existing_path
         )
         return _ProcessExecution(
-            _tool_worker_spawner(python, runtime.worker, cwd, environment),
+            _tool_worker_spawner(python, worker, cwd, environment),
             input_data=payload,
         )
 
@@ -157,3 +168,24 @@ class _LocalToolExecutor:
         """Reject every operation after the Backend Workspace closes."""
 
         self._backend._ensure_open()
+
+
+class _LocalToolExecutorFactory:
+    """Create Local executors solely from deployment result facts."""
+
+    def create(
+        self,
+        workspace: Workspace,
+        snapshot: CapabilitySnapshot,
+        deployment: DeploymentSnapshot,
+    ) -> _LocalToolExecutor:
+        backend = workspace.backend
+        if not isinstance(backend, _LocalBackendWorkspace):
+            raise ValueError("Local ToolExecutor requires a Local Backend")
+        return _LocalToolExecutor(
+            backend,
+            workspace_id=workspace.id,
+            revision=snapshot.revision,
+            deployment=deployment,
+            runtime=deployment.tool_runtime,
+        )

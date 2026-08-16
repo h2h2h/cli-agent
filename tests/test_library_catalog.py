@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
+from cli_agent._adapters.local.view import _LocalCapabilityView
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
 )
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.library.facts import (
@@ -39,7 +39,7 @@ def _reconcile(workspace: Path, repertoire: Path) -> _LibraryCatalog:
         view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
         return await _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(workspace, {}, view).filesystem,
+            _LocalBackendWorkspace(workspace, {}).filesystem,
             _cache(workspace),
         )
 
@@ -64,7 +64,7 @@ def test_catalog_discovers_effective_library_facts(tmp_path: Path) -> None:
     catalog = asyncio.run(
         _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
     )
@@ -116,7 +116,7 @@ def test_workspace_override_shadows_repertoire_file(tmp_path: Path) -> None:
     catalog = asyncio.run(
         _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
     )
@@ -141,7 +141,7 @@ def test_workspace_only_directory_is_workspace_provenance(tmp_path: Path) -> Non
     catalog = asyncio.run(
         _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
     )
@@ -171,7 +171,7 @@ def test_whiteouted_library_file_is_skipped(tmp_path: Path) -> None:
     catalog = asyncio.run(
         _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
     )
@@ -287,7 +287,7 @@ def test_file_fingerprint_ignores_name_provenance_and_extension(
     catalog = asyncio.run(
         _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
     )

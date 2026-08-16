@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from host_fakes import _environment_kernel
+from workspace_fakes import _kernel_workspace
 
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -20,15 +22,15 @@ def test_shell_child_receives_host_environment_with_session_overrides(
     monkeypatch.setenv("CLI_AGENT_API_KEY", "provider-secret")
 
     async def scenario() -> None:
-        kernel_a = EnvironmentKernel(
-            tmp_path,
+        kernel_a = _environment_kernel(
+            _kernel_workspace(tmp_path),
             base_env={
                 "M5_COLLISION": "workspace-value",
                 "M5_WORKSPACE_ONLY": "workspace-secret",
             },
         )
-        kernel_b = EnvironmentKernel(
-            tmp_path,
+        kernel_b = _environment_kernel(
+            _kernel_workspace(tmp_path),
             base_env={
                 "M5_COLLISION": "workspace-value",
                 "M5_WORKSPACE_ONLY": "workspace-secret",
@@ -97,7 +99,7 @@ def test_child_environment_is_bound_when_queued_execution_starts(
     async def scenario() -> None:
         started = tmp_path / "started"
         release = tmp_path / "release"
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             await _exec(
                 kernel,

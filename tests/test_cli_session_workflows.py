@@ -6,14 +6,14 @@ from pathlib import Path
 
 from interaction_fakes import _ScriptedInteraction
 
-import cli_agent.runtime._resources as resources_module
+import cli_agent.presets as presets_module
 from cli_agent.config import CliConfig
 from cli_agent.errors import SessionPersistenceError
 from cli_agent.presentation import render_host_error
+from cli_agent.presets import open_default_runtime
 from cli_agent.runner import run_agent
 from cli_agent.runtime import ContextPolicy, ScriptedModelProvider
 from cli_agent.runtime._database.state import _StateDatabase
-from cli_agent.runtime.runtime import AgentRuntime
 
 _CONTEXT_POLICY = ContextPolicy(
     context_window_tokens=16_384,
@@ -42,7 +42,7 @@ def _install_database(monkeypatch, path: Path) -> None:
             del requested
             return _StateDatabase.open(path / "state.sqlite3")
 
-    monkeypatch.setattr(resources_module, "_StateDatabase", _TestStateDatabase)
+    monkeypatch.setattr(presets_module, "_StateDatabase", _TestStateDatabase)
 
 
 def test_cli_can_list_resume_and_create_sessions(
@@ -52,10 +52,10 @@ def test_cli_can_list_resume_and_create_sessions(
     _install_database(monkeypatch, tmp_path)
 
     async def scenario() -> tuple[int, str, str]:
-        async with await AgentRuntime.open(
+        async with await open_default_runtime(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            user_interaction=_ScriptedInteraction("deny"),
+            interaction=_ScriptedInteraction("deny"),
             context_policy=_CONTEXT_POLICY,
         ) as runtime:
             target = await runtime.new_session()

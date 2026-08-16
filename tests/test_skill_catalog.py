@@ -1,17 +1,17 @@
 import asyncio
 from pathlib import Path
 
+from cli_agent._adapters.local.view import _LocalCapabilityView
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
     _LocalWorkspaceFilesystem,
 )
 from cli_agent.runtime._capability.projections import write_skill_index
-from cli_agent.runtime._capability.provider import (
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.snapshot import (
     CAPABILITY_SCHEMA_VERSION,
     CapabilitySnapshot,
 )
-from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._system_message import assemble_system_message
@@ -33,7 +33,7 @@ def _repertoire(workspace: Path) -> Path:
 
 
 def _filesystem(root: Path, view: _LocalCapabilityView) -> _LocalWorkspaceFilesystem:
-    return _LocalBackendWorkspace(root, {}, view).filesystem
+    return _LocalBackendWorkspace(root, {}).filesystem
 
 
 def test_catalog_generates_index_and_reports_actual_provenance(

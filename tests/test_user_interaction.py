@@ -4,12 +4,14 @@ import sys
 from pathlib import Path
 
 import pytest
+from host_fakes import _environment_kernel
 from interaction_fakes import (
     _BlockingInteraction,
     _InvalidAnswerInteraction,
     _ScriptedInteraction,
 )
 from policy_fakes import _AskExecutablePolicy
+from workspace_fakes import _kernel_workspace
 
 from cli_agent.runtime import (
     ToolCall,
@@ -18,7 +20,6 @@ from cli_agent.runtime import (
     UserOption,
     UserQuestion,
 )
-from cli_agent.runtime._environment import EnvironmentKernel
 
 
 def test_ask_standard_question_exposes_reason_command_and_fixed_options(
@@ -29,10 +30,10 @@ def test_ask_standard_question_exposes_reason_command_and_fixed_options(
     command = _python_command(f"from pathlib import Path; Path({str(proof)!r}).touch()")
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=_ask_for_python_policy(),
-            user_interaction=interaction,
+            interaction=interaction,
             session_id="session-a",
         )
         try:
@@ -70,10 +71,10 @@ def test_allow_once_executes_once_and_does_not_persist(tmp_path: Path) -> None:
     interaction = _ScriptedInteraction("allow_once")
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=_ask_for_python_policy(),
-            user_interaction=interaction,
+            interaction=interaction,
         )
         try:
             first = _output(
@@ -109,10 +110,10 @@ def test_ask_deny_blocks_command_with_policy_reason(tmp_path: Path) -> None:
     proof = tmp_path / "denied"
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=_ask_for_python_policy(),
-            user_interaction=interaction,
+            interaction=interaction,
         )
         try:
             result = await kernel.dispatch(
@@ -141,10 +142,10 @@ def test_ask_none_fails_closed_with_generic_message(tmp_path: Path) -> None:
     proof = tmp_path / "cancelled"
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=_ask_for_python_policy(),
-            user_interaction=interaction,
+            interaction=interaction,
         )
         try:
             result = await kernel.dispatch(
@@ -170,8 +171,8 @@ def test_ask_none_fails_closed_with_generic_message(tmp_path: Path) -> None:
 
 def test_ask_without_interaction_fails_closed(tmp_path: Path) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=_ask_for_python_policy(),
         )
         try:
@@ -186,7 +187,7 @@ def test_ask_without_interaction_fails_closed(tmp_path: Path) -> None:
             assert _error(result) == {
                 "ok": False,
                 "code": "policy_denied",
-                "message": "execution requires user interaction but none is configured",
+                "message": "direct invocation of python requires Host approval",
             }
             assert kernel._executions == {}
         finally:
@@ -209,11 +210,11 @@ def test_interaction_exception_fails_closed_with_diagnostic(tmp_path: Path) -> N
     diagnostics: list[object] = []
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=_ask_for_python_policy(),
-            user_interaction=FailsOnceInteraction(),  # type: ignore[arg-type]
-            on_diagnostic=diagnostics.append,
+            interaction=FailsOnceInteraction(),  # type: ignore[arg-type]
+            events=diagnostics.append,
         )
         try:
             result = await kernel.dispatch(
@@ -262,11 +263,11 @@ def test_invalid_interaction_answer_fails_closed_with_diagnostic(
     diagnostics: list[object] = []
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=_ask_for_python_policy(),
-            user_interaction=interaction,  # type: ignore[arg-type]
-            on_diagnostic=diagnostics.append,
+            interaction=interaction,  # type: ignore[arg-type]
+            events=diagnostics.append,
         )
         try:
             result = await kernel.dispatch(
@@ -296,10 +297,10 @@ def test_session_close_cancels_pending_ask_without_closing_interaction(
 ) -> None:
     async def scenario() -> None:
         interaction = _BlockingInteraction()
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=_ask_for_python_policy(),
-            user_interaction=interaction,
+            interaction=interaction,
         )
         dispatch = asyncio.create_task(
             kernel.dispatch(

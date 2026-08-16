@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
-    AgentRuntime,
     AssistantMessage,
     ContextPolicy,
     ModelCompletion,
@@ -54,10 +54,10 @@ def test_run_turn_owns_a_separate_producer_task(tmp_path: Path) -> None:
     provider = _BlockingProvider()
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         await runtime.new_session()
@@ -102,10 +102,10 @@ def test_queue_backpressure_stops_the_producer_without_a_consumer(
 
     async def scenario() -> None:
         provider = _BurstProvider()
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         await runtime.new_session()
@@ -138,10 +138,10 @@ def test_breaking_from_async_for_closes_the_producer(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         provider = _StreamingProvider()
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         await runtime.new_session()
@@ -163,10 +163,10 @@ def test_completion_usage_is_committed_with_the_assistant_message(
     provider = _UsageProvider()
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         session = await runtime.new_session()

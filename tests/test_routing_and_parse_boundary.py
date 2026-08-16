@@ -5,10 +5,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+from host_fakes import _environment_kernel
+from workspace_fakes import _kernel_workspace
 
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._backend.local import _LocalBackendWorkspace
-from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._environment.records import ExecutionRecord
 from cli_agent.runtime._environment.routing import _ExecutionRoute
@@ -47,7 +48,7 @@ def test_parse_failure_returns_invalid_argument_and_creates_no_execution(
     command: str,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             result = await kernel.dispatch(
                 ToolCall(
@@ -69,7 +70,7 @@ def test_parse_failure_in_batch_returns_invalid_argument_and_admits_nothing(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             results = await kernel.dispatch_batch(
                 (
@@ -114,7 +115,7 @@ def test_malformed_custom_command_never_reaches_custom_handler(
     sources = (("cli_read", _InlineSource("cli_read", prepare, isolated=True)),)
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path, custom_sources=sources)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path), custom_sources=sources)
         try:
             result = await kernel.dispatch(
                 ToolCall(
@@ -151,7 +152,7 @@ def test_malformed_tools_heredoc_no_longer_bypasses_parser(
     sources = (("cli_run", _InlineSource("cli_run", prepare, isolated=True)),)
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path, custom_sources=sources)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path), custom_sources=sources)
         try:
             result = await kernel.dispatch(
                 ToolCall(
@@ -172,10 +173,10 @@ def test_malformed_tools_heredoc_no_longer_bypasses_parser(
 
 def test_parse_failure_never_reaches_capability_view(tmp_path: Path) -> None:
     view = _RaiseOnPrepareView()
-    backend = _LocalBackendWorkspace(tmp_path, {}, view)  # type: ignore[arg-type]
+    backend = _LocalBackendWorkspace(tmp_path, {})  # type: ignore[arg-type]
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path, backend=backend)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path, backend))
         try:
             result = await kernel.dispatch(
                 ToolCall(

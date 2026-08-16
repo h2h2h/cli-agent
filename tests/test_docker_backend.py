@@ -20,8 +20,10 @@ from uuid import uuid4
 
 import pytest
 from backend_contract_suite import CONTRACT_CASES, _request
+from host_fakes import _environment_kernel
+from workspace_fakes import _kernel_workspace
 
-from cli_agent.runtime._backend import _BackendWorkspace, _WorkspaceSource
+from cli_agent.runtime._backend import Backend, _WorkspaceSource
 from cli_agent.runtime._backend.docker import (
     _DockerBackend,
     _DockerBackendWorkspace,
@@ -67,7 +69,7 @@ def open_workspace(
     kind = request.param
     opened: list[tuple[str, str | None, object]] = []
 
-    async def opener() -> _BackendWorkspace:
+    async def opener() -> Backend:
         if kind == "local":
             root = tmp_path / "workspace"
             root.mkdir()
@@ -325,7 +327,7 @@ def test_docker_kernel_exec_output_and_files_share_the_volume(
 ) -> None:
     async def scenario() -> None:
         workspace = await open_docker_workspace()
-        kernel = EnvironmentKernel(workspace.root, backend=workspace)
+        kernel = _environment_kernel(_kernel_workspace(workspace.root, workspace))
         try:
             echoed = await _exec(kernel, "echo from-kernel > shared.txt")
             assert echoed.error is None

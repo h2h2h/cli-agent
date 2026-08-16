@@ -1,8 +1,8 @@
-"""Runtime ownership tests for one shared Local Backend Workspace.
+"""Runtime ownership tests for one shared Local Workspace.
 
 These tests prove the RFC-0018 active-binding semantics: one
-``AgentRuntime`` owns exactly one Local Backend Workspace, every Session
-binding borrows the same Backend instance without any BackendSession,
+``AgentRuntime`` owns exactly one Local Workspace, every Session binding
+borrows the same Workspace instance without any BackendSession,
 Workspace files are shared across bindings while cwd stays per-binding
 (resume starts from the Workspace root), and Backend open failure fails
 closed without creating a Runtime or attempting any fallback.
@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -38,14 +39,14 @@ _context_policy = ContextPolicy(
 
 def test_runtime_owns_exactly_one_local_backend_workspace(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         try:
-            backend = runtime._resources.backend
+            backend = runtime._resources.workspace.backend
             assert isinstance(backend, _LocalBackendWorkspace)
             assert backend.root == str(tmp_path.resolve())
             assert not hasattr(runtime, "_backend")
@@ -56,7 +57,7 @@ def test_runtime_owns_exactly_one_local_backend_workspace(tmp_path: Path) -> Non
     asyncio.run(scenario())
 
 
-def test_each_binding_borrows_the_same_backend_workspace(tmp_path: Path) -> None:
+def test_each_binding_borrows_the_same_workspace(tmp_path: Path) -> None:
     provider = ScriptedModelProvider(
         script=(
             (_completion(AssistantMessage.text("A")),),
@@ -65,10 +66,10 @@ def test_each_binding_borrows_the_same_backend_workspace(tmp_path: Path) -> None
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         try:
@@ -81,9 +82,11 @@ def test_each_binding_borrows_the_same_backend_workspace(tmp_path: Path) -> None
             await _collect_turn(runtime, "B")
             second_kernel = runtime._binding.kernel
 
-            backend = runtime._resources.backend
-            assert first_kernel._backend is backend
-            assert second_kernel._backend is backend
+            workspace = runtime._resources.workspace
+            assert first_kernel._workspace is workspace
+            assert second_kernel._workspace is workspace
+            assert not hasattr(first_kernel, "_backend")
+            assert not hasattr(second_kernel, "_backend")
             assert runtime._binding is not None
             assert runtime._binding.kernel is second_kernel
         finally:
@@ -108,10 +111,10 @@ def test_bindings_share_workspace_files_but_cwd_is_per_binding(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         try:
@@ -147,10 +150,10 @@ def test_backend_open_failure_fails_runtime_open_closed(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         with pytest.raises(ValueError, match="must not contain NUL"):
-            await AgentRuntime.open(
+            await open_default_runtime(
                 workspace=workspace,
                 provider=ScriptedModelProvider(script=()),
-                user_interaction=_user_interaction,
+                interaction=_user_interaction,
                 context_policy=_context_policy,
             )
 

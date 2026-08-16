@@ -78,13 +78,13 @@ def test_runtime_has_no_backend_session_or_parallel_workspace_owner() -> None:
         assert "backend_session" not in source, path
 
     resource_fields = {field.name for field in fields(_RuntimeResources)}
-    assert "backend" in resource_fields
-    assert sum(1 for field in fields(_RuntimeResources) if field.name == "backend") == 1
+    assert "workspace" in resource_fields
+    assert "backend" not in resource_fields
 
     runtime_source = Path(
         importlib.import_module("cli_agent.runtime.runtime").__file__
     ).read_text(encoding="utf-8")
-    assert runtime_source.count("backend=") == 3
+    assert "self._resources.backend" not in runtime_source
 
 
 def test_environment_kernel_never_touches_local_backend_mechanics() -> None:

@@ -1,9 +1,9 @@
 import asyncio
 from pathlib import Path
 
+from cli_agent._adapters.local.view import _LocalCapabilityView
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
 )
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.library.facts import (
@@ -36,7 +36,7 @@ def _reconcile(workspace: Path, repertoire: Path) -> _LibraryCatalog:
         view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
         return await _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(workspace, {}, view).filesystem,
+            _LocalBackendWorkspace(workspace, {}).filesystem,
             _cache(workspace),
         )
 
@@ -223,7 +223,7 @@ def test_workspace_override_renders_workspace_provenance_and_shadow(
     asyncio.run(
         _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
     )

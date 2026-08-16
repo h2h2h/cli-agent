@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
@@ -40,10 +40,9 @@ from cli_agent.errors import (
     error_boundary,
 )
 from cli_agent.runtime._agent_loop import AgentLoop
-from cli_agent.runtime._context import ContextEngineFactory, ContextPolicy, SessionUsage
+from cli_agent.runtime._composition import RuntimeComponents, WorkspaceConfig
+from cli_agent.runtime._context import SessionUsage
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._environment.interaction import UserInteraction
-from cli_agent.runtime._environment.policy import ExecutionPolicy
 from cli_agent.runtime._resources import (
     _reconcile_runtime_resources,
     _RuntimeResources,
@@ -57,6 +56,7 @@ from cli_agent.runtime._session import (
 from cli_agent.runtime._system_message import assemble_system_message
 from cli_agent.runtime._turn import TurnStream
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.host import emit_event
 from cli_agent.runtime.model import (
     AssistantMessage,
     ModelMessage,
@@ -129,26 +129,17 @@ class AgentRuntime:
         *,
         provider: ModelProvider,
         resources: _RuntimeResources,
-        policy: ExecutionPolicy | None,
-        user_interaction: UserInteraction,
+        components: RuntimeComponents,
         parallel_commands: frozenset[str],
         instruction: str | None,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
-        context_policy: ContextPolicy,
     ) -> None:
         self._provider = provider
         self._resources = resources
-        self._policy = policy
-        self._user_interaction = user_interaction
+        self._policy = components.policy
+        self._host = components.host
         self._parallel_commands = parallel_commands
         self._instruction = instruction
-        self._on_diagnostic = on_diagnostic
-        self._context_policy = context_policy
-        self._context_factory = ContextEngineFactory(
-            store=resources.session_store,
-            context_policy=context_policy,
-            on_diagnostic=on_diagnostic,
-        )
+        self._context_factory = components.context_factory
         self._state = RuntimeState.NO_SESSION
         self._binding: _ActiveBinding | None = None
         self._turn_task: asyncio.Task[Any] | None = None
@@ -161,16 +152,11 @@ class AgentRuntime:
     def open(
         cls,
         *,
-        workspace: str | Path,
         provider: ModelProvider,
-        user_interaction: UserInteraction,
-        context_policy: ContextPolicy,
-        repertoire: str | Path | None = None,
+        components: RuntimeComponents,
+        workspace_config: WorkspaceConfig,
         system_instruction: str | None = None,
-        execution_policy: ExecutionPolicy | None = None,
         parallel_commands: frozenset[str] | None = None,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
-        backend: str = "local",
     ) -> Coroutine[Any, None, AgentRuntime]:
         """Validate arguments and return a coroutine that opens the Runtime.
 
@@ -179,96 +165,46 @@ class AgentRuntime:
         The opened Runtime may also be used as an async context manager that
         closes itself on exit.
 
-        Args:
-            workspace (`str | Path`):
-                Existing directory to bind as the Workspace (the Host
-                control directory when ``backend`` is ``"docker"``).
-            provider (`ModelProvider`):
-                Model provider used by new Sessions when no per-session
-                override is supplied to :meth:`new_session` or
-                :meth:`resume_session`.
-            user_interaction (`UserInteraction`):
-                Host-owned Runtime-wide question channel; required even when
-                ``execution_policy`` is omitted.
-            context_policy (`ContextPolicy`):
-                Explicit Context budget and compaction policy for every
-                Session; there is no implicit model-name window registry.
-            repertoire (`str | Path | None`):
-                User-maintained capability lower tree; defaults to
-                ``~/.cli-agent/repertoire``.
-            system_instruction (`str | None`):
-                Optional Host instruction appended to the canonical per-Session
-                system message.
-            execution_policy (`ExecutionPolicy | None`):
-                Optional Host-injected execution Policy. ``None`` fully skips
-                Policy evaluation; no default Policy or implicit decision is
-                constructed.
-            parallel_commands (`frozenset[str] | None`):
-                Executable basenames trusted to run in parallel Shell batches.
-            on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
-                Optional Host callback receiving structured Runtime
-                Diagnostics, such as MCP discovery exhaustion, without blocking
-                Runtime open. Omitted callbacks keep today's silent behavior.
-            backend (`str`):
-                The Workspace Backend kind, fixed for the Workspace
-                lifetime (``"local"`` or ``"docker"``); V1 does not
-                hot-swap a Backend after open.
-
-        Returns:
-            A coroutine resolving to the opened :class:`AgentRuntime`.
+        Concrete Backend selection and Host services are already fixed in
+        ``components``. AgentRuntime only coordinates the injected ports.
 
         """
 
         return cls._reconcile(
-            workspace=workspace,
-            repertoire=repertoire,
+            config=workspace_config,
+            components=components,
             provider=provider,
             instruction=system_instruction,
-            policy=execution_policy,
-            user_interaction=user_interaction,
             parallel_commands=frozenset(parallel_commands or ()),
-            on_diagnostic=on_diagnostic,
-            context_policy=context_policy,
-            backend=backend,
         )
 
     @classmethod
     async def _reconcile(
         cls,
         *,
-        workspace: str | Path,
-        repertoire: str | Path | None,
+        config: WorkspaceConfig,
+        components: RuntimeComponents,
         provider: ModelProvider,
         instruction: str | None,
-        policy: ExecutionPolicy | None,
-        user_interaction: UserInteraction,
         parallel_commands: frozenset[str],
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
-        context_policy: ContextPolicy,
-        backend: str,
     ) -> AgentRuntime:
         """Prepare Workspace-scoped resources and construct the Runtime."""
 
         resources = await _reconcile_runtime_resources(
-            workspace=workspace,
-            repertoire=repertoire,
-            on_diagnostic=on_diagnostic,
-            backend=backend,
+            config=config,
+            components=components,
         )
         try:
             runtime = cls(
                 provider=provider,
                 resources=resources,
-                policy=policy,
-                user_interaction=user_interaction,
+                components=components,
                 parallel_commands=parallel_commands,
                 instruction=instruction,
-                on_diagnostic=on_diagnostic,
-                context_policy=context_policy,
             )
-            snapshot_library = resources.snapshot.library
+            snapshot_library = resources.capabilities.snapshot.library
             if snapshot_library is not None:
-                snapshot_library.start(provider, on_diagnostic)
+                snapshot_library.start(provider, components.host.events)
         except BaseException:
             with suppress(Exception):
                 await resources.close()
@@ -651,7 +587,7 @@ class AgentRuntime:
         try:
             with error_boundary(
                 "runtime.run_turn",
-                on_diagnostic=self._boundary_diagnostic,
+                sink=self._boundary_diagnostic,
             ):
                 async for event in binding.loop.run(message):
                     await stream._put_event(event)
@@ -750,7 +686,7 @@ class AgentRuntime:
         system = assemble_system_message(
             Path(workspace.root),
             self._instruction,
-            snapshot=self._resources.snapshot,
+            snapshot=self._resources.capabilities.snapshot,
         )
         session = self._resources.session_store.create(
             session_id,
@@ -786,7 +722,7 @@ class AgentRuntime:
         system = assemble_system_message(
             Path(workspace.root),
             self._instruction,
-            snapshot=self._resources.snapshot,
+            snapshot=self._resources.capabilities.snapshot,
         )
         binding = await self._build_binding(session, system, provider)
         return session, binding
@@ -836,7 +772,7 @@ class AgentRuntime:
                 context=context,
                 commit=commit,
                 commit_completion=commit_completion,
-                on_diagnostic=self._on_diagnostic,
+                events=self._host.events,
             )
         except BaseException:
             with suppress(Exception):
@@ -849,18 +785,18 @@ class AgentRuntime:
             raise RuntimeClosedError("AgentRuntime is closed")
 
     def _new_kernel(self, session_id: str) -> EnvironmentKernel:
+        capabilities = self._resources.capabilities
         return EnvironmentKernel(
-            self._resources.workspace.root,
-            backend=self._resources.backend,
-            library_catalog=self._resources.snapshot.library,
-            tool_catalog=self._resources.snapshot.tools,
-            tool_executor=self._resources.tool_executor,
-            base_env=self._resources.base_env,
+            self._resources.workspace,
+            library_catalog=capabilities.snapshot.library,
+            tool_catalog=capabilities.snapshot.tools,
+            tool_executor=capabilities.tool_executor,
+            capability_overlay=capabilities.overlay,
+            base_env=self._resources.workspace.base_environment,
             policy=self._policy,
-            user_interaction=self._user_interaction,
+            host=self._host,
             session_id=session_id,
             parallel_commands=self._parallel_commands,
-            on_diagnostic=self._on_diagnostic,
         )
 
     @staticmethod
@@ -909,12 +845,11 @@ class AgentRuntime:
                 credentials, or Secret References.
         """
 
-        if self._on_diagnostic is None:
-            return
-        self._on_diagnostic(
+        emit_event(
+            self._host.events,
             RuntimeDiagnostic(
                 kind=kind,
                 message=message,
                 detail=detail or {},
-            )
+            ),
         )

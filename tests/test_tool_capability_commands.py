@@ -5,10 +5,18 @@ import sys
 from pathlib import Path
 
 import pytest
+from host_fakes import _environment_kernel
 from policy_fakes import _AllowAllPolicy, _DenyExecutablePolicy
+from workspace_fakes import _kernel_workspace
 
-import cli_agent.runtime._backend.local.tool_runtime as tool_runtime_module
+import cli_agent._adapters.local.tool_runtime as tool_runtime_module
+from cli_agent._adapters.local.deployment import _LocalCapabilityDeployment
+from cli_agent._adapters.local.executor import _LocalToolExecutorFactory
+from cli_agent._adapters.local.overlay import _LocalCapabilityOverlay
+from cli_agent._adapters.local.view import _LocalCapabilityView
+from cli_agent._workspaces import _LocalWorkspace
 from cli_agent.runtime import (
+    CallbackEventSink,
     PolicyAction,
     RuntimeDiagnostic,
     ToolCall,
@@ -16,17 +24,15 @@ from cli_agent.runtime import (
 )
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
     _LocalWorkspaceFilesystem,
 )
-from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.projections import write_tool_index
-from cli_agent.runtime._capability.provider import (
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.snapshot import (
     CAPABILITY_SCHEMA_VERSION,
     CapabilitySnapshot,
 )
-from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.facts import ToolCommand
 from cli_agent.runtime._capability.tools.grammar import parse_tool_command
@@ -34,11 +40,10 @@ from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.policy import PolicyEvaluation
 from cli_agent.runtime._system_message import assemble_system_message
-from cli_agent.runtime._workspace import _LocalWorkspace
 
 
 def _filesystem(root: Path, view: _LocalCapabilityView) -> _LocalWorkspaceFilesystem:
-    return _LocalBackendWorkspace(root, {}, view).filesystem
+    return _LocalBackendWorkspace(root, {}).filesystem
 
 
 def test_catalog_generates_index_and_reports_actual_provenance(
@@ -122,7 +127,11 @@ def test_catalog_falls_back_and_reports_invalid_parallel_metadata(
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
     diagnostics: list[RuntimeDiagnostic] = []
     catalog = asyncio.run(
-        _reconcile_tools(view, _filesystem(tmp_path, view), diagnostics.append)
+        _reconcile_tools(
+            view,
+            _filesystem(tmp_path, view),
+            CallbackEventSink(diagnostics.append),
+        )
     )
 
     assert catalog.get("invalid").valid is True  # type: ignore[union-attr]
@@ -447,7 +456,7 @@ def test_reserved_tools_without_catalog_do_not_fall_back_to_shell(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             result = _output(await _exec(kernel, "tools list"))
             assert result["status"] == "failed"
@@ -608,13 +617,12 @@ def test_unavailable_tool_runtime_fails_run_without_host_fallback(
     )
 
     async def scenario() -> None:
-        backend = _LocalBackendWorkspace(tmp_path, {}, view)
+        backend = _LocalBackendWorkspace(tmp_path, {})
         deployed, executor = await _deploy(backend, tmp_path, repertoire, catalog)
         assert deployed.complete is False
         assert "sync failed" in (deployed.error or "")
-        kernel = EnvironmentKernel(
-            tmp_path,
-            backend=backend,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path, backend),
             tool_catalog=catalog,
             tool_executor=executor,
         )
@@ -641,7 +649,7 @@ def test_tool_runtime_syncs_user_requirements_plus_runtime_base(
     repertoire = _repertoire(tmp_path)
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    backend = _LocalBackendWorkspace(tmp_path, {}, view)
+    backend = _LocalBackendWorkspace(tmp_path, {})
     requirements = Path(view.root) / "tools" / "requirements.txt"
 
     calls: list[tuple[Path, Path, Path]] = []
@@ -672,7 +680,7 @@ def test_tool_runtime_syncs_user_requirements_plus_runtime_base(
 
         assert changed.complete and unchanged.complete
         assert len(calls) == 2
-        assert calls[0][0] == _runtime_python(backend)
+        assert calls[0][0] == _runtime_python(initial)
         assert calls[1][1].read_text() == "example-package==1.2.3\nmcp\n"
         assert calls[1][2] == Path(view.root) / "tools"
 
@@ -680,33 +688,33 @@ def test_tool_runtime_syncs_user_requirements_plus_runtime_base(
         other_workspace.mkdir()
         other_repertoire = _repertoire(other_workspace)
         _prepare_workspace(other_workspace)
-        other_view = _LocalCapabilityView.materialize(
+        _LocalCapabilityView.materialize(
             other_workspace / ".workspace", other_repertoire
         )
-        other_backend = _LocalBackendWorkspace(other_workspace, {}, other_view)
+        other_backend = _LocalBackendWorkspace(other_workspace, {})
         other, _ = await _deploy(
             other_backend,
             other_workspace,
             other_repertoire,
             _ToolCatalog(()),
         )
-        assert _runtime_root(other_backend) != _runtime_root(backend)
-        assert _runtime_python(other_backend) != _runtime_python(backend)
+        assert _runtime_root(other) != _runtime_root(initial)
+        assert _runtime_python(other) != _runtime_python(initial)
         assert other.complete, other.error
 
     asyncio.run(scenario())
 
 
-def _runtime_python(backend: _LocalBackendWorkspace) -> Path:
-    runtime = backend._tool_runtime
+def _runtime_python(deployment) -> Path:
+    runtime = deployment.tool_runtime
     assert runtime is not None and runtime.python is not None
-    return runtime.python
+    return Path(runtime.python)
 
 
-def _runtime_root(backend: _LocalBackendWorkspace) -> Path:
-    runtime = backend._tool_runtime
-    assert runtime is not None
-    return runtime.root
+def _runtime_root(deployment) -> Path:
+    runtime = deployment.tool_runtime
+    assert runtime is not None and runtime.binding_directory is not None
+    return Path(runtime.binding_directory)
 
 
 def test_effective_requirements_do_not_duplicate_user_declared_base(
@@ -716,7 +724,7 @@ def test_effective_requirements_do_not_duplicate_user_declared_base(
     repertoire = _repertoire(tmp_path)
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    backend = _LocalBackendWorkspace(tmp_path, {}, view)
+    backend = _LocalBackendWorkspace(tmp_path, {})
     requirements = Path(view.root) / "tools" / "requirements.txt"
     requirements.write_text("requests\nmcp\n")
 
@@ -748,13 +756,13 @@ def test_effective_requirements_do_not_duplicate_user_declared_base(
 def test_mcp_is_importable_in_the_worker_venv(tmp_path: Path) -> None:
     repertoire = _repertoire(tmp_path)
     _prepare_workspace(tmp_path)
-    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
 
     async def scenario() -> None:
-        backend = _LocalBackendWorkspace(tmp_path, {}, view)
+        backend = _LocalBackendWorkspace(tmp_path, {})
         deployed, _ = await _deploy(backend, tmp_path, repertoire, _ToolCatalog(()))
         assert deployed.complete, deployed.error
-        python = _runtime_python(backend)
+        python = _runtime_python(deployed)
         result = subprocess.run(
             [
                 str(python),
@@ -797,15 +805,14 @@ def test_dependency_sync_failure_is_fail_soft_for_catalog_operations(
     )
 
     async def scenario() -> None:
-        backend = _LocalBackendWorkspace(tmp_path, {}, view)
+        backend = _LocalBackendWorkspace(tmp_path, {})
         catalog = await _reconcile_tools(view, backend.filesystem)
         deployed, executor = await _deploy(backend, tmp_path, repertoire, catalog)
         assert deployed.complete is False
         assert "package manager failed" in (deployed.error or "")
 
-        kernel = EnvironmentKernel(
-            tmp_path,
-            backend=backend,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path, backend),
             tool_catalog=catalog,
             tool_executor=executor,
         )
@@ -1045,12 +1052,7 @@ async def _deploy(
     *,
     revision: str = "test-revision",
 ):
-    deployment = _LocalCapabilityDeployment(
-        state_root=workspace / ".workspace",
-        repertoire=repertoire,
-        volume=".workspace",
-        base_environment=backend.execution_base_environment,
-    )
+    deployment = _LocalCapabilityDeployment()
     opened = _LocalWorkspace(
         "local:00000000000000000000000000000000",
         workspace,
@@ -1066,7 +1068,7 @@ async def _deploy(
         project_instructions=None,
     )
     deployed = await deployment.reconcile(snapshot, opened)
-    return deployed, deployment.executor(opened, revision=revision)
+    return deployed, _LocalToolExecutorFactory().create(opened, snapshot, deployed)
 
 
 async def _kernel(
@@ -1079,15 +1081,20 @@ async def _kernel(
 ) -> EnvironmentKernel:
     _prepare_workspace(workspace)
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
-    backend = _LocalBackendWorkspace(workspace, {}, view)
+    backend = _LocalBackendWorkspace(workspace, {})
     catalog = await _reconcile_tools(view, backend.filesystem)
     deployed, executor = await _deploy(backend, workspace, repertoire, catalog)
     assert deployed.complete, deployed.error
-    return EnvironmentKernel(
-        workspace,
-        backend=backend,
+    return _environment_kernel(
+        _LocalWorkspace(
+            "local:00000000000000000000000000000000",
+            workspace,
+            backend,
+            repertoire,
+        ),
         tool_catalog=catalog,
         tool_executor=executor,
+        capability_overlay=_LocalCapabilityOverlay(view),
         policy=policy,
         parallel_commands=parallel_commands,
         parallel_limit=parallel_limit,
@@ -1170,8 +1177,8 @@ async def _wait_for_path(path: Path) -> None:
     raise AssertionError(f"path did not appear: {path}")
 
 
-async def _reconcile_tools(view, filesystem, on_diagnostic=None):
-    catalog = await _ToolCatalog.discover(view, on_diagnostic)
+async def _reconcile_tools(view, filesystem, events=None):
+    catalog = await _ToolCatalog.discover(view, events) if events else await _ToolCatalog.discover(view)
     await write_tool_index(volume=view.root, filesystem=filesystem, catalog=catalog)
     return catalog
 

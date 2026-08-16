@@ -14,13 +14,14 @@ from pathlib import Path
 
 import pytest
 
-import cli_agent.runtime._backend.local.tool_runtime as tool_runtime_module
+import cli_agent._adapters.local.tool_runtime as tool_runtime_module
+from cli_agent._adapters.local.deployment import _LocalCapabilityDeployment
+from cli_agent._adapters.local.view import _LocalCapabilityView
+from cli_agent._workspaces import _LocalWorkspace
 from cli_agent.runtime._backend import _FilesystemError, _FileWriteRequest
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
 )
-from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
 from cli_agent.runtime._capability.deployment import (
     DEPLOYMENT_MANIFEST,
     DEPLOYMENT_SCHEMA_VERSION,
@@ -29,14 +30,18 @@ from cli_agent.runtime._capability.deployment import (
     verify_deployment,
 )
 from cli_agent.runtime._capability.mcp.config import discover_configs
-from cli_agent.runtime._capability.provider import (
+from cli_agent.runtime._capability.mcp.facts import (
+    MCPServerConfig,
+    _MCPServerFacts,
+    _MCPToolFacts,
+)
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.snapshot import (
     CAPABILITY_SCHEMA_VERSION,
     CapabilitySnapshot,
 )
-from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
-from cli_agent.runtime._workspace import _LocalWorkspace
 
 _WORKSPACE_ID = "local:00000000000000000000000000000000"
 
@@ -48,37 +53,38 @@ def _repertoire(workspace: Path) -> Path:
     return repertoire
 
 
-def _bootstrap(workspace: Path, repertoire: Path, *, on_diagnostic=None):
+def _bootstrap(workspace: Path, repertoire: Path):
     """Open a Local Workspace and its Local deployment, RFC-0014 style."""
 
     _prepare_workspace(workspace)
-    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
-    backend = _LocalBackendWorkspace(workspace, {}, view)
-    deployment = _LocalCapabilityDeployment(
-        state_root=workspace / ".workspace",
-        repertoire=repertoire,
-        volume=".workspace",
-        base_environment=backend.execution_base_environment,
-        on_diagnostic=on_diagnostic,
-    )
+    _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
+    backend = _LocalBackendWorkspace(workspace, {})
+    deployment = _LocalCapabilityDeployment()
     opened = _LocalWorkspace(_WORKSPACE_ID, workspace, backend, repertoire)
     return opened, deployment
 
 
 def _bootstrap_opened(workspace: Path, repertoire: Path):
     opened, deployment = _bootstrap(workspace, repertoire)
-    view = opened.backend._view_provider()
+    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     return opened, deployment, view
 
 
-async def _snapshot(view, *, revision: str) -> CapabilitySnapshot:
+async def _snapshot(
+    view,
+    *,
+    revision: str,
+    mcp_servers: tuple[MCPServerConfig, ...] = (),
+    mcp_facts: tuple[_MCPServerFacts, ...] = (),
+) -> CapabilitySnapshot:
     return CapabilitySnapshot(
         revision=revision,
         schema_version=CAPABILITY_SCHEMA_VERSION,
         tools=await _ToolCatalog.discover(view),
         skills=await _SkillCatalog.discover(view),
-        mcp_servers=(),
+        mcp_servers=mcp_servers,
         project_instructions=None,
+        mcp_facts=mcp_facts,
     )
 
 
@@ -124,10 +130,6 @@ def test_first_deployment_materializes_layout_and_manifest(tmp_path: Path) -> No
     opened, deployment, view = _bootstrap_opened(workspace, repertoire)
 
     async def scenario() -> None:
-        await deployment.attach(opened)
-        configs = await discover_configs(view)
-        facts = await deployment.discover_mcp(configs)
-        await deployment.materialize_stubs(opened, configs, facts)
         snapshot = await _snapshot(view, revision="revision-a")
         deployed = await deployment.reconcile(snapshot, opened)
 
@@ -172,7 +174,6 @@ def test_reconcile_same_snapshot_is_a_full_cache_hit(tmp_path: Path) -> None:
     syncs: list[str] = []
 
     async def scenario() -> None:
-        await deployment.attach(opened)
         snapshot = await _snapshot(view, revision="revision-a")
         first = await deployment.reconcile(snapshot, opened)
         assert first.complete, first.error
@@ -202,7 +203,6 @@ def test_revision_update_republishes_indexes_and_manifest(tmp_path: Path) -> Non
     opened, deployment, view = _bootstrap_opened(workspace, repertoire)
 
     async def scenario() -> None:
-        await deployment.attach(opened)
         first = await deployment.reconcile(
             await _snapshot(view, revision="revision-a"),
             opened,
@@ -216,7 +216,6 @@ def test_revision_update_republishes_indexes_and_manifest(tmp_path: Path) -> Non
             '"""Add numbers."""\nPARALLEL_SAFE = True\n\ndef add(a, b):\n    return a + b\n',
         )
         _, second_deployment, second_view = _bootstrap_opened(workspace, repertoire)
-        await second_deployment.attach(opened)
         second = await second_deployment.reconcile(
             await _snapshot(second_view, revision="revision-b"),
             opened,
@@ -246,7 +245,6 @@ def test_dependency_failure_rolls_back_to_the_previous_deployment(
     requirements = workspace / ".workspace" / "tools" / "requirements.txt"
 
     async def good_scenario() -> CapabilitySnapshot:
-        await deployment.attach(opened)
         snapshot = await _snapshot(view, revision="revision-a")
         good = await deployment.reconcile(snapshot, opened)
         assert good.complete, good.error
@@ -306,7 +304,6 @@ def test_concurrent_reconciles_are_serialized(tmp_path: Path) -> None:
     syncs: list[str] = []
 
     async def scenario() -> None:
-        await deployment.attach(opened)
         snapshot = await _snapshot(view, revision="revision-a")
         _, other_deployment, _other = _bootstrap_opened(workspace, repertoire)
         results = await asyncio.gather(
@@ -333,14 +330,12 @@ def test_close_and_reopen_hits_the_deployment_cache(tmp_path: Path) -> None:
     syncs: list[str] = []
 
     async def scenario() -> None:
-        await deployment.attach(opened)
         snapshot = await _snapshot(view, revision="revision-a")
         first = await deployment.reconcile(snapshot, opened)
         assert first.complete, first.error
         await opened.backend.close()
 
         reopened, redeployment, reopened_view = _bootstrap_opened(workspace, repertoire)
-        await redeployment.attach(reopened)
         counter = _CountingFilesystem(reopened.filesystem)
         reopened.filesystem = counter
         deployed = await redeployment.reconcile(snapshot, reopened)
@@ -380,11 +375,25 @@ def test_mcp_binding_and_stubs_are_deployment_domains(tmp_path: Path) -> None:
     opened, deployment, view = _bootstrap_opened(workspace, repertoire)
 
     async def scenario() -> None:
-        await deployment.attach(opened)
         configs = await discover_configs(view)
-        facts = await deployment.discover_mcp(configs)
-        await deployment.materialize_stubs(opened, configs, facts)
-        snapshot = await _snapshot(view, revision="revision-a")
+        facts = (
+            _MCPServerFacts(
+                name="math",
+                tools=(
+                    _MCPToolFacts(
+                        name="add",
+                        description="Add two numbers.",
+                        input_schema={"type": "object"},
+                    ),
+                ),
+            ),
+        )
+        snapshot = await _snapshot(
+            view,
+            revision="revision-a",
+            mcp_servers=configs,
+            mcp_facts=facts,
+        )
         deployed = await deployment.reconcile(snapshot, opened)
 
         assert deployed.complete, deployed.error
@@ -409,7 +418,6 @@ def test_corrupt_manifest_is_treated_as_absent(tmp_path: Path) -> None:
     manifest_path.write_text("{not json", encoding="utf-8")
 
     async def scenario() -> None:
-        await deployment.attach(opened)
         deployed = await deployment.reconcile(
             await _snapshot(view, revision="revision-a"),
             opened,
@@ -430,7 +438,6 @@ def test_foreign_manifest_is_rematerialized(tmp_path: Path) -> None:
     opened, deployment, view = _bootstrap_opened(workspace, repertoire)
 
     async def scenario() -> None:
-        await deployment.attach(opened)
         deployed = await deployment.reconcile(
             await _snapshot(view, revision="revision-a"),
             opened,

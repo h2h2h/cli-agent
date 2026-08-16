@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import get_args, get_origin, get_type_hints
 
 from cli_agent.runtime._backend import (
-    _Backend,
-    _BackendWorkspace,
+    Backend,
+    BackendFactory,
     _CapabilityInspection,
     _DirectoryEntry,
     _FileEdit,
@@ -35,7 +35,7 @@ from cli_agent.runtime._capability.command_parser import (
     ShellParseResult,
     parse_shell_ast,
 )
-from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
+from cli_agent.runtime._capability.source_view import CapabilitySource
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._execution import (
     ExecutionHandle,
@@ -211,7 +211,7 @@ class _FakeBackend:
     async def open_workspace(
         self,
         source: _WorkspaceSource,
-    ) -> _BackendWorkspace:
+    ) -> Backend:
         del source
         return _FakeBackendWorkspace()
 
@@ -220,8 +220,8 @@ def test_contracts_cover_execution_and_filesystem() -> None:
     backend = _FakeBackend()
     workspace = _FakeBackendWorkspace()
 
-    assert isinstance(backend, _Backend)
-    assert isinstance(workspace, _BackendWorkspace)
+    assert isinstance(backend, BackendFactory)
+    assert isinstance(workspace, Backend)
     assert isinstance(workspace.filesystem, _WorkspaceFilesystem)
 
 
@@ -343,7 +343,7 @@ def test_fake_backend_workspace_runs_execution_and_filesystem_flows() -> None:
 def test_logical_capability_view_contract_needs_no_host_mechanics() -> None:
     view = _InMemoryCapabilityView()
 
-    assert isinstance(view, _LogicalCapabilityView)
+    assert isinstance(view, CapabilitySource)
 
     async def scenario() -> None:
         inspection = await view.inspect("tools/math.py")

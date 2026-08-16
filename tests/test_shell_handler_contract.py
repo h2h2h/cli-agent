@@ -10,6 +10,8 @@ import importlib
 from pathlib import Path
 from typing import Any
 
+from workspace_fakes import _kernel_workspace
+
 from cli_agent.runtime._backend import _ShellExecutionRequest
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment.handlers.base import (
@@ -27,7 +29,9 @@ from cli_agent.runtime._execution import (
 class _RecordingBackend:
     """Record every Shell request without starting any work."""
 
-    def __init__(self) -> None:
+    def __init__(self, root: Path) -> None:
+        self.root = str(root)
+        self.filesystem = object()
         self.requests: list[_ShellExecutionRequest] = []
 
     def prepare_shell(self, request: _ShellExecutionRequest) -> ExecutionHandle:
@@ -45,8 +49,8 @@ class _SilentExecution:
 
 
 def test_shell_source_emits_backend_neutral_request(tmp_path: Path) -> None:
-    backend = _RecordingBackend()
-    handler = _ShellSource(backend)
+    backend = _RecordingBackend(tmp_path)
+    handler = _ShellSource(_kernel_workspace(tmp_path, backend))  # type: ignore[arg-type]
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(tmp_path),
@@ -73,8 +77,8 @@ def test_shell_source_emits_backend_neutral_request(tmp_path: Path) -> None:
 
 
 def test_shell_source_encodes_stdin_as_utf8_input_data(tmp_path: Path) -> None:
-    backend = _RecordingBackend()
-    handler = _ShellSource(backend)
+    backend = _RecordingBackend(tmp_path)
+    handler = _ShellSource(_kernel_workspace(tmp_path, backend))  # type: ignore[arg-type]
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(tmp_path),
@@ -96,8 +100,8 @@ def test_shell_source_encodes_stdin_as_utf8_input_data(tmp_path: Path) -> None:
 def test_shell_source_keeps_empty_stdin_distinct_from_omitted(
     tmp_path: Path,
 ) -> None:
-    backend = _RecordingBackend()
-    handler = _ShellSource(backend)
+    backend = _RecordingBackend(tmp_path)
+    handler = _ShellSource(_kernel_workspace(tmp_path, backend))  # type: ignore[arg-type]
     context = _CommandContext(
         workspace=str(tmp_path),
         cwd=str(tmp_path),
@@ -113,22 +117,13 @@ def test_shell_source_keeps_empty_stdin_distinct_from_omitted(
     assert backend.requests[0].input_data == b""
 
 
-def test_shell_source_requires_a_backend_workspace(tmp_path: Path) -> None:
-    context = _CommandContext(
-        workspace=str(tmp_path),
-        cwd=str(tmp_path),
-        environment={},
-    )
-
+def test_shell_source_requires_a_workspace() -> None:
     try:
-        _ShellSource().prepare(
-            _ExecutionRequest(command=parse_shell_ast("echo hi")),
-            context,
-        )
-    except RuntimeError as exc:
-        assert "Backend Workspace" in str(exc)
+        _ShellSource()  # type: ignore[call-arg]
+    except TypeError as exc:
+        assert "workspace" in str(exc)
     else:
-        raise AssertionError("Shell handler must fail without a Backend Workspace")
+        raise AssertionError("Shell Source must require a Workspace")
 
 
 def test_shell_source_module_has_no_process_or_environment_mechanics() -> None:

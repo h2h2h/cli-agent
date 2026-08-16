@@ -11,7 +11,7 @@ from __future__ import annotations
 import posixpath
 
 from cli_agent.runtime._backend import _FileWriteRequest, _WorkspaceFilesystem
-from cli_agent.runtime._capability.provider import CapabilitySnapshot
+from cli_agent.runtime._capability.snapshot import CapabilitySnapshot
 
 
 async def write_tool_index(

@@ -16,11 +16,13 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
-import cli_agent.runtime._resources as resources_module
+import cli_agent.presets as presets_module
 from cli_agent.errors import HostFacingError
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    CallbackEventSink,
     ContextPolicy,
     ModelCompletion,
     ModelEvent,
@@ -58,7 +60,7 @@ def _install_test_state_database(
             instances.append(database)
             return database
 
-    monkeypatch.setattr(resources_module, "_StateDatabase", _TestStateDatabase)
+    monkeypatch.setattr(presets_module, "_StateDatabase", _TestStateDatabase)
     return instances
 
 
@@ -95,12 +97,12 @@ async def _open_runtime(
     provider,
     received: list[RuntimeDiagnostic] | None = None,
 ) -> AgentRuntime:
-    return await AgentRuntime.open(
+    return await open_default_runtime(
         workspace=tmp_path,
         provider=provider,
-        user_interaction=_user_interaction,
+        interaction=_user_interaction,
         context_policy=_STANDARD_BUDGET,
-        on_diagnostic=received.append if received is not None else None,
+        events=CallbackEventSink(received.append) if received is not None else None,
     )
 
 
@@ -330,8 +332,11 @@ def test_unwritable_database_prevents_session_creation(
         def transaction(self):
             raise sqlite3.OperationalError("attempt to write a readonly database")
 
+        def close(self) -> None:
+            pass
+
     monkeypatch.setattr(
-        resources_module,
+        presets_module,
         "SessionStore",
         lambda database: SessionStore(_UnwritableDatabase()),  # type: ignore[arg-type]
     )

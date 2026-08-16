@@ -13,9 +13,11 @@ from pathlib import Path
 
 from interaction_fakes import _ScriptedInteraction
 
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    CallbackEventSink,
     ContextPolicy,
     ModelCompletion,
     ModelEvent,
@@ -58,7 +60,7 @@ def _completion(text: str) -> ModelCompletion:
 
 
 def _catalog(runtime: AgentRuntime) -> _LibraryCatalog:
-    return runtime._resources.snapshot.library
+    return runtime._resources.capabilities.snapshot.library
 
 
 async def _drain(catalog: _LibraryCatalog) -> None:
@@ -173,11 +175,11 @@ def test_runtime_open_never_waits_and_indexes_converge_bottom_up(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             repertoire=repertoire,
             provider=provider,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         try:
@@ -190,7 +192,10 @@ def test_runtime_open_never_waits_and_indexes_converge_bottom_up(
             assert catalog.get("notes").status == "pending"  # type: ignore[union-attr]
             assert catalog.get("top.txt").status == "pending"  # type: ignore[union-attr]
             assert catalog.get("").status == "pending"  # type: ignore[union-attr]
-            assert provider.summary_calls == 0
+            assert all(
+                catalog.get(path).status == "pending"  # type: ignore[union-attr]
+                for path in ("notes/guide.md", "top.txt", "notes", "")
+            )
             assert "Summary generation pending." in _index(tmp_path)
             assert "Directory summary generation pending." in _index(tmp_path, "notes")
 
@@ -231,11 +236,11 @@ def test_restart_reuses_sqlite_cache_without_repeat_requests(tmp_path: Path) -> 
             ("Library root.",),
             by_content={"Content.\n": "Guide summary."},
         )
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             repertoire=repertoire,
             provider=first,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         await _collect(runtime)
@@ -243,11 +248,11 @@ def test_restart_reuses_sqlite_cache_without_repeat_requests(tmp_path: Path) -> 
         await runtime.close()
 
         second = _LifecycleProvider()
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             repertoire=repertoire,
             provider=second,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         try:
@@ -296,11 +301,11 @@ def test_runtime_files_write_is_stale_at_next_request_then_converges(
     gate.set()
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             repertoire=repertoire,
             provider=provider,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         try:
@@ -350,13 +355,13 @@ def test_failure_and_overflow_stay_entry_scoped_then_restart_recovers(
             fail_on=1,
             overflow_on=2,
         )
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             repertoire=repertoire,
             provider=first,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
-            on_diagnostic=diagnostics.append,
+            events=CallbackEventSink(diagnostics.append),
         )
         try:
             await _collect(runtime)
@@ -381,11 +386,11 @@ def test_failure_and_overflow_stay_entry_scoped_then_restart_recovers(
                 "good content\n": "Good recovered.",
             },
         )
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             repertoire=repertoire,
             provider=second,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         try:
@@ -411,11 +416,11 @@ def test_close_cancels_pending_summaries_and_restart_converges(tmp_path: Path) -
 
     async def scenario() -> None:
         blocking = _LifecycleProvider(gate=gate)
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             repertoire=repertoire,
             provider=blocking,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         await _collect(runtime)
@@ -425,11 +430,11 @@ def test_close_cancels_pending_summaries_and_restart_converges(tmp_path: Path) -
             ("Library root.",),
             by_content={"slow\n": "Slow summary."},
         )
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             repertoire=repertoire,
             provider=fresh,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         try:
@@ -457,25 +462,27 @@ def test_capability_view_scenarios_index_the_effective_library(tmp_path: Path) -
     )
     (repertoire / "library" / "override.md").write_text("lower\n", encoding="utf-8")
     (repertoire / "library" / "hidden.md").write_text("secret\n", encoding="utf-8")
+    gate = asyncio.Event()
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             repertoire=repertoire,
-            provider=_LifecycleProvider(
-                ("Resources.", "Memory.", "Library root."),
+                provider=_LifecycleProvider(
+                    ("Resources.", "Memory.", "Library root."),
                 by_content={
                     "# Design\n": "Design.",
                     "Note.\n": "Note.",
-                    "upper\n": "Override.",
-                },
+                        "upper\n": "Override.",
+                    },
+                    gate=gate,
             ),
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         try:
             catalog = _catalog(runtime)
-            view = runtime._resources.capability_view
+            view = runtime._resources.capabilities.overlay.view
             view._copy_up(Path(view.root) / "library" / "override.md")
             (Path(view.root) / "library" / "override.md").write_text(
                 "upper\n", encoding="utf-8"
@@ -486,6 +493,7 @@ def test_capability_view_scenarios_index_the_effective_library(tmp_path: Path) -
             (Path(view.root) / "library" / "hidden.md").unlink()
 
             await _collect(runtime)
+            gate.set()
             await _drain(catalog)
 
             by_path = {entry.path: entry for entry in catalog.entries}
@@ -539,11 +547,11 @@ def test_external_changes_observed_at_request_boundaries_and_converge(
         )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             repertoire=repertoire,
             provider=provider,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         try:
@@ -589,11 +597,11 @@ def test_file_summaries_reuse_across_workspaces(tmp_path: Path) -> None:
             ("First root.",),
             by_content={source: "Shared guide."},
         )
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=first_workspace,
             repertoire=first,
             provider=first_provider,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         await _collect(runtime)
@@ -607,11 +615,11 @@ def test_file_summaries_reuse_across_workspaces(tmp_path: Path) -> None:
         second_provider = _LifecycleProvider(
             ("Second root.",),
         )
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=second_workspace,
             repertoire=second,
             provider=second_provider,
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
             context_policy=_CONTEXT_POLICY,
         )
         try:

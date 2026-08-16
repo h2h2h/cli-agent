@@ -10,7 +10,7 @@ shared projection so their placement semantics cannot drift.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 
 from cli_agent.runtime._backend import _WorkspaceFilesystem
 from cli_agent.runtime._capability.deployment import (
@@ -30,6 +30,7 @@ from cli_agent.runtime._capability.mcp.catalog import (
 from cli_agent.runtime._capability.mcp.facts import MCPServerConfig, _MCPServerFacts
 from cli_agent.runtime._capability.mcp_binding import binding_filename, render_binding
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.host import NULL_EVENTS, EventSink, emit_event
 
 
 async def materialize_stubs(
@@ -41,7 +42,7 @@ async def materialize_stubs(
     facts: tuple[_MCPServerFacts, ...],
     manifest: _DeploymentManifest | None,
     realized: Mapping[str, str],
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+    events: EventSink = NULL_EVENTS,
 ) -> tuple[dict[str, str], bool]:
     """Project generated MCP stubs and the invocation binding.
 
@@ -85,7 +86,7 @@ async def materialize_stubs(
         )
     except Exception as exc:
         _emit(
-            on_diagnostic,
+            events,
             "mcp.binding_failed",
             "MCP invocation binding could not be materialized",
             {"error": str(exc)},
@@ -121,11 +122,12 @@ async def remove_stale_stubs(
 
 
 def _emit(
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+    events: EventSink,
     kind: str,
     message: str,
     detail: Mapping[str, object] | None = None,
 ) -> None:
-    if on_diagnostic is None:
-        return
-    on_diagnostic(RuntimeDiagnostic(kind=kind, message=message, detail=detail or {}))
+    emit_event(
+        events,
+        RuntimeDiagnostic(kind=kind, message=message, detail=detail or {}),
+    )

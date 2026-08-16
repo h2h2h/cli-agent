@@ -17,15 +17,18 @@ from cli_agent.presentation import (
     render_session_usage,
     render_sessions,
 )
+from cli_agent.presets import local_runtime_components
 from cli_agent.runtime import (
     AgentRuntime,
     ExecutionPolicy,
     ModelCompletion,
     ModelProvider,
+    RuntimeEvent,
     TextDelta,
     UserAnswer,
     UserMessage,
     UserQuestion,
+    WorkspaceConfig,
 )
 from cli_agent.slash_commands import CommandAction, CommandInvocation, parse, specs
 from cli_agent.tui import TuiSession
@@ -55,16 +58,18 @@ async def run_agent(
             stderr=stderr,
             tui_session=tui_session,
         )
-        async with await AgentRuntime.open(
-            workspace=config.workspace,
-            repertoire=config.repertoire,
-            provider=provider,
-            execution_policy=execution_policy,
+        components = local_runtime_components(
+            interaction=interaction,
             context_policy=build_context_policy(config),
-            user_interaction=interaction,
-            on_diagnostic=lambda diagnostic: render_diagnostic(
-                diagnostic,
-                stderr=stderr,
+            policy=execution_policy,
+            events=_TerminalEventSink(stderr),
+        )
+        async with await AgentRuntime.open(
+            provider=provider,
+            components=components,
+            workspace_config=WorkspaceConfig(
+                root=config.workspace,
+                repertoire=config.repertoire,
             ),
         ) as runtime:
             try:
@@ -275,6 +280,16 @@ def _turn_exit_code(completed: bool, *, stderr: TextIO) -> int:
         )
         return 1
     return 0
+
+
+class _TerminalEventSink:
+    """Render structured Runtime events on the CLI diagnostic stream."""
+
+    def __init__(self, stderr: TextIO) -> None:
+        self._stderr = stderr
+
+    def emit(self, event: RuntimeEvent) -> None:
+        render_diagnostic(event, stderr=self._stderr)
 
 
 class _TerminalUserInteraction:

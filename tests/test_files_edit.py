@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from cli_agent._adapters.local.view import _LocalCapabilityView
 from cli_agent.runtime._backend import _FileEdit
 from cli_agent.runtime._backend.edit import apply_edits
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment.handlers.base import (
@@ -304,7 +304,7 @@ def _run(
     if payload is not None:
         stdin = json.dumps(payload)
     output = _RecordedOutput()
-    backend = _LocalBackendWorkspace(cwd, {}, view)
+    backend = _LocalBackendWorkspace(cwd, {})
     execution = _FileSource(backend.filesystem).prepare(
         _ExecutionRequest(command=parse_shell_ast(command), stdin=stdin),
         _CommandContext(workspace=str(cwd), cwd=str(cwd), environment={}),

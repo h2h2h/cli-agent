@@ -10,6 +10,7 @@ import pytest
 from interaction_fakes import _ScriptedInteraction
 from policy_fakes import _AskExecutablePolicy
 
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -112,11 +113,11 @@ def test_public_runtime_proves_single_active_binding_isolation(
         )
         provider_a = _CoordinatedProvider(calls_a)
         default_provider = ScriptedModelProvider(script=())
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=default_provider,
-            execution_policy=_AskExecutablePolicy(
+            policy=_AskExecutablePolicy(
                 frozenset({"rm"}),
                 rule_id="test.ask-rm",
                 reason="rm requires Host approval",

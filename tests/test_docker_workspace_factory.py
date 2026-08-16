@@ -15,14 +15,14 @@ from pathlib import Path
 
 import pytest
 
-from cli_agent.runtime._backend.facts import _FileWriteRequest
-from cli_agent.runtime._workspace import (
+from cli_agent._workspaces import (
     _docker_volume_name,
     _DockerWorkspace,
     _DockerWorkspaceFactory,
     _load_docker_workspace_identity,
     _load_workspace_identity,
 )
+from cli_agent.runtime._backend.facts import _FileWriteRequest
 
 _DOCKER = pytest.param("docker", marks=pytest.mark.docker)
 

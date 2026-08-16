@@ -5,6 +5,9 @@ import shlex
 import sys
 from pathlib import Path
 
+from host_fakes import _environment_kernel
+from workspace_fakes import _kernel_workspace
+
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._environment import EnvironmentKernel
 
@@ -13,7 +16,7 @@ def test_exec_schema_distinguishes_omitted_empty_and_present_stdin(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             omitted = await kernel.dispatch(
                 ToolCall(
@@ -52,7 +55,7 @@ def test_exec_schema_distinguishes_omitted_empty_and_present_stdin(
 
 def test_grep_receives_stdin_from_exec(tmp_path: Path) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             result = await kernel.dispatch(
                 ToolCall(
@@ -77,7 +80,7 @@ def test_grep_receives_stdin_from_exec(tmp_path: Path) -> None:
 
 def test_shell_sequence_receives_stdin_once(tmp_path: Path) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             result = await kernel.dispatch(
                 ToolCall(
@@ -98,7 +101,7 @@ def test_shell_sequence_receives_stdin_once(tmp_path: Path) -> None:
 
 def test_unicode_stdin_is_forwarded_untouched(tmp_path: Path) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             result = await kernel.dispatch(
                 ToolCall(
@@ -123,7 +126,7 @@ def test_queued_execution_uses_stdin_bound_at_submission(tmp_path: Path) -> None
     )
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path, queue_limit=4, parallel_limit=2)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path), queue_limit=4, parallel_limit=2)
         try:
             first = await _exec(
                 kernel,
@@ -159,7 +162,7 @@ def test_large_input_is_not_truncated(tmp_path: Path) -> None:
     payload = "x" * (1024 * 1024)
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             result = await kernel.dispatch(
                 ToolCall(
@@ -180,7 +183,7 @@ def test_large_input_is_not_truncated(tmp_path: Path) -> None:
 
 def test_process_that_closes_stdin_early_does_not_hang(tmp_path: Path) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             result = await kernel.dispatch(
                 ToolCall(
@@ -203,7 +206,7 @@ def test_batch_dispatch_carries_stdin_per_call(tmp_path: Path) -> None:
     read_source = "import sys; sys.stdout.write(sys.stdin.read())"
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             results = await kernel.dispatch_batch(
                 (
@@ -243,7 +246,7 @@ def test_runtime_command_without_stdin_consumer_fails_clearly(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             for command in ("cd", "export A=1"):
                 result = await kernel.dispatch(

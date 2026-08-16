@@ -5,6 +5,7 @@ import pytest
 from cli_agent.errors.context import ContextExhaustedError
 from cli_agent.runtime import (
     AssistantMessage,
+    CallbackEventSink,
     ContextPolicy,
     ModelCompletion,
     ModelUsage,
@@ -50,7 +51,11 @@ def _engine(
         session_id=SESSION_ID,
         context_policy=policy,
         provider=provider,
-        on_diagnostic=received.append if received is not None else None,
+        events=(
+            CallbackEventSink(received.append)
+            if received is not None
+            else None
+        ),
     )
     engine.hydrate(system_message=SYSTEM_MESSAGE, snapshot=None, journal=(), revision=0)
     return engine

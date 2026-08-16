@@ -12,10 +12,11 @@ from typing import Literal
 
 import pytest
 
+from cli_agent._adapters.local.overlay import _LocalCapabilityOverlay
+from cli_agent._adapters.local.view import _LocalCapabilityView
 from cli_agent.runtime._backend import _ShellExecutionRequest
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
     _LocalShellExecution,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
@@ -175,12 +176,19 @@ def test_capability_redirect_copy_up_happens_before_spawn(tmp_path: Path) -> Non
     visible = workspace / ".workspace" / "tools" / "message.txt"
 
     async def scenario() -> None:
-        backend = _LocalBackendWorkspace(workspace, {}, view)
+        backend = _LocalBackendWorkspace(workspace, {})
         output = _BufferOutput()
+        request = _request(
+            "echo changed > .workspace/tools/message.txt",
+            cwd=workspace,
+        )
+        execution = _LocalCapabilityOverlay(view).wrap_shell(
+            request.command,
+            request.cwd,
+            backend.prepare_shell(request),
+        )
 
-        outcome = await backend.prepare_shell(
-            _request("echo changed > .workspace/tools/message.txt", cwd=workspace)
-        ).run(output)
+        outcome = await execution.run(output)
 
         assert outcome == ExitStatus(0)
         assert lower.read_text(encoding="utf-8") == "lower\n"

@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Callable
 
 import pytest
+from host_fakes import _environment_kernel
+from workspace_fakes import _kernel_workspace
 
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._backend import (
@@ -171,8 +173,8 @@ def case(request, tmp_path: Path) -> _SourceCase:
                 record.inline_prepares += 1
                 return _InlineExecution(_inline_handler(record))
 
-            return EnvironmentKernel(
-                tmp_path,
+            return _environment_kernel(
+                _kernel_workspace(tmp_path),
                 custom_sources=(
                     (
                         "fast",
@@ -211,7 +213,7 @@ def case(request, tmp_path: Path) -> _SourceCase:
         backend = _ControlledBackend(record, str(tmp_path))
 
         def build(**overrides):
-            return EnvironmentKernel(tmp_path, backend=backend, **overrides)
+            return _environment_kernel(_kernel_workspace(tmp_path, backend), **overrides)
 
         return _SourceCase(
             name=name,
@@ -234,9 +236,8 @@ def case(request, tmp_path: Path) -> _SourceCase:
         python = Path(sys.executable).name
 
         def build(**overrides):
-            return EnvironmentKernel(
-                tmp_path,
-                backend=backend,
+            return _environment_kernel(
+                _kernel_workspace(tmp_path, backend),
                 parallel_commands=frozenset({python}),
                 **overrides,
             )
@@ -284,9 +285,8 @@ def case(request, tmp_path: Path) -> _SourceCase:
     )
 
     def build(**overrides):
-        return EnvironmentKernel(
-            tmp_path,
-            backend=backend,
+        return _environment_kernel(
+            _kernel_workspace(tmp_path, backend),
             tool_catalog=catalog,
             tool_executor=_ControlledToolExecutor(record),
             **overrides,

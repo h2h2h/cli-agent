@@ -2,11 +2,11 @@
 
 from pathlib import Path
 
-from cli_agent.runtime._capability.provider import (
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.snapshot import (
     CAPABILITY_SCHEMA_VERSION,
     CapabilitySnapshot,
 )
-from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._project_instructions import _ProjectInstructions
 from cli_agent.runtime._system_message import assemble_system_message

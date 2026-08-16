@@ -3,7 +3,7 @@
 The Docker Backend is the second RFC-0012 implementation: it owns the
 persistent Workspace volume, one long-lived filesystem helper container,
 and one ephemeral execution container per Shell ``run()``, while exposing
-only backend-neutral facts through ``_BackendWorkspace`` /
+only backend-neutral facts through ``Backend`` /
 ``_WorkspaceFilesystem``. Capability materialization and Tool execution
 belong to the CapabilityDeployment plane (RFC-0017).
 

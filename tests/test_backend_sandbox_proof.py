@@ -19,13 +19,16 @@ import re
 import sys
 import types
 from collections.abc import Mapping
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from host_fakes import _environment_kernel
 from interaction_fakes import _ScriptedInteraction
+from workspace_fakes import _kernel_workspace
 
-import cli_agent.runtime._resources as resources_module
-import cli_agent.runtime._workspace as workspace_module
+from cli_agent.presets import local_runtime_components
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -35,6 +38,7 @@ from cli_agent.runtime import (
     ToolCall,
     ToolResult,
     UserMessage,
+    WorkspaceConfig,
 )
 from cli_agent.runtime._backend.edit import apply_edits
 from cli_agent.runtime._backend.facts import (
@@ -636,46 +640,11 @@ class _SandboxToolExecutor:
 
 
 class _SandboxDeployment:
-    """Deployment fake bound to the Sandbox Backend: attach the sandbox
-    view, project nothing, and always report a complete deployment."""
+    """Materialize no artifacts and report the consumed snapshot revision."""
 
     def __init__(self, **kwargs: object) -> None:
         del kwargs
         self._deployment: DeploymentSnapshot | None = None
-
-    async def attach(self, workspace: object) -> object:
-        return workspace.backend.capabilities  # type: ignore[attr-defined]
-
-    async def discover_mcp(
-        self,
-        configs: tuple[object, ...],
-        on_diagnostic: object = None,
-    ) -> tuple[object, ...]:
-        del configs, on_diagnostic
-        return ()
-
-    async def materialize_stubs(
-        self,
-        workspace: object,
-        configs: tuple[object, ...],
-        facts: tuple[object, ...],
-    ) -> None:
-        del workspace, configs, facts
-        return None
-
-    def executor(self, workspace: object, *, revision: str) -> object:
-        return _SandboxToolExecutor(
-            workspace,
-            revision=revision,
-            deployment=self._deployment
-            or DeploymentSnapshot(
-                workspace_id=workspace.id,  # type: ignore[attr-defined]
-                revision=revision,
-                layout_version=1,
-                complete=True,
-                error=None,
-            ),
-        )
 
     async def reconcile(
         self, snapshot: object, workspace: object
@@ -688,6 +657,121 @@ class _SandboxDeployment:
             error=None,
         )
         return self._deployment
+
+
+class _SandboxToolExecutorFactory:
+    def create(
+        self,
+        workspace: object,
+        snapshot: object,
+        deployment: DeploymentSnapshot,
+    ) -> _SandboxToolExecutor:
+        return _SandboxToolExecutor(
+            workspace,
+            revision=snapshot.revision,  # type: ignore[attr-defined]
+            deployment=deployment,
+        )
+
+
+class _SandboxCapabilitySourceFactory:
+    async def create(self, workspace: object) -> _SandboxCapabilityView:
+        return workspace.backend.capabilities  # type: ignore[attr-defined]
+
+
+class _SandboxMCPDiscovery:
+    async def discover(
+        self,
+        configs: tuple[object, ...],
+        source: object,
+        environment: object,
+    ) -> tuple[object, ...]:
+        del configs, source, environment
+        return ()
+
+
+class _SandboxOverlay:
+    def wrap_file(self, path: str, execution: ExecutionHandle) -> ExecutionHandle:
+        del path
+        return execution
+
+    def wrap_shell(
+        self,
+        command: object,
+        cwd: str,
+        execution: ExecutionHandle,
+    ) -> ExecutionHandle:
+        del command, cwd
+        return execution
+
+    async def close(self) -> None:
+        pass
+
+
+class _SandboxOverlayFactory:
+    async def create(self, workspace: object) -> _SandboxOverlay:
+        del workspace
+        return _SandboxOverlay()
+
+
+class _SandboxWorkspace:
+    def __init__(self, backend: _SandboxBackendWorkspace, repertoire: Path) -> None:
+        self.id = "sandbox:00000000000000000000000000000000"
+        self.root = backend.root
+        self.filesystem = backend.filesystem
+        self.backend = backend
+        self.repertoire = repertoire
+        self.deployment_volume = _VIEW_ROOT
+
+    @property
+    def base_environment(self) -> Mapping[str, str]:
+        return self.backend.workspace_environment
+
+    def execution_base_environment(self) -> Mapping[str, str]:
+        return self.backend.execution_base_environment()
+
+    def prepare_shell(self, request: object) -> ExecutionHandle:
+        return self.backend.prepare_shell(request)
+
+    async def load_project_instructions(self) -> None:
+        return None
+
+    async def flush(self) -> None:
+        await self.backend.flush()
+
+    async def close(self) -> None:
+        await self.backend.close()
+
+
+class _SandboxWorkspaceFactory:
+    async def open(
+        self,
+        workspace: str | Path,
+        *,
+        repertoire: str | Path | None,
+    ) -> _SandboxWorkspace:
+        del workspace
+        backend = await _SandboxBackend().open_workspace(None)
+        return _SandboxWorkspace(
+            backend,
+            Path(repertoire) if repertoire is not None else Path("/unused"),
+        )
+
+
+def _sandbox_components(tmp_path: Path):
+    components = local_runtime_components(
+        interaction=_user_interaction,
+        context_policy=_context_policy,
+        state_path=tmp_path / "state.sqlite3",
+    )
+    return replace(
+        components,
+        workspace_factory=_SandboxWorkspaceFactory(),
+        capability_source_factory=_SandboxCapabilitySourceFactory(),
+        mcp_discovery=_SandboxMCPDiscovery(),
+        capability_deployment=_SandboxDeployment(),
+        capability_overlay_factory=_SandboxOverlayFactory(),
+        tool_executor_factory=_SandboxToolExecutorFactory(),
+    )
 
 
 class _SandboxBackend:
@@ -764,34 +848,28 @@ def _reset_sandbox_backend() -> None:
 
 def test_full_runtime_runs_on_the_sandbox_backend(
     tmp_path: pytest.TempPathFactory,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _SandboxBackend.seed("tools/marker.py", _MARKER_TOOL)
     _SandboxBackend.seed("skills/review/SKILL.md", _REVIEW_SKILL)
-    monkeypatch.setattr(workspace_module, "_LocalBackend", _SandboxBackend)
-    monkeypatch.setattr(
-        resources_module,
-        "_LocalCapabilityDeployment",
-        _SandboxDeployment,
-    )
-
     async def scenario() -> None:
         runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
-            workspace=tmp_path,
             provider=ScriptedModelProvider(script=((_completion("hi"),),)),
-            context_policy=_context_policy,
+            components=_sandbox_components(tmp_path),
+            workspace_config=WorkspaceConfig(root=tmp_path),
         )
-        assert isinstance(runtime._resources.backend, _SandboxBackendWorkspace)
-        assert runtime._resources.snapshot.tools.get("marker") is not None
-        assert runtime._resources.snapshot.tools.get("marker").valid
-        assert runtime._resources.snapshot.skills.get("review") is not None
+        assert isinstance(
+            runtime._resources.workspace.backend,
+            _SandboxBackendWorkspace,
+        )
+        assert runtime._resources.capabilities.snapshot.tools.get("marker") is not None
+        assert runtime._resources.capabilities.snapshot.tools.get("marker").valid
+        assert runtime._resources.capabilities.snapshot.skills.get("review") is not None
 
         await runtime.new_session()
         async for _ in runtime.run_turn(UserMessage.text("hi")):
             pass
         kernel = runtime._binding.kernel
-        files = runtime._resources.backend._files
+        files = runtime._resources.workspace.backend._files
         try:
             shell = _output(
                 await _exec(kernel, "echo from-shell > shared/from-shell.txt")
@@ -849,8 +927,8 @@ def test_sandbox_two_kernels_share_files_but_not_cwd_env_or_handle() -> None:
     workspace = _sandbox_workspace(())
 
     async def scenario() -> None:
-        first = EnvironmentKernel("/sandbox", backend=workspace)
-        second = EnvironmentKernel("/sandbox", backend=workspace)
+        first = _environment_kernel(_kernel_workspace("/sandbox", workspace))
+        second = _environment_kernel(_kernel_workspace("/sandbox", workspace))
         try:
             await _exec(first, "mkdir sub")
             await _exec(first, "cd sub")
@@ -951,7 +1029,7 @@ def test_sandbox_kill_terminates_a_running_shell() -> None:
     workspace = _sandbox_workspace(())
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel("/sandbox", backend=workspace)
+        kernel = _environment_kernel(_kernel_workspace("/sandbox", workspace))
         try:
             running = _output(await _exec(kernel, "sleep 5", wait_ms=0))
             assert running["status"] == "running"
@@ -974,23 +1052,15 @@ def test_sandbox_kill_terminates_a_running_shell() -> None:
 
 def test_sandbox_backend_open_failure_does_not_fall_back_to_local(
     tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _SandboxBackend.fail_open = True
-    monkeypatch.setattr(workspace_module, "_LocalBackend", _SandboxBackend)
-    monkeypatch.setattr(
-        resources_module,
-        "_LocalCapabilityDeployment",
-        _SandboxDeployment,
-    )
 
     with pytest.raises(ValueError, match="sandbox constraint failed"):
         asyncio.run(
             AgentRuntime.open(
-                user_interaction=_user_interaction,
-                workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
-                context_policy=_context_policy,
+                components=_sandbox_components(tmp_path),
+                workspace_config=WorkspaceConfig(root=tmp_path),
             )
         )
 

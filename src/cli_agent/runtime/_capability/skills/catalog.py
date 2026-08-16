@@ -9,7 +9,7 @@ from cli_agent.runtime._capability.skills.parser import (
     parse_frontmatter,
     validate_skill,
 )
-from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
+from cli_agent.runtime._capability.source_view import CapabilitySource
 
 _SKILL_MD_FILENAME = "SKILL.md"
 
@@ -26,7 +26,7 @@ class _SkillCatalog:
     @classmethod
     async def discover(
         cls,
-        capability_view: _LogicalCapabilityView,
+        capability_view: CapabilitySource,
     ) -> _SkillCatalog:
         """Build trusted entries from one logical capability view.
 
@@ -116,7 +116,7 @@ class _SkillCatalog:
 
 
 async def _inspect_skill(
-    capability_view: _LogicalCapabilityView,
+    capability_view: CapabilitySource,
     name: str,
 ) -> SkillEntry | None:
     """Build one SkillEntry from a candidate directory, or None if whiteouted."""
@@ -158,7 +158,7 @@ async def _inspect_skill(
 
 
 async def _validate_skill_view(
-    capability_view: _LogicalCapabilityView,
+    capability_view: CapabilitySource,
     name: str,
 ) -> str | None:
     """Return the aggregated Skill validation error, or None when valid."""
@@ -182,7 +182,7 @@ async def _validate_skill_view(
 
 
 async def _read_description(
-    capability_view: _LogicalCapabilityView,
+    capability_view: CapabilitySource,
     name: str,
 ) -> str | None:
     """Read the frontmatter description, or None when unavailable."""

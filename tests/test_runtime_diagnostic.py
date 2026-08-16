@@ -4,8 +4,9 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
-    AgentRuntime,
+    CallbackEventSink,
     ContextPolicy,
     RuntimeDiagnostic,
     ScriptedModelProvider,
@@ -27,8 +28,8 @@ def test_diagnostic_is_frozen() -> None:
 
 def test_emission_is_silent_without_a_callback(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
@@ -43,11 +44,11 @@ def test_callback_receives_structured_diagnostics(tmp_path: Path) -> None:
     received: list[RuntimeDiagnostic] = []
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            on_diagnostic=received.append,
+            events=CallbackEventSink(received.append),
             context_policy=_context_policy,
         )
         runtime._emit_diagnostic(
@@ -80,12 +81,12 @@ def test_callback_receives_tool_metadata_parse_diagnostic(tmp_path: Path) -> Non
     received: list[RuntimeDiagnostic] = []
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
-            on_diagnostic=received.append,
+            events=CallbackEventSink(received.append),
             context_policy=_context_policy,
         )
         await runtime.close()

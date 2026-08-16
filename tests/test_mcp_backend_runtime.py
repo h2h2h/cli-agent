@@ -1,8 +1,8 @@
-"""Issue 09: Workspace MCP runs inside the deployment plane.
+"""Workspace MCP discovery and deployment stay in separate planes.
 
 These tests pin the RFC-0012 issue 09 acceptance criteria (re-anchored on
 the RFC-0014 deployment plane): MCP discovery and invocation both go
-through the Local CapabilityDeployment, the Runtime and Catalog never
+through the Local MCPDiscovery port and CapabilityDeployment respectively; the Runtime and Catalog never
 create Workspace MCP subprocesses, credentials never enter stubs,
 bindings, logs, or diagnostics, and MCP Tools keep flowing through the
 ordinary Tool Catalog lifecycle and scheduling.
@@ -16,22 +16,28 @@ from pathlib import Path
 
 import pytest
 
+import cli_agent._adapters.local.mcp_runtime as mcp_runtime_module
+from cli_agent._adapters.local.deployment import _LocalCapabilityDeployment
+from cli_agent._adapters.local.mcp_discovery import _LocalMCPDiscovery
+from cli_agent._adapters.local.view import _LocalCapabilityView
+from cli_agent._workspaces import _LocalWorkspace
+from cli_agent.runtime import CallbackEventSink
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
 )
-from cli_agent.runtime._backend.local import mcp_runtime as mcp_runtime_module
-from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
 from cli_agent.runtime._capability.mcp.config import discover_configs
 from cli_agent.runtime._capability.mcp.facts import (
     _MCPServerFacts,
     _MCPToolFacts,
     parse_server_config,
 )
-from cli_agent.runtime._capability.projections import write_tool_index
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.snapshot import (
+    CAPABILITY_SCHEMA_VERSION,
+    CapabilitySnapshot,
+)
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
-from cli_agent.runtime._workspace import _LocalWorkspace
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 _FIXTURE = Path(__file__).parent / "mcp_server_fixture.py"
@@ -68,20 +74,16 @@ def _open_deployment(
     repertoire: Path,
     *,
     environment: dict[str, str] | None = None,
-    on_diagnostic=None,
+    events=None,
 ):
     _prepare_workspace(workspace)
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
-    backend = _LocalBackendWorkspace(workspace, environment or {}, view)
-    deployment = _LocalCapabilityDeployment(
-        state_root=workspace / ".workspace",
-        repertoire=repertoire,
-        volume=".workspace",
-        base_environment=backend.execution_base_environment,
-        on_diagnostic=on_diagnostic,
-    )
+    backend = _LocalBackendWorkspace(workspace, environment or {})
+    sink = CallbackEventSink(events) if events is not None else None
+    deployment = _LocalCapabilityDeployment(events=sink) if sink else _LocalCapabilityDeployment()
+    discovery = _LocalMCPDiscovery(sink) if sink else _LocalMCPDiscovery()
     opened = _LocalWorkspace(_WORKSPACE_ID, workspace, backend, repertoire)
-    return opened, deployment
+    return opened, discovery, deployment, view
 
 
 def _fixture_command() -> list[str]:
@@ -102,14 +104,14 @@ def _math_config() -> object:
     return config
 
 
-def test_discovery_runs_through_the_deployment_plane(tmp_path: Path) -> None:
+def test_discovery_runs_through_the_read_only_port(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     repertoire = _repertoire(workspace)
-    opened, deployment = _open_deployment(workspace, repertoire)
+    opened, discovery, _, view = _open_deployment(workspace, repertoire)
 
     async def scenario() -> None:
-        facts = await deployment.discover_mcp((_math_config(),))
+        facts = await discovery.discover((_math_config(),), view, opened)
 
         assert len(facts) == 1
         fact = facts[0]
@@ -129,7 +131,7 @@ def test_discovery_resolves_env_values_only_from_the_base_environment(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     repertoire = _repertoire(workspace)
-    opened, deployment = _open_deployment(
+    opened, discovery, _, view = _open_deployment(
         workspace,
         repertoire,
         environment={"FIXTURE_TOKEN": "workspace-token"},
@@ -144,7 +146,7 @@ def test_discovery_resolves_env_values_only_from_the_base_environment(
     monkeypatch.setattr(mcp_runtime_module, "_list_tools_once", record_list)
 
     async def scenario() -> None:
-        facts = await deployment.discover_mcp((_math_config(),))
+        facts = await discovery.discover((_math_config(),), view, opened)
         assert [tool.name for tool in facts[0].tools] == ["echo"]
 
     asyncio.run(scenario())
@@ -170,7 +172,7 @@ def test_http_server_discovery_and_binding_are_deployment_composed(
         ),
         encoding="utf-8",
     )
-    opened, deployment = _open_deployment(workspace, repertoire)
+    opened, discovery, deployment, view = _open_deployment(workspace, repertoire)
 
     async def fake_list(config, base_environment) -> list[dict[str, object]]:
         del base_environment
@@ -187,7 +189,7 @@ def test_http_server_discovery_and_binding_are_deployment_composed(
     monkeypatch.setattr(mcp_runtime_module, "_list_tools_once", fake_list)
 
     async def scenario() -> None:
-        await _project_stubs(opened, deployment)
+        await _project_stubs(opened, discovery, deployment, view)
 
         stub = (workspace / ".workspace" / "tools" / "mcp_weather.py").read_text(
             encoding="utf-8"
@@ -212,10 +214,10 @@ def test_binding_is_materialized_into_the_tool_runtime(tmp_path: Path) -> None:
     workspace.mkdir()
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "math", _fixture_command())
-    opened, deployment = _open_deployment(workspace, repertoire)
+    opened, discovery, deployment, view = _open_deployment(workspace, repertoire)
 
     async def scenario() -> None:
-        await _project_stubs(opened, deployment)
+        await _project_stubs(opened, discovery, deployment, view)
 
         binding_path = workspace / ".workspace" / ".tool-environment" / "mcp_binding.py"
         assert binding_path.is_file()
@@ -243,15 +245,15 @@ def test_credentials_never_enter_stubs_binding_or_diagnostics(
         [sys.executable, str(tmp_path / "missing_server.py")],
     )
     received: list[RuntimeDiagnostic] = []
-    opened, deployment = _open_deployment(
+    opened, discovery, deployment, view = _open_deployment(
         workspace,
         repertoire,
-        on_diagnostic=received.append,
+        events=received.append,
     )
     monkeypatch.setenv("FIXTURE_TOKEN", "super-secret-token")
 
     async def scenario() -> None:
-        await _project_stubs(opened, deployment)
+        await _project_stubs(opened, discovery, deployment, view)
 
         stub = (workspace / ".workspace" / "tools" / "mcp_math.py").read_text(
             encoding="utf-8"
@@ -277,17 +279,16 @@ def test_mcp_tools_flow_through_the_ordinary_tool_catalog(tmp_path: Path) -> Non
     workspace.mkdir()
     repertoire = _repertoire(workspace)
     _server_config(repertoire, "math", _fixture_command())
-    opened, deployment = _open_deployment(workspace, repertoire)
+    opened, discovery, deployment, view = _open_deployment(workspace, repertoire)
 
     async def scenario() -> None:
-        await _project_stubs(opened, deployment)
-        view = opened.backend._view_provider()
-        catalog = await _reconcile_tools(view, opened.backend.filesystem)
+        snapshot = await _project_stubs(opened, discovery, deployment, view)
+        catalog = snapshot.tools
 
         entry = catalog.get("mcp_math")
         assert entry is not None
         assert entry.valid
-        assert entry.provenance == "workspace"
+        assert entry.provenance is None
         assert entry.parallel_safe is False
         assert "MCP Server (stdio): math" in (entry.documentation or "")
 
@@ -326,8 +327,8 @@ def test_mcp_catalog_and_runtime_never_create_workspace_mcp_subprocesses() -> No
 def test_runtime_open_uses_the_deployment_mcp_runtime(tmp_path: Path) -> None:
     from interaction_fakes import _ScriptedInteraction
 
+    from cli_agent.presets import open_default_runtime
     from cli_agent.runtime import (
-        AgentRuntime,
         ContextPolicy,
         ScriptedModelProvider,
     )
@@ -338,8 +339,8 @@ def test_runtime_open_uses_the_deployment_mcp_runtime(tmp_path: Path) -> None:
     _server_config(repertoire, "math", _fixture_command())
 
     async def scenario() -> None:
-        async with await AgentRuntime.open(
-            user_interaction=_ScriptedInteraction("allow_once"),
+        async with await open_default_runtime(
+            interaction=_ScriptedInteraction("allow_once"),
             workspace=workspace,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
@@ -352,20 +353,24 @@ def test_runtime_open_uses_the_deployment_mcp_runtime(tmp_path: Path) -> None:
             binding = workspace / ".workspace" / ".tool-environment" / "mcp_binding.py"
             assert binding.is_file()
             assert "'math':" in binding.read_text(encoding="utf-8")
-            tool = runtime._resources.snapshot.tools.get("mcp_math")
+            tool = runtime._resources.capabilities.snapshot.tools.get("mcp_math")
             assert tool is not None and tool.valid
 
     asyncio.run(scenario())
 
 
-async def _project_stubs(opened, deployment) -> None:
-    view = opened.backend._view_provider()
+async def _project_stubs(opened, discovery, deployment, view) -> CapabilitySnapshot:
     configs = await discover_configs(view)
-    facts = await deployment.discover_mcp(configs)
-    await deployment.materialize_stubs(opened, configs, facts)
-
-
-async def _reconcile_tools(view, filesystem, on_diagnostic=None):
-    catalog = await _ToolCatalog.discover(view, on_diagnostic)
-    await write_tool_index(volume=view.root, filesystem=filesystem, catalog=catalog)
-    return catalog
+    facts = await discovery.discover(configs, view, opened)
+    tools = (await _ToolCatalog.discover(view)).with_mcp(configs, facts)
+    snapshot = CapabilitySnapshot(
+        revision="test-mcp-revision",
+        schema_version=CAPABILITY_SCHEMA_VERSION,
+        tools=tools,
+        skills=await _SkillCatalog.discover(view),
+        mcp_servers=configs,
+        project_instructions=None,
+        mcp_facts=facts,
+    )
+    await deployment.reconcile(snapshot, opened)
+    return snapshot

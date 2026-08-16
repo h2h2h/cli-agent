@@ -70,6 +70,11 @@ class SessionStore:
 
         self._database = database
 
+    def close(self) -> None:
+        """Close the owned persistence adapter idempotently."""
+
+        self._database.close()
+
     def create(
         self,
         session_id: str,

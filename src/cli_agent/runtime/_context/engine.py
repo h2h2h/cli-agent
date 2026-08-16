@@ -24,6 +24,7 @@ from cli_agent.runtime._context.tool_results import _ToolResultReducer
 from cli_agent.runtime._database.session_store import SessionStore
 from cli_agent.runtime._session import ContextSnapshot, ModelCallUsage
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.host import NULL_EVENTS, EventSink, emit_event
 from cli_agent.runtime.model import (
     AssistantMessage,
     ModelMessage,
@@ -179,11 +180,11 @@ class ContextEngineFactory:
         *,
         store: SessionStore,
         context_policy: ContextPolicy,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+        events: EventSink = NULL_EVENTS,
     ) -> None:
         self._store = store
         self._context_policy = context_policy
-        self._on_diagnostic = on_diagnostic
+        self._events = events
 
     def create(
         self,
@@ -214,7 +215,7 @@ class ContextEngineFactory:
             session_id=session_id,
             context_policy=self._context_policy,
             provider=provider,
-            on_diagnostic=self._on_diagnostic,
+            events=self._events,
             commit_snapshot=lambda proposal, usage, expected: self._store.save_snapshot(
                 proposal,
                 expected_revision=expected,
@@ -239,14 +240,14 @@ class _ContextEngine:
         session_id: str,
         context_policy: ContextPolicy,
         provider: ModelProvider,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+        events: EventSink = NULL_EVENTS,
         commit_snapshot: SnapshotCommit | None = None,
     ) -> None:
         self._session_id = session_id
         self._policy = context_policy
         self._reducer = _ToolResultReducer()
         self._summarizer = _ContextSummarizer(provider)
-        self._on_diagnostic = on_diagnostic
+        self._events = events
         self._commit_snapshot = commit_snapshot
         self._ledger: _ContextLedger | None = None
         self._revision = 0
@@ -862,8 +863,6 @@ class _ContextEngine:
         self,
         operations: Sequence[ContextOperation],
     ) -> None:
-        if self._on_diagnostic is None:
-            return
         for operation in operations:
             kind = {
                 1: "context.snipped",
@@ -872,7 +871,8 @@ class _ContextEngine:
             }[operation.tier]
             if operation.reason == "oversized_result":
                 kind = "context.oversized_result"
-            self._on_diagnostic(
+            emit_event(
+                self._events,
                 RuntimeDiagnostic(
                     kind=kind,
                     message=(
@@ -892,13 +892,12 @@ class _ContextEngine:
                         "turns_summarized": operation.turns_summarized,
                         "reason": operation.reason,
                     },
-                )
+                ),
             )
 
     def _emit_compaction_failed(self) -> None:
-        if self._on_diagnostic is None:
-            return
-        self._on_diagnostic(
+        emit_event(
+            self._events,
             RuntimeDiagnostic(
                 kind="context.compaction_failed",
                 message="tier 3 summarization failed; history is unchanged",
@@ -907,7 +906,7 @@ class _ContextEngine:
                     "revision": self._revision,
                     "tier": 3,
                 },
-            )
+            ),
         )
 
     def _projected(self) -> tuple[int, UsageSource]:

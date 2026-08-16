@@ -1,15 +1,24 @@
+
 import asyncio
 import json
 import sys
 from pathlib import Path
 
 import pytest
+from host_fakes import _environment_kernel
 from interaction_fakes import _ScriptedInteraction
 
 import cli_agent.runtime as runtime_module
+from cli_agent._adapters.local.deployment import _LocalCapabilityDeployment
+from cli_agent._adapters.local.executor import _LocalToolExecutorFactory
+from cli_agent._adapters.local.mcp_discovery import _LocalMCPDiscovery
+from cli_agent._adapters.local.overlay import _LocalCapabilityOverlay
+from cli_agent._adapters.local.view import _LocalCapabilityView
+from cli_agent._workspaces import _LocalWorkspace
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
-    AgentRuntime,
     AssistantMessage,
+    CallbackEventSink,
     ContextPolicy,
     ModelCompletion,
     ModelRequest,
@@ -20,20 +29,17 @@ from cli_agent.runtime import (
 )
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
 )
-from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
 from cli_agent.runtime._capability.mcp.config import discover_configs
 from cli_agent.runtime._capability.projections import write_tool_index
-from cli_agent.runtime._capability.provider import (
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.snapshot import (
     CAPABILITY_SCHEMA_VERSION,
     CapabilitySnapshot,
 )
-from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
-from cli_agent.runtime._workspace import _LocalWorkspace
 
 _user_interaction = _ScriptedInteraction("allow_once")
 _context_policy = ContextPolicy(
@@ -80,18 +86,12 @@ def _fixture_command() -> list[str]:
 async def _kernel(workspace: Path, repertoire: Path) -> EnvironmentKernel:
     _prepare_workspace(workspace)
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
-    backend = _LocalBackendWorkspace(workspace, {}, view)
-    deployment = _LocalCapabilityDeployment(
-        state_root=workspace / ".workspace",
-        repertoire=repertoire,
-        volume=".workspace",
-        base_environment=backend.execution_base_environment,
-    )
+    backend = _LocalBackendWorkspace(workspace, {})
+    deployment = _LocalCapabilityDeployment()
     opened = _LocalWorkspace(_WORKSPACE_ID, workspace, backend, repertoire)
     configs = await discover_configs(view)
-    facts = await deployment.discover_mcp(configs)
-    await deployment.materialize_stubs(opened, configs, facts)
-    catalog = await _reconcile_tools(view, backend.filesystem)
+    facts = await _LocalMCPDiscovery().discover(configs, view, opened)
+    catalog = (await _ToolCatalog.discover(view)).with_mcp(configs, facts)
     snapshot = CapabilitySnapshot(
         revision="test-revision",
         schema_version=CAPABILITY_SCHEMA_VERSION,
@@ -99,14 +99,15 @@ async def _kernel(workspace: Path, repertoire: Path) -> EnvironmentKernel:
         skills=await _SkillCatalog.discover(view),
         mcp_servers=configs,
         project_instructions=None,
+        mcp_facts=facts,
     )
     deployed = await deployment.reconcile(snapshot, opened)
     assert deployed.complete, deployed.error
-    return EnvironmentKernel(
-        workspace,
-        backend=backend,
+    return _environment_kernel(
+        opened,
         tool_catalog=catalog,
-        tool_executor=deployment.executor(opened, revision=snapshot.revision),
+        tool_executor=_LocalToolExecutorFactory().create(opened, snapshot, deployed),
+        capability_overlay=_LocalCapabilityOverlay(view),
     )
 
 
@@ -206,17 +207,17 @@ def test_mcp_integration_keeps_model_visible_surface_and_public_exports(
     received: list[object] = []
 
     async def scenario() -> None:
-        async with await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        async with await open_default_runtime(
+            interaction=_user_interaction,
             workspace=workspace,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
-            on_diagnostic=received.append,
+            events=CallbackEventSink(received.append),
             context_policy=_context_policy,
         ) as runtime:
             assert (workspace / ".workspace" / "tools" / "mcp_math.py").is_file()
             assert received == []
-            mcp_tool = runtime._resources.snapshot.tools.get("mcp_math")
+            mcp_tool = runtime._resources.capabilities.snapshot.tools.get("mcp_math")
             assert mcp_tool is not None
             assert mcp_tool.parallel_safe is False
 
@@ -245,14 +246,14 @@ def test_additional_sessions_do_not_reconcile_mcp_again(
     _server_config(repertoire, "math", _fixture_command())
 
     calls = 0
-    original = _LocalCapabilityDeployment.discover_mcp
+    original = _LocalMCPDiscovery.discover
 
-    async def counting_discover(self, configs, on_diagnostic=None):
+    async def counting_discover(self, configs, source, environment):
         nonlocal calls
         calls += 1
-        return await original(self, configs, on_diagnostic)
+        return await original(self, configs, source, environment)
 
-    monkeypatch.setattr(_LocalCapabilityDeployment, "discover_mcp", counting_discover)
+    monkeypatch.setattr(_LocalMCPDiscovery, "discover", counting_discover)
 
     provider = ScriptedModelProvider(
         script=(
@@ -272,8 +273,8 @@ def test_additional_sessions_do_not_reconcile_mcp_again(
     )
 
     async def scenario() -> None:
-        async with await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        async with await open_default_runtime(
+            interaction=_user_interaction,
             workspace=workspace,
             repertoire=repertoire,
             provider=provider,
@@ -320,7 +321,7 @@ def _text(snapshot: dict[str, object], stream: str) -> str:
     )
 
 
-async def _reconcile_tools(view, filesystem, on_diagnostic=None):
-    catalog = await _ToolCatalog.discover(view, on_diagnostic)
+async def _reconcile_tools(view, filesystem, events=None):
+    catalog = await _ToolCatalog.discover(view, events) if events else await _ToolCatalog.discover(view)
     await write_tool_index(volume=view.root, filesystem=filesystem, catalog=catalog)
     return catalog

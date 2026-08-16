@@ -2,7 +2,7 @@ import importlib
 import inspect
 from pathlib import Path
 
-from cli_agent.runtime._backend import _BackendWorkspace
+from cli_agent.runtime._backend import Backend
 from cli_agent.runtime._backend import protocol as backend_protocol
 from cli_agent.runtime.runtime import AgentRuntime
 
@@ -32,7 +32,7 @@ def test_runtime_source_has_no_legacy_routing_apis() -> None:
 
 def test_backend_contract_has_no_capability_plane_members() -> None:
     for member in ("capabilities", "mcp", "reconcile_tool_runtime", "prepare_tool"):
-        assert not hasattr(_BackendWorkspace, member)
+        assert not hasattr(Backend, member)
 
     protocol_types = {
         name

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from interaction_fakes import _ScriptedInteraction
 
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -251,8 +252,8 @@ async def _collect_events(
 
 def test_session_usage_returns_none_for_unknown_session(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
@@ -283,8 +284,8 @@ def test_session_usage_accumulates_across_turns(tmp_path: Path) -> None:
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             context_policy=_context_policy,
@@ -321,8 +322,8 @@ def test_session_usage_returns_none_after_session_close(tmp_path: Path) -> None:
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             context_policy=_context_policy,

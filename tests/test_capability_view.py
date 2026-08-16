@@ -13,18 +13,21 @@ import shlex
 from pathlib import Path
 
 import pytest
+from host_fakes import _environment_kernel
 from interaction_fakes import _ScriptedInteraction
 from policy_fakes import _AskForWritesPolicy
+from workspace_fakes import _kernel_workspace
 
+from cli_agent._adapters.local.overlay import _LocalCapabilityOverlay
+from cli_agent._adapters.local.view import _LocalCapabilityView
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._backend import _CapabilityInspection
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._capability.source import _prepare_capability_source
-from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
+from cli_agent.runtime._capability.source_view import CapabilitySource
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
@@ -75,7 +78,7 @@ def test_materialized_view_implements_the_bound_capability_contract(
 
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
 
-    assert isinstance(view, _LogicalCapabilityView)
+    assert isinstance(view, CapabilitySource)
     assert view.root == str(workspace / ".workspace")
 
     async def scenario() -> None:
@@ -180,11 +183,14 @@ def test_approved_output_redirection_copies_up_before_shell_spawn(
     command = "echo workspace > .workspace/tools/message.txt"
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            workspace,
-            backend=_LocalBackendWorkspace(workspace, {}, view),
+        kernel = _environment_kernel(
+            _kernel_workspace(
+                workspace,
+                _LocalBackendWorkspace(workspace, {}),
+            ),
             policy=_AskForWritesPolicy(),
-            user_interaction=interaction,
+            interaction=interaction,
+            capability_overlay=_LocalCapabilityOverlay(view),
         )
         try:
             result = await _exec(kernel, command)
@@ -211,11 +217,14 @@ def test_denied_modification_does_not_copy_up(tmp_path: Path) -> None:
     visible = workspace / ".workspace" / "tools" / "preserved.txt"
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            workspace,
-            backend=_LocalBackendWorkspace(workspace, {}, view),
+        kernel = _environment_kernel(
+            _kernel_workspace(
+                workspace,
+                _LocalBackendWorkspace(workspace, {}),
+            ),
             policy=_AskForWritesPolicy(),
-            user_interaction=_ScriptedInteraction("deny"),
+            interaction=_ScriptedInteraction("deny"),
+            capability_overlay=_LocalCapabilityOverlay(view),
         )
         try:
             result = await _exec(
@@ -327,17 +336,23 @@ def test_copy_up_is_atomic_across_concurrent_sessions(tmp_path: Path) -> None:
     interaction = _ScriptedInteraction("allow_once")
 
     async def scenario() -> None:
-        first = EnvironmentKernel(
-            workspace,
-            backend=_LocalBackendWorkspace(workspace, {}, view),
+        first = _environment_kernel(
+            _kernel_workspace(
+                workspace,
+                _LocalBackendWorkspace(workspace, {}),
+            ),
             policy=_AskForWritesPolicy(),
-            user_interaction=interaction,
+            interaction=interaction,
+            capability_overlay=_LocalCapabilityOverlay(view),
         )
-        second = EnvironmentKernel(
-            workspace,
-            backend=_LocalBackendWorkspace(workspace, {}, view),
+        second = _environment_kernel(
+            _kernel_workspace(
+                workspace,
+                _LocalBackendWorkspace(workspace, {}),
+            ),
             policy=_AskForWritesPolicy(),
-            user_interaction=interaction,
+            interaction=interaction,
+            capability_overlay=_LocalCapabilityOverlay(view),
         )
         try:
             await asyncio.gather(
@@ -366,12 +381,12 @@ def test_cancelled_shell_execution_does_not_copy_up(tmp_path: Path) -> None:
     workspace, repertoire = _roots(tmp_path)
     lower = repertoire / "tools" / "cancelled.txt"
     lower.write_text("lower\n", encoding="utf-8")
-    view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
+    _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
     visible = workspace / ".workspace" / "tools" / "cancelled.txt"
 
     async def scenario() -> None:
-        backend = _LocalBackendWorkspace(workspace, {}, view)
-        execution = _ShellSource(backend).prepare(
+        backend = _LocalBackendWorkspace(workspace, {})
+        execution = _ShellSource(_kernel_workspace(workspace, backend)).prepare(
             _ExecutionRequest(
                 command=parse_shell_ast("echo x > .workspace/tools/cancelled.txt"),
             ),
@@ -406,11 +421,14 @@ def test_copy_up_rejects_symbolic_link_directory_traversal(tmp_path: Path) -> No
     visible_directory.symlink_to(lower_directory, target_is_directory=True)
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            workspace,
-            backend=_LocalBackendWorkspace(workspace, {}, view),
+        kernel = _environment_kernel(
+            _kernel_workspace(
+                workspace,
+                _LocalBackendWorkspace(workspace, {}),
+            ),
             policy=_AskForWritesPolicy(),
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
+            capability_overlay=_LocalCapabilityOverlay(view),
         )
         try:
             result = await _exec(
@@ -641,11 +659,14 @@ def _run_approved(
     command: str,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            workspace,
-            backend=_LocalBackendWorkspace(workspace, {}, view),
+        kernel = _environment_kernel(
+            _kernel_workspace(
+                workspace,
+                _LocalBackendWorkspace(workspace, {}),
+            ),
             policy=_AskForWritesPolicy(),
-            user_interaction=_ScriptedInteraction("allow_once"),
+            interaction=_ScriptedInteraction("allow_once"),
+            capability_overlay=_LocalCapabilityOverlay(view),
         )
         try:
             assert _output(await _exec(kernel, command))["status"] == "exited"

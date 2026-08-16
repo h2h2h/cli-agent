@@ -18,14 +18,14 @@ from cli_agent.runtime._backend.facts import (
     _WorkspaceSource,
 )
 from cli_agent.runtime._backend.protocol import (
-    _Backend,
-    _BackendWorkspace,
+    Backend,
+    BackendFactory,
     _WorkspaceFilesystem,
 )
 
 __all__ = [
-    "_Backend",
-    "_BackendWorkspace",
+    "BackendFactory",
+    "Backend",
     "_CapabilityInspection",
     "_DirectoryEntry",
     "_FileEdit",

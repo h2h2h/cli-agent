@@ -45,7 +45,7 @@ from cli_agent.runtime._backend import (
     _WorkspaceFilesystem,
 )
 from cli_agent.runtime._capability.facts import _FilesystemError
-from cli_agent.runtime._capability.provider import CapabilitySnapshot
+from cli_agent.runtime._capability.snapshot import CapabilitySnapshot
 from cli_agent.runtime._environment.handlers.base import _CommandContext
 from cli_agent.runtime._execution import ExecutionHandle
 
@@ -78,6 +78,28 @@ class DeploymentSnapshot:
     complete: bool
     error: str | None
     mounts: tuple[str, ...] = ()
+    tool_runtime: ToolRuntimeSnapshot | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolRuntimeSnapshot:
+    """Backend-neutral logical paths for one deployed Tool runtime."""
+
+    python: str | None
+    worker: str | None
+    tools_directory: str | None
+    binding_directory: str | None
+    error: str | None
+
+    @property
+    def available(self) -> bool:
+        return (
+            self.python is not None
+            and self.worker is not None
+            and self.tools_directory is not None
+            and self.binding_directory is not None
+            and self.error is None
+        )
 
 
 @runtime_checkable
@@ -97,6 +119,20 @@ class ToolExecutor(Protocol):
         context: _CommandContext,
     ) -> ExecutionHandle:
         """Prepare one Tool execution without starting work or resources."""
+        ...
+
+
+@runtime_checkable
+class ToolExecutorFactory(Protocol):
+    """Create a ToolExecutor from immutable deployment facts."""
+
+    def create(
+        self,
+        workspace: Workspace,
+        snapshot: CapabilitySnapshot,
+        deployment: DeploymentSnapshot,
+    ) -> ToolExecutor:
+        """Bind one executor to the Workspace and snapshot revision."""
         ...
 
 

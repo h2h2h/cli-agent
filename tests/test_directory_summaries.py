@@ -3,8 +3,10 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
 
+from cli_agent._adapters.local.view import _LocalCapabilityView
 from cli_agent.runtime import (
     AssistantMessage,
+    CallbackEventSink,
     ModelCompletion,
     ModelEvent,
     ModelRequest,
@@ -13,7 +15,6 @@ from cli_agent.runtime import (
 )
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
 )
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
 from cli_agent.runtime._capability.library.facts import (
@@ -107,7 +108,7 @@ def test_multi_level_directories_converge_bottom_up(tmp_path: Path) -> None:
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
         catalog.start(provider)
@@ -174,7 +175,7 @@ def test_directory_cache_hit_skips_model_call(tmp_path: Path) -> None:
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
         assert catalog.get("d1").status == "ready"  # type: ignore[union-attr]
@@ -201,7 +202,7 @@ def test_failed_child_uses_unavailable_text(tmp_path: Path) -> None:
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
         catalog.start(provider)
@@ -252,7 +253,7 @@ def test_directory_becomes_stale_then_ready_when_child_changes(
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
         catalog.start(provider)
@@ -306,7 +307,7 @@ def test_empty_directory_is_ready_and_parent_summary_converges(tmp_path: Path) -
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
         catalog.start(provider)
@@ -359,7 +360,7 @@ def test_failed_stale_directory_is_unavailable_to_its_parent(
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
         catalog.start(provider)
@@ -405,7 +406,7 @@ def test_empty_ready_summary_remains_distinct_from_unavailable(
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
         catalog.start(provider)
@@ -435,10 +436,10 @@ def test_directory_failure_only_affects_directory(tmp_path: Path) -> None:
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
-        catalog.start(provider, on_diagnostic=diagnostics.append)
+        catalog.start(provider, events=CallbackEventSink(diagnostics.append))
         await _drain(catalog)
 
         assert catalog.get("d1/f1.md").status == "ready"  # type: ignore[union-attr]
@@ -476,7 +477,7 @@ def test_directory_summaries_reused_across_runtimes(tmp_path: Path) -> None:
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
         catalog.start(first)
@@ -488,7 +489,7 @@ def test_directory_summaries_reused_across_runtimes(tmp_path: Path) -> None:
         view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
         catalog = await _LibraryCatalog.reconcile(
             view,
-            _LocalBackendWorkspace(tmp_path, {}, view).filesystem,
+            _LocalBackendWorkspace(tmp_path, {}).filesystem,
             _cache(tmp_path),
         )
         catalog.start(second)

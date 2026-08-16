@@ -19,11 +19,28 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from host_fakes import _environment_kernel
 from interaction_fakes import _ScriptedInteraction
+from workspace_fakes import _kernel_workspace
 
+import cli_agent._adapters.docker.deployment as docker_deployment
+from cli_agent._adapters.docker.deployment import (
+    _DockerCapabilityDeployment,
+    _DockerCapabilityOverlayFactory,
+    _DockerCapabilityView,
+    _DockerMCPDiscovery,
+    _DockerToolExecutor,
+    _DockerToolExecutorFactory,
+)
+from cli_agent._workspaces import (
+    _DockerWorkspace,
+    _DockerWorkspaceFactory,
+)
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    CallbackEventSink,
     ContextPolicy,
     ModelCompletion,
     ScriptedModelProvider,
@@ -36,12 +53,6 @@ from cli_agent.runtime import (
     UserMessage,
 )
 from cli_agent.runtime._backend import _ToolBinding, _ToolExecutionRequest
-from cli_agent.runtime._backend.docker import deployment as docker_deployment
-from cli_agent.runtime._backend.docker.deployment import (
-    _DockerCapabilityDeployment,
-    _DockerCapabilityView,
-    _DockerToolExecutor,
-)
 from cli_agent.runtime._backend.facts import _FileWriteRequest
 from cli_agent.runtime._capability.deployment import (
     DEPLOYMENT_MANIFEST,
@@ -50,11 +61,15 @@ from cli_agent.runtime._capability.deployment import (
     volume_path,
 )
 from cli_agent.runtime._capability.facts import _FilesystemError
-from cli_agent.runtime._capability.provider import (
+from cli_agent.runtime._capability.provider import DefaultCapabilityProvider
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.snapshot import (
     CAPABILITY_SCHEMA_VERSION,
     CapabilitySnapshot,
 )
-from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.source_view import (
+    _WorkspaceCapabilitySourceFactory,
+)
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import _CommandContext
@@ -63,10 +78,6 @@ from cli_agent.runtime._execution import (
     _KILLED_BEFORE_START,
     ExecutionOutputSink,
     ExitStatus,
-)
-from cli_agent.runtime._workspace import (
-    _DockerWorkspace,
-    _DockerWorkspaceFactory,
 )
 
 _IMAGE = "python:3.12-alpine"
@@ -128,12 +139,16 @@ async def _open(project: Path, repertoire: Path) -> _DockerWorkspace:
 
 
 def _deployment(workspace) -> _DockerCapabilityDeployment:
-    return _DockerCapabilityDeployment(
-        state_root=workspace.state_root,
-        repertoire=workspace.repertoire,
-        volume=workspace.deployment_volume,
-        backend=workspace.backend,
-    )
+    del workspace
+    return _DockerCapabilityDeployment()
+
+
+def _executor(
+    workspace: _DockerWorkspace,
+    snapshot: CapabilitySnapshot,
+    deployment: DeploymentSnapshot,
+) -> _DockerToolExecutor:
+    return _DockerToolExecutorFactory().create(workspace, snapshot, deployment)
 
 
 def _snapshot(*, revision: str = _REVISION) -> CapabilitySnapshot:
@@ -328,7 +343,7 @@ def test_reconcile_reuses_the_deployment_after_reopen(
             second = await _deployment(reopened).reconcile(_snapshot(), reopened)
             assert second.complete, second.error
             assert second.mounts == (reopened.volume,)
-            runtime = reopened.backend._tool_runtime
+            runtime = second.tool_runtime
             assert runtime is not None and runtime.available
         finally:
             await reopened.close()
@@ -408,7 +423,11 @@ def test_stale_and_foreign_deployments_fail_classified(tmp_path: Path) -> None:
             result = await deployment.reconcile(_snapshot(), workspace)
             assert result.complete, result.error
 
-            executor = deployment.executor(workspace, revision="other-revision")
+            executor = _executor(
+                workspace,
+                _snapshot(revision="other-revision"),
+                result,
+            )
             execution = executor.prepare(
                 _ToolExecutionRequest(
                     code="tools.math_tool.VALUE",
@@ -462,7 +481,7 @@ def test_invalid_binding_fails_classified(tmp_path: Path) -> None:
             result = await deployment.reconcile(_snapshot(), workspace)
             assert result.complete, result.error
 
-            executor = deployment.executor(workspace, revision=_REVISION)
+            executor = _executor(workspace, _snapshot(), result)
             execution = executor.prepare(
                 _ToolExecutionRequest(
                     code="print(1)",
@@ -537,10 +556,9 @@ def test_tool_worker_execution_semantics_match_local(tmp_path: Path) -> None:
             deployment = _deployment(workspace)
             result = await deployment.reconcile(_snapshot(), workspace)
             assert result.complete, result.error
-            executor = deployment.executor(workspace, revision=_REVISION)
-            kernel = EnvironmentKernel(
-                workspace.state_root,
-                backend=workspace.backend,
+            executor = _executor(workspace, _snapshot(), result)
+            kernel = _environment_kernel(
+                _kernel_workspace(workspace.state_root, workspace.backend),
                 tool_catalog=catalog,
                 tool_executor=executor,
             )
@@ -648,7 +666,7 @@ def test_tool_kill_semantics_leave_no_container(tmp_path: Path) -> None:
             deployment = _deployment(workspace)
             result = await deployment.reconcile(_snapshot(), workspace)
             assert result.complete, result.error
-            executor = deployment.executor(workspace, revision=_REVISION)
+            executor = _executor(workspace, _snapshot(), result)
 
             queued = executor.prepare(
                 _ToolExecutionRequest(
@@ -718,43 +736,34 @@ def test_mcp_discovery_and_invocation_end_to_end(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = await _open(project, repertoire)
         try:
-            view = await _DockerCapabilityView.materialize(
-                workspace.backend,
-                workspace.deployment_volume,
-                repertoire,
+            diagnostics = []
+            events = CallbackEventSink(diagnostics.append)
+            source = await _WorkspaceCapabilitySourceFactory().create(workspace)
+            provider = DefaultCapabilityProvider(events=events)
+            snapshot = await provider.discover(
+                source,
+                mcp_discovery=_DockerMCPDiscovery(events),
+                mcp_environment=workspace,
+                project_instructions=workspace,
             )
-            from cli_agent.runtime._capability.provider import CapabilityProvider
+            assert tuple(config.name for config in snapshot.mcp_servers) == ("echo",)
+            assert tuple(fact.name for fact in snapshot.mcp_facts) == ("echo",), (
+                diagnostics
+            )
+            assert tuple(tool.name for tool in snapshot.mcp_facts[0].tools) == ("echo",)
 
-            provider = CapabilityProvider(
-                view=view,
-                workspace=project,
-            )
-            configs = await provider.discover_mcp_configs()
-            assert tuple(config.name for config in configs) == ("echo",)
+            overlay = await _DockerCapabilityOverlayFactory().create(workspace)
             deployment = _deployment(workspace)
-            facts = await deployment.discover_mcp(configs)
-            assert tuple(fact.name for fact in facts) == ("echo",)
-            assert tuple(tool.name for tool in facts[0].tools) == ("echo",)
-
-            await deployment.materialize_stubs(workspace, configs, facts)
-            stub = await workspace.backend.filesystem.read(
+            result = await deployment.reconcile(snapshot, workspace)
+            assert result.complete, result.error
+            stub = await workspace.filesystem.read(
                 ".workspace/tools/mcp_echo.py",
             )
             assert b"mcp_binding" in stub
-
-            snapshot = await provider.discover(mcp_configs=configs)
-            result = await deployment.reconcile(snapshot, workspace)
-            assert result.complete, result.error
-
-            catalog = await _ToolCatalog.discover(view)
-            executor = deployment.executor(
-                workspace,
-                revision=snapshot.revision,
-            )
-            kernel = EnvironmentKernel(
-                workspace.state_root,
-                backend=workspace.backend,
-                tool_catalog=catalog,
+            executor = _executor(workspace, snapshot, result)
+            kernel = _environment_kernel(
+                _kernel_workspace(workspace.state_root, workspace.backend),
+                tool_catalog=snapshot.tools,
                 tool_executor=executor,
             )
             try:
@@ -766,6 +775,7 @@ def test_mcp_discovery_and_invocation_end_to_end(tmp_path: Path) -> None:
                 assert "echo:hello@token-value" in _text(_output(call), "stdout")
             finally:
                 await kernel.close()
+                await overlay.close()
         finally:
             await workspace.close()
             await _remove_volume(workspace.volume)
@@ -836,12 +846,12 @@ def test_runtime_docker_end_to_end_and_resume(tmp_path: Path, monkeypatch) -> No
             )
         )
 
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             backend="docker",
             workspace=project,
             repertoire=repertoire,
             provider=provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         session = await runtime.new_session()
@@ -863,9 +873,7 @@ def test_runtime_docker_end_to_end_and_resume(tmp_path: Path, monkeypatch) -> No
             system_body = "\n".join(block.text for block in system_message.content)
             assert "Docker workspace rules" in system_body
 
-            assert runtime._resources.snapshot.revision == (
-                runtime._resources.deployment.revision
-            )
+            assert not hasattr(runtime._resources, "deployment")
             session_id = session.session_id
         finally:
             await runtime.close()
@@ -880,12 +888,12 @@ def test_runtime_docker_end_to_end_and_resume(tmp_path: Path, monkeypatch) -> No
                 ),
             )
         )
-        reopened = await AgentRuntime.open(
+        reopened = await open_default_runtime(
             backend="docker",
             workspace=project,
             repertoire=repertoire,
             provider=resumed_provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         try:
@@ -895,16 +903,14 @@ def test_runtime_docker_end_to_end_and_resume(tmp_path: Path, monkeypatch) -> No
                 reopened,
                 UserMessage.text("Confirm the tool still works"),
             )
-            assert reopened._resources.snapshot.revision == (
-                reopened._resources.deployment.revision
-            )
+            assert not hasattr(reopened._resources, "deployment")
             system_message = resumed_provider.requests[0].messages[0]
             assert isinstance(system_message, SystemMessage)
             system_body = "\n".join(block.text for block in system_message.content)
             assert "Docker workspace rules" in system_body
         finally:
             await reopened.close()
-            await _remove_volume(reopened._resources.backend.volume)
+            await _remove_volume(reopened._resources.workspace.backend.volume)
 
     asyncio.run(scenario())
 
@@ -926,15 +932,15 @@ def test_delete_session_does_not_remove_the_workspace_volume(
                 ),
             )
         )
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             backend="docker",
             workspace=project,
             repertoire=repertoire,
             provider=provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
-        volume = runtime._resources.backend.volume
+        volume = runtime._resources.workspace.backend.volume
         session = await runtime.new_session()
         try:
             await runtime.delete_session(session.session_id)
@@ -949,16 +955,16 @@ def test_delete_session_does_not_remove_the_workspace_volume(
         )
         assert result.returncode == 0, "workspace volume must survive Session delete"
 
-        reopened = await AgentRuntime.open(
+        reopened = await open_default_runtime(
             backend="docker",
             workspace=project,
             repertoire=repertoire,
             provider=provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         try:
-            assert reopened._resources.backend.volume == volume
+            assert reopened._resources.workspace.backend.volume == volume
         finally:
             await reopened.close()
             await _remove_volume(volume)
@@ -971,12 +977,12 @@ def test_unsupported_backend_kind_is_rejected(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         with pytest.raises(ValueError, match="unsupported Backend kind"):
-            await AgentRuntime.open(
+            await open_default_runtime(
                 backend="bogus",
                 workspace=project,
                 repertoire=repertoire,
                 provider=ScriptedModelProvider(script=()),
-                user_interaction=_user_interaction,
+                interaction=_user_interaction,
                 context_policy=_context_policy,
             )
 

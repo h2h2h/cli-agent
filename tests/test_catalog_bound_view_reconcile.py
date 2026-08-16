@@ -25,7 +25,7 @@ from cli_agent.runtime._capability.projections import (
     write_tool_index,
 )
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
-from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
+from cli_agent.runtime._capability.source_view import CapabilitySource
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 
 _LOWER = {
@@ -177,7 +177,7 @@ def test_tool_catalog_reconciles_against_in_memory_bound_view() -> None:
     async def scenario() -> None:
         catalog = await _reconcile_tools(view, filesystem)
 
-        assert isinstance(view, _LogicalCapabilityView)
+        assert isinstance(view, CapabilitySource)
         math = catalog.get("math")
         assert math is not None
         assert math.path == "tools/math.py"
@@ -281,8 +281,8 @@ def test_catalog_entries_hold_only_logical_path_facts() -> None:
     assert not Path(skill.path).is_absolute()
 
 
-async def _reconcile_tools(view, filesystem, on_diagnostic=None):
-    catalog = await _ToolCatalog.discover(view, on_diagnostic)
+async def _reconcile_tools(view, filesystem):
+    catalog = await _ToolCatalog.discover(view)
     await write_tool_index(volume=VOLUME, filesystem=filesystem, catalog=catalog)
     return catalog
 

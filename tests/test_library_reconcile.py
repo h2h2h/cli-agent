@@ -2,6 +2,7 @@ import asyncio
 import shutil
 from pathlib import Path
 
+from cli_agent._adapters.local.view import _LocalCapabilityView
 from cli_agent.runtime import (
     AssistantMessage,
     ModelCompletion,
@@ -9,7 +10,6 @@ from cli_agent.runtime import (
 )
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
     _LocalWorkspaceFilesystem,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
@@ -84,7 +84,7 @@ def _filesystem(
     workspace: Path,
     view: _LocalCapabilityView,
 ) -> _LocalWorkspaceFilesystem:
-    backend = _LocalBackendWorkspace(workspace, {}, view)
+    backend = _LocalBackendWorkspace(workspace, {})
     return backend.filesystem
 
 

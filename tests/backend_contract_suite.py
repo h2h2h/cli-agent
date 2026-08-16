@@ -7,7 +7,7 @@ stdin and the three-phase kill contract hold, and the filesystem keeps
 Backend-native ``resolve`` plus atomic ``write`` / ``edit`` semantics.
 
 Each suite case receives an async ``open_workspace`` callable returning a
-fresh ``_BackendWorkspace`` and is executed inside ``asyncio.run``.
+fresh ``Backend`` and is executed inside ``asyncio.run``.
 """
 
 from __future__ import annotations

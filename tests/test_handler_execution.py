@@ -2,6 +2,9 @@ import asyncio
 from pathlib import Path
 from typing import Literal
 
+from host_fakes import _environment_kernel
+from workspace_fakes import _kernel_workspace
+
 from cli_agent.runtime import ToolCall
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
@@ -9,7 +12,6 @@ from cli_agent.runtime._backend.local import (
     _ProcessExecution,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
-from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import (
     _CommandContext,
     _ExecutionRequest,
@@ -69,7 +71,12 @@ def test_custom_command_prepares_export_and_shell_handler_prepares_process(
         assert outcome == ExitStatus(0)
         assert environment == {"A": "1", "MESSAGE": "two words"}
 
-        process_execution = _ShellSource(_LocalBackendWorkspace(tmp_path, {})).prepare(
+        process_execution = _ShellSource(
+            _kernel_workspace(
+                tmp_path,
+                _LocalBackendWorkspace(tmp_path, {}),
+            )
+        ).prepare(
             _ExecutionRequest(command=parse_shell_ast("pwd")),
             context,
         )
@@ -216,8 +223,8 @@ def test_kernel_runs_and_cancels_handle_without_branch(
     async def scenario() -> None:
         execution = _FakeExecution()
         handler = _FakeHandler(execution)
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             base_env={"SESSION": "value"},
             queue_limit=1,
             chunk_limit=10,
@@ -266,8 +273,8 @@ def test_parallel_safe_metadata_forces_an_isolated_command_context(
             prepared_context = context
             return _InlineExecution(execute)
 
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             base_env={"SESSION": "value"},
             custom_sources=(
                 (
@@ -308,8 +315,8 @@ def test_handler_preparation_failure_releases_serial_slot_for_queued_execution(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             queue_limit=1,
             chunk_limit=10,
             byte_limit=1_000,

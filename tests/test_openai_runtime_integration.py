@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 from interaction_fakes import _ScriptedInteraction
 
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -175,8 +176,8 @@ def test_runs_an_openai_compatible_tool_round_trip(
     follow_up = UserMessage.text("Confirm the previous result is in History.")
 
     async def scenario() -> None:
-        async with await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        async with await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             context_policy=_context_policy,

@@ -4,10 +4,13 @@ import sys
 from pathlib import Path
 
 import pytest
+from host_fakes import _environment_kernel
+from workspace_fakes import _kernel_workspace
 
 from cli_agent.errors.context import ContextExhaustedError
 from cli_agent.runtime import (
     AssistantMessage,
+    CallbackEventSink,
     ContextPolicy,
     ModelCompletion,
     ModelEvent,
@@ -30,6 +33,7 @@ from cli_agent.runtime._agent_loop import (
 )
 from cli_agent.runtime._context.engine import _ContextEngine
 from cli_agent.runtime._environment import EnvironmentKernel
+from cli_agent.runtime.host import NULL_EVENTS
 from cli_agent.runtime.model import ModelContextOverflowSignal
 
 SYSTEM_MESSAGE = SystemMessage.text("Test Runtime instruction")
@@ -45,13 +49,18 @@ def _new_loop(
     kernel: object,
     *,
     session_id: str = "test-session",
-    on_diagnostic: object = None,
+    events: object = None,
 ) -> AgentLoop:
+    event_sink = (
+        CallbackEventSink(events)  # type: ignore[arg-type]
+        if events is not None
+        else NULL_EVENTS
+    )
     engine = _ContextEngine(
         session_id=session_id,
         context_policy=CONTEXT_POLICY,
         provider=provider,  # type: ignore[arg-type]
-        on_diagnostic=on_diagnostic,  # type: ignore[arg-type]
+        events=event_sink,
     )
     engine.hydrate(system_message=SYSTEM_MESSAGE, snapshot=None, journal=(), revision=0)
 
@@ -64,7 +73,7 @@ def _new_loop(
         kernel,  # type: ignore[arg-type]
         context=engine,
         commit=commit,
-        on_diagnostic=on_diagnostic,  # type: ignore[arg-type]
+        events=event_sink,
     )
 
 
@@ -83,7 +92,7 @@ def test_completes_a_text_only_turn(tmp_path: Path) -> None:
             ),
         )
     )
-    loop = _new_loop(provider, EnvironmentKernel(tmp_path))
+    loop = _new_loop(provider, _environment_kernel(_kernel_workspace(tmp_path)))
 
     events = asyncio.run(_collect_events(loop, user_message))
 
@@ -130,7 +139,7 @@ def test_continues_generation_after_exec_tool_result(tmp_path: Path) -> None:
             ),
         )
     )
-    loop = _new_loop(provider, EnvironmentKernel(tmp_path))
+    loop = _new_loop(provider, _environment_kernel(_kernel_workspace(tmp_path)))
 
     events = asyncio.run(_collect_events(loop, user_message))
 
@@ -206,7 +215,7 @@ def test_dispatches_tool_calls_in_order_and_preserves_dependencies(
             ),
         )
     )
-    loop = _new_loop(provider, EnvironmentKernel(tmp_path))
+    loop = _new_loop(provider, _environment_kernel(_kernel_workspace(tmp_path)))
 
     events = asyncio.run(_collect_events(loop, user_message))
 
@@ -259,7 +268,7 @@ def test_tool_call_ready_order_does_not_change_dispatch_order(
             ),
         )
     )
-    loop = _new_loop(provider, EnvironmentKernel(tmp_path))
+    loop = _new_loop(provider, _environment_kernel(_kernel_workspace(tmp_path)))
 
     events = asyncio.run(_collect_events(loop, user_message))
 
@@ -329,9 +338,9 @@ def test_recovers_from_provider_context_overflow_and_retries_once(
     received: list[object] = []
     loop = _new_loop(
         provider,
-        EnvironmentKernel(tmp_path),
+        _environment_kernel(_kernel_workspace(tmp_path)),
         session_id="overflow-session",
-        on_diagnostic=received.append,
+        events=received.append,
     )
 
     events = asyncio.run(_collect_events(loop, UserMessage.text("Hello")))
@@ -361,7 +370,7 @@ def test_raises_stable_error_after_second_provider_overflow(tmp_path: Path) -> N
     )
     loop = _new_loop(
         provider,
-        EnvironmentKernel(tmp_path),
+        _environment_kernel(_kernel_workspace(tmp_path)),
         session_id="overflow-session",
     )
 

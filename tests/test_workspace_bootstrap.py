@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
-    AgentRuntime,
     ContextPolicy,
     ScriptedModelProvider,
 )
@@ -27,8 +27,8 @@ def test_runtime_open_bootstraps_and_preserves_workspace_state(
     workspace_environment = workspace_state / "env"
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
@@ -74,8 +74,8 @@ def test_runtime_open_reuses_existing_workspace_state_without_changes(
         workspace_environment.chmod(0o640)
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
@@ -101,15 +101,15 @@ def test_runtime_open_uses_explicit_repertoire(tmp_path: Path) -> None:
     lower.write_text("SELECTED = True\n", encoding="utf-8")
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=workspace,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
         )
         try:
-            assert runtime._resources.capability_view._repertoire == repertoire
+            assert runtime._resources.capabilities.overlay.view._repertoire == repertoire
         finally:
             await runtime.close()
 
@@ -131,8 +131,8 @@ def test_runtime_open_rejects_workspace_state_file_conflict(
             ValueError,
             match="must be a real directory",
         ):
-            await AgentRuntime.open(
-                user_interaction=_user_interaction,
+            await open_default_runtime(
+                interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
                 context_policy=_context_policy,
@@ -152,8 +152,8 @@ def test_runtime_open_rejects_workspace_environment_directory_conflict(
             ValueError,
             match="must be a real regular file",
         ):
-            await AgentRuntime.open(
-                user_interaction=_user_interaction,
+            await open_default_runtime(
+                interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
                 context_policy=_context_policy,
@@ -189,8 +189,8 @@ def test_runtime_open_rejects_workspace_state_symbolic_links(
 
     async def scenario() -> None:
         with pytest.raises(ValueError, match=message):
-            await AgentRuntime.open(
-                user_interaction=_user_interaction,
+            await open_default_runtime(
+                interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
                 context_policy=_context_policy,
@@ -205,8 +205,8 @@ def test_concurrent_runtime_opens_share_idempotent_bootstrap(
     async def scenario() -> None:
         runtimes = await asyncio.gather(
             *(
-                AgentRuntime.open(
-                    user_interaction=_user_interaction,
+                open_default_runtime(
+                    interaction=_user_interaction,
                     workspace=tmp_path,
                     provider=ScriptedModelProvider(script=()),
                     context_policy=_context_policy,
@@ -244,8 +244,8 @@ def test_runtime_open_requires_existing_workspace(tmp_path: Path) -> None:
             ValueError,
             match="workspace must be an existing directory",
         ):
-            await AgentRuntime.open(
-                user_interaction=_user_interaction,
+            await open_default_runtime(
+                interaction=_user_interaction,
                 workspace=missing,
                 provider=ScriptedModelProvider(script=()),
                 context_policy=_context_policy,

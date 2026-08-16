@@ -8,20 +8,28 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
+import cli_agent._adapters.local.mcp_runtime as mcp_runtime_module
+from cli_agent._adapters.local.deployment import _LocalCapabilityDeployment
+from cli_agent._adapters.local.mcp_discovery import _LocalMCPDiscovery
+from cli_agent._adapters.local.view import _LocalCapabilityView
+from cli_agent._workspaces import _LocalWorkspace
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
-    AgentRuntime,
+    CallbackEventSink,
     ContextPolicy,
     ScriptedModelProvider,
 )
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
 )
-from cli_agent.runtime._backend.local import mcp_runtime as mcp_runtime_module
-from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
 from cli_agent.runtime._capability.mcp.config import discover_configs
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.snapshot import (
+    CAPABILITY_SCHEMA_VERSION,
+    CapabilitySnapshot,
+)
+from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
-from cli_agent.runtime._workspace import _LocalWorkspace
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 
 _user_interaction = _ScriptedInteraction("allow_once")
@@ -64,18 +72,13 @@ def _open_deployment(
     workspace: Path,
     repertoire: Path,
     *,
-    on_diagnostic=None,
+    events=None,
 ):
     _prepare_workspace(workspace)
     view = _LocalCapabilityView.materialize(workspace / ".workspace", repertoire)
-    backend = _LocalBackendWorkspace(workspace, {}, view)
-    deployment = _LocalCapabilityDeployment(
-        state_root=workspace / ".workspace",
-        repertoire=repertoire,
-        volume=".workspace",
-        base_environment=backend.execution_base_environment,
-        on_diagnostic=on_diagnostic,
-    )
+    backend = _LocalBackendWorkspace(workspace, {})
+    sink = CallbackEventSink(events) if events is not None else None
+    deployment = _LocalCapabilityDeployment(events=sink) if sink else _LocalCapabilityDeployment()
     opened = _LocalWorkspace(_WORKSPACE_ID, workspace, backend, repertoire)
     return opened, deployment, view
 
@@ -84,11 +87,23 @@ async def _reconcile_mcp(
     opened,
     deployment,
     view,
-    on_diagnostic=None,
+    events=None,
 ) -> tuple[str, ...]:
-    configs = await discover_configs(view, on_diagnostic)
-    facts = await deployment.discover_mcp(configs, on_diagnostic)
-    await deployment.materialize_stubs(opened, configs, facts)
+    sink = CallbackEventSink(events) if events is not None else None
+    configs = await discover_configs(view, sink) if sink else await discover_configs(view)
+    discovery = _LocalMCPDiscovery(sink) if sink else _LocalMCPDiscovery()
+    facts = await discovery.discover(configs, view, opened)
+    tools = (await _ToolCatalog.discover(view)).with_mcp(configs, facts)
+    snapshot = CapabilitySnapshot(
+        revision="test-mcp-revision",
+        schema_version=CAPABILITY_SCHEMA_VERSION,
+        tools=tools,
+        skills=await _SkillCatalog.discover(view),
+        mcp_servers=configs,
+        project_instructions=None,
+        mcp_facts=facts,
+    )
+    await deployment.reconcile(snapshot, opened)
     return tuple(sorted(fact.name for fact in facts))
 
 
@@ -105,7 +120,7 @@ def test_reconcile_generates_a_stub_with_mcp_prefix(tmp_path: Path) -> None:
     opened, deployment, view = _open_deployment(
         workspace,
         repertoire,
-        on_diagnostic=received.append,
+        events=received.append,
     )
 
     async def scenario() -> None:
@@ -144,14 +159,14 @@ def test_reconcile_discovers_servers_in_parallel(
     gate = asyncio.Event()
     original = mcp_runtime_module._discover
 
-    async def gated_discover(config, base_environment, on_diagnostic) -> object:
+    async def gated_discover(config, base_environment, events) -> object:
         nonlocal entered
         entered += 1
         if entered == 1:
             await asyncio.wait_for(gate.wait(), timeout=2)
         else:
             gate.set()
-        return await original(config, base_environment, on_diagnostic)
+        return await original(config, base_environment, events)
 
     monkeypatch.setattr(mcp_runtime_module, "_discover", gated_discover)
 
@@ -211,7 +226,7 @@ def test_reconcile_retries_discovery_and_emits_diagnostic(tmp_path: Path) -> Non
     opened, deployment, view = _open_deployment(
         workspace,
         repertoire,
-        on_diagnostic=received.append,
+        events=received.append,
     )
 
     async def scenario() -> None:
@@ -245,7 +260,7 @@ def test_reconcile_skips_invalid_config_with_diagnostic(tmp_path: Path) -> None:
     opened, deployment, view = _open_deployment(
         workspace,
         repertoire,
-        on_diagnostic=received.append,
+        events=received.append,
     )
 
     async def scenario() -> None:
@@ -293,7 +308,7 @@ def test_reconcile_overwrites_a_locally_modified_stub(tmp_path: Path) -> None:
     opened, deployment, view = _open_deployment(
         workspace,
         repertoire,
-        on_diagnostic=received.append,
+        events=received.append,
     )
 
     async def scenario() -> None:
@@ -344,18 +359,18 @@ def test_runtime_open_projects_mcp_stub_without_diagnostics(
     received: list[RuntimeDiagnostic] = []
 
     async def scenario() -> None:
-        async with await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        async with await open_default_runtime(
+            interaction=_user_interaction,
             workspace=workspace,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
-            on_diagnostic=received.append,
+            events=CallbackEventSink(received.append),
             context_policy=_context_policy,
         ) as runtime:
             stub = workspace / ".workspace" / "tools" / "mcp_math.py"
             assert stub.is_file()
             assert received == []
-            tool = runtime._resources.snapshot.tools.get("mcp_math")
+            tool = runtime._resources.capabilities.snapshot.tools.get("mcp_math")
             assert tool is not None and tool.valid
 
     asyncio.run(scenario())
@@ -375,16 +390,16 @@ def test_discovery_failure_keeps_runtime_open_without_partial_stub(
     received: list[RuntimeDiagnostic] = []
 
     async def scenario() -> None:
-        async with await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        async with await open_default_runtime(
+            interaction=_user_interaction,
             workspace=workspace,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
-            on_diagnostic=received.append,
+            events=CallbackEventSink(received.append),
             context_policy=_context_policy,
         ) as runtime:
             assert not (workspace / ".workspace" / "tools" / "mcp_broken.py").exists()
-            assert runtime._resources.snapshot.tools.get("mcp_broken") is None
+            assert runtime._resources.capabilities.snapshot.tools.get("mcp_broken") is None
             assert any(
                 diagnostic.kind == "mcp.discovery_failed" for diagnostic in received
             )
@@ -504,15 +519,15 @@ def test_runtime_open_reports_invalid_config_without_blocking(
     received: list[RuntimeDiagnostic] = []
 
     async def scenario() -> None:
-        async with await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        async with await open_default_runtime(
+            interaction=_user_interaction,
             workspace=workspace,
             repertoire=repertoire,
             provider=ScriptedModelProvider(script=()),
-            on_diagnostic=received.append,
+            events=CallbackEventSink(received.append),
             context_policy=_context_policy,
         ) as runtime:
-            assert runtime._resources.snapshot.tools.get("mcp_bad") is None
+            assert runtime._resources.capabilities.snapshot.tools.get("mcp_bad") is None
             assert not (workspace / ".workspace" / "tools" / "mcp_bad.py").exists()
             assert any(
                 diagnostic.kind == "mcp.config_invalid" for diagnostic in received

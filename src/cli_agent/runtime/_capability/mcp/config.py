@@ -8,7 +8,7 @@ generating stubs; deployment owns those steps.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 
 from cli_agent.runtime._capability.facts import _FilesystemError
 from cli_agent.runtime._capability.mcp.facts import (
@@ -16,20 +16,21 @@ from cli_agent.runtime._capability.mcp.facts import (
     parse_server_config,
 )
 from cli_agent.runtime._capability.source import _MCP_DIRECTORY
-from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
+from cli_agent.runtime._capability.source_view import CapabilitySource
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.host import NULL_EVENTS, EventSink, emit_event
 
 
 async def discover_configs(
-    capability_view: _LogicalCapabilityView,
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+    capability_view: CapabilitySource,
+    events: EventSink = NULL_EVENTS,
 ) -> tuple[MCPServerConfig, ...]:
     """Read and validate every ``_mcp/<server>/config.json``.
 
     Servers are read from the logical view so Repertoire descriptions and
     real Workspace overrides both project. A whiteouted server is disabled
     without a diagnostic; a missing or structurally invalid config is
-    reported through ``on_diagnostic`` and produces no config.
+    reported through ``events`` and produces no config.
     """
 
     try:
@@ -52,7 +53,7 @@ async def discover_configs(
             content = await capability_view.read(relative)
         except _FilesystemError:
             _emit(
-                on_diagnostic,
+                events,
                 "mcp.config_missing",
                 f"MCP server {server_name} has no config.json",
                 {"server": server_name},
@@ -62,7 +63,7 @@ async def discover_configs(
             raw = json.loads(content.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             _emit(
-                on_diagnostic,
+                events,
                 "mcp.config_invalid",
                 f"MCP server {server_name} config is invalid",
                 {"server": server_name, "errors": (f"not readable JSON: {exc}",)},
@@ -71,7 +72,7 @@ async def discover_configs(
         config, errors = parse_server_config(raw, directory_name=server_name)
         if config is None:
             _emit(
-                on_diagnostic,
+                events,
                 "mcp.config_invalid",
                 f"MCP server {server_name} config is invalid",
                 {"server": server_name, "errors": errors},
@@ -82,11 +83,12 @@ async def discover_configs(
 
 
 def _emit(
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+    events: EventSink,
     kind: str,
     message: str,
     detail: Mapping[str, object] | None = None,
 ) -> None:
-    if on_diagnostic is None:
-        return
-    on_diagnostic(RuntimeDiagnostic(kind=kind, message=message, detail=detail or {}))
+    emit_event(
+        events,
+        RuntimeDiagnostic(kind=kind, message=message, detail=detail or {}),
+    )

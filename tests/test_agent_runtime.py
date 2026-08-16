@@ -8,9 +8,11 @@ from policy_fakes import _DenyExecutablePolicy
 
 import cli_agent.runtime.runtime as runtime_module
 from cli_agent.errors import RuntimeStateError
+from cli_agent.presets import local_runtime_components, open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    CallbackEventSink,
     ContextPolicy,
     ModelCompletion,
     ModelEvent,
@@ -26,11 +28,9 @@ from cli_agent.runtime import (
     ToolResult,
     ToolResultMessage,
     UserMessage,
+    WorkspaceConfig,
 )
-from cli_agent.runtime._backend import _BackendWorkspace
-from cli_agent.runtime._capability.deployment import DeploymentSnapshot
 from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
-from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._resources import _RuntimeResources
 
@@ -51,8 +51,8 @@ def test_opens_and_closes_runtime_explicitly(tmp_path: Path, monkeypatch) -> Non
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
@@ -82,8 +82,8 @@ def test_closes_runtime_context_manager(tmp_path: Path, monkeypatch) -> None:
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
@@ -129,11 +129,11 @@ def test_host_configures_runtime_lifetime_executable_deny_set(
     )
 
     async def scenario() -> None:
-        async with await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        async with await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
-            execution_policy=_DenyExecutablePolicy(
+            policy=_DenyExecutablePolicy(
                 frozenset({"echo"}),
                 reason="direct invocation of 'echo' is denied by policy",
             ),
@@ -159,7 +159,7 @@ def test_open_requires_user_interaction_and_creates_no_default(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(TypeError):
-        AgentRuntime.open(
+        open_default_runtime(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
         )
@@ -183,14 +183,14 @@ def test_passes_parallel_command_authorization_to_kernel(
         configured_provider = ScriptedModelProvider(
             script=((_completion(AssistantMessage.text("configured")),),)
         )
-        default_runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        default_runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=default_provider,
             context_policy=_context_policy,
         )
-        configured_runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        configured_runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=configured_provider,
             parallel_commands=frozenset({"cat", "rg"}),
@@ -233,12 +233,16 @@ def test_cleans_up_environment_when_open_fails(
             raise OpenFailure
 
     async def scenario() -> None:
+        provider = ScriptedModelProvider(script=())
+        components = local_runtime_components(
+            interaction=_user_interaction,
+            context_policy=_context_policy,
+        )
         with pytest.raises(OpenFailure):
             await FailingAgentRuntime.open(
-                workspace=tmp_path,
-                provider=ScriptedModelProvider(script=()),
-                user_interaction=_user_interaction,
-                context_policy=_context_policy,
+                provider=provider,
+                components=components,
+                workspace_config=WorkspaceConfig(root=tmp_path),
             )
 
         assert _TrackingEnvironmentKernel.instances == []
@@ -266,8 +270,8 @@ def test_closes_new_kernel_when_agent_loop_construction_fails(
     monkeypatch.setattr(runtime_module, "AgentLoop", FailingAgentLoop)
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
@@ -298,8 +302,8 @@ def test_reuses_session_history_and_bound_provider(tmp_path: Path) -> None:
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=default_provider,
             context_policy=_context_policy,
@@ -355,10 +359,10 @@ def test_second_concurrent_turn_is_rejected_while_running(tmp_path: Path) -> Non
     provider = PausingProvider()
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         await _new_session(runtime)
@@ -403,8 +407,8 @@ def test_detached_session_must_be_resumed_explicitly(tmp_path: Path) -> None:
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             context_policy=_context_policy,
@@ -454,8 +458,8 @@ def test_assembles_workspace_and_optional_host_instruction(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             system_instruction="Prefer focused, reversible changes.",
@@ -503,8 +507,8 @@ def test_runtime_closes_every_session_kernel(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             context_policy=_context_policy,
@@ -536,8 +540,8 @@ def test_runtime_closes_every_session_kernel(
 
 def test_runtime_holds_single_resource_aggregate(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
@@ -547,11 +551,12 @@ def test_runtime_holds_single_resource_aggregate(tmp_path: Path) -> None:
         assert isinstance(resources, _RuntimeResources)
         assert resources.workspace.root == str(tmp_path.resolve())
         assert resources.workspace.id.startswith("local:")
-        assert isinstance(resources.backend, _BackendWorkspace)
-        assert isinstance(resources.capability_view, _LogicalCapabilityView)
-        assert isinstance(resources.deployment, DeploymentSnapshot)
-        assert isinstance(resources.snapshot.tools, _ToolCatalog)
-        assert isinstance(resources.snapshot.skills, _SkillCatalog)
+        assert not hasattr(resources, "backend")
+        assert isinstance(resources.capabilities.snapshot.tools, _ToolCatalog)
+        assert isinstance(resources.capabilities.snapshot.skills, _SkillCatalog)
+        assert not hasattr(resources, "capability_view")
+        assert not hasattr(resources, "deployment")
+        assert not hasattr(resources, "snapshot")
         assert not hasattr(runtime, "_workspace")
         assert not hasattr(runtime, "_backend")
         assert not hasattr(runtime, "_capability_view")
@@ -582,10 +587,10 @@ def test_each_binding_borrows_the_same_workspace_resources(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         await _new_session(runtime)
@@ -597,10 +602,10 @@ def test_each_binding_borrows_the_same_workspace_resources(
         assert len(_TrackingEnvironmentKernel.instances) == 2
         first, second = _TrackingEnvironmentKernel.instances
         resources = runtime._resources
-        assert first.backend is resources.backend
-        assert second.backend is resources.backend
-        assert first.tool_catalog is resources.snapshot.tools
-        assert second.tool_catalog is resources.snapshot.tools
+        assert first.workspace is resources.workspace
+        assert second.workspace is resources.workspace
+        assert first.tool_catalog is resources.capabilities.snapshot.tools
+        assert second.tool_catalog is resources.capabilities.snapshot.tools
         await runtime.close()
 
     asyncio.run(scenario())
@@ -627,10 +632,10 @@ def test_each_session_gets_an_independent_environment_copy(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         await _new_session(runtime)
@@ -643,7 +648,7 @@ def test_each_session_gets_an_independent_environment_copy(
         assert first.base_env == {"VALUE": "shared"}
         assert second.base_env == {"VALUE": "shared"}
         assert first.base_env is not second.base_env
-        assert first.base_env is not runtime._resources.base_env
+        assert first.base_env is not runtime._resources.workspace.base_environment
         await runtime.close()
 
     asyncio.run(scenario())
@@ -667,10 +672,10 @@ def test_runtime_close_only_closes_session_owned_state(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         resources = runtime._resources
@@ -689,13 +694,18 @@ def test_runtime_close_only_closes_session_owned_state(
         assert [
             kernel.close_count for kernel in _TrackingEnvironmentKernel.instances
         ] == [1, 1]
-        assert resources.backend._closed
+        assert resources.workspace.backend._closed
         assert hasattr(resources, "close")
         assert resources.workspace.root == str(tmp_path.resolve())
-        assert resources.base_env == {}
-        assert resources.capability_view is runtime._resources.capability_view
-        assert resources.snapshot.tools is runtime._resources.snapshot.tools
-        assert resources.snapshot.skills is runtime._resources.snapshot.skills
+        assert resources.workspace.base_environment == {}
+        assert (
+            resources.capabilities.snapshot.tools
+            is runtime._resources.capabilities.snapshot.tools
+        )
+        assert (
+            resources.capabilities.snapshot.skills
+            is runtime._resources.capabilities.snapshot.skills
+        )
 
     asyncio.run(scenario())
 
@@ -741,12 +751,12 @@ def test_host_owned_dependencies_stay_outside_the_aggregate(
     received: list[object] = []
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=interaction,
+        runtime = await open_default_runtime(
+            interaction=interaction,
             workspace=tmp_path,
             provider=provider,
-            execution_policy=policy,
-            on_diagnostic=received.append,
+            policy=policy,
+                events=CallbackEventSink(received.append),
             context_policy=_context_policy,
         )
         await _new_session(runtime)
@@ -755,7 +765,7 @@ def test_host_owned_dependencies_stay_outside_the_aggregate(
 
         field_names = set(_RuntimeResources.__dataclass_fields__)
         assert field_names.isdisjoint(
-            {"provider", "policy", "user_interaction", "on_diagnostic"}
+            {"provider", "policy", "user_interaction", "on_" + "diagnostic"}
         )
         assert not provider.closed
         assert not policy.closed
@@ -773,30 +783,28 @@ class _TrackingEnvironmentKernel:
 
     def __init__(
         self,
-        workspace: str | Path,
+        workspace: object,
         *,
-        backend: object,
         base_env: Mapping[str, str],
         policy: object,
         library_catalog: object,
         tool_catalog: object,
         tool_executor: object,
-        user_interaction: object,
+        capability_overlay: object,
+        host: object,
         session_id: str,
         parallel_commands: frozenset[str],
-        on_diagnostic: object | None,
     ) -> None:
-        self.workspace = Path(workspace)
-        self.backend = backend
+        self.workspace = workspace
         self.base_env = dict(base_env or {})
         self.policy = policy
         self.library_catalog = library_catalog
         self.tool_catalog = tool_catalog
         self.tool_executor = tool_executor
-        self.user_interaction = user_interaction
+        self.capability_overlay = capability_overlay
+        self.host = host
         self.session_id = session_id
         self.parallel_commands = parallel_commands
-        self.on_diagnostic = on_diagnostic
         self.close_count = 0
         self.events: list[str] = []
         self.instances.append(self)

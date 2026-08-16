@@ -60,7 +60,7 @@ def worker_template() -> bytes:
     """Return the packaged Runtime-owned worker template bytes."""
 
     return (
-        files("cli_agent.runtime._backend.local")
+        files("cli_agent._adapters.local")
         .joinpath(_WORKER_FILENAME)
         .read_bytes()
     )

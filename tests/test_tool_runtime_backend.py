@@ -8,33 +8,40 @@ failure stays fail-soft without a Host Python fallback, and Command
 Handlers never create Host subprocesses.
 """
 
+
 import asyncio
 import importlib
 import json
 from pathlib import Path
 
+from host_fakes import _environment_kernel
+
+from cli_agent._adapters.local.deployment import _LocalCapabilityDeployment
+from cli_agent._adapters.local.executor import (
+    _LocalToolExecutor,
+    _LocalToolExecutorFactory,
+)
+from cli_agent._adapters.local.overlay import _LocalCapabilityOverlay
+from cli_agent._adapters.local.view import _LocalCapabilityView
+from cli_agent._workspaces import _LocalWorkspace
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._backend import _ToolBinding, _ToolExecutionRequest
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
     _ProcessExecution,
 )
-from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
-from cli_agent.runtime._backend.local.executor import _LocalToolExecutor
 from cli_agent.runtime._capability.deployment import DeploymentSnapshot
 from cli_agent.runtime._capability.projections import write_tool_index
-from cli_agent.runtime._capability.provider import (
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.snapshot import (
     CAPABILITY_SCHEMA_VERSION,
     CapabilitySnapshot,
 )
-from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.base import _CommandContext
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
-from cli_agent.runtime._workspace import _LocalWorkspace
 
 _WORKSPACE_ID = "local:00000000000000000000000000000000"
 _REVISION = "test-revision"
@@ -46,12 +53,7 @@ async def _deploy_runtime(
     backend: _LocalBackendWorkspace,
     catalog,
 ):
-    deployment = _LocalCapabilityDeployment(
-        state_root=workspace / ".workspace",
-        repertoire=repertoire,
-        volume=".workspace",
-        base_environment=backend.execution_base_environment,
-    )
+    deployment = _LocalCapabilityDeployment()
     opened = _LocalWorkspace(_WORKSPACE_ID, workspace, backend, repertoire)
     snapshot = CapabilitySnapshot(
         revision=_REVISION,
@@ -63,7 +65,7 @@ async def _deploy_runtime(
     )
     deployed = await deployment.reconcile(snapshot, opened)
     assert deployed.complete, deployed.error
-    return opened, deployment.executor(opened, revision=_REVISION)
+    return opened, _LocalToolExecutorFactory().create(opened, snapshot, deployed)
 
 
 def _repertoire(workspace: Path) -> Path:
@@ -77,8 +79,8 @@ def test_executor_composes_the_worker_payload(tmp_path: Path) -> None:
     repertoire = _repertoire(tmp_path)
     (repertoire / "tools" / "math.py").write_text("def add(a, b):\n    return a + b\n")
     _prepare_workspace(tmp_path)
-    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    backend = _LocalBackendWorkspace(tmp_path, {}, view)
+    _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    backend = _LocalBackendWorkspace(tmp_path, {})
 
     async def scenario() -> None:
         _, executor = await _deploy_runtime(
@@ -111,8 +113,8 @@ def test_executor_without_reconciled_runtime_fails_soft(tmp_path: Path) -> None:
     repertoire = _repertoire(tmp_path)
     (repertoire / "tools" / "example.py").write_text("VALUE = 1\n")
     _prepare_workspace(tmp_path)
-    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    backend = _LocalBackendWorkspace(tmp_path, {}, view)
+    _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    backend = _LocalBackendWorkspace(tmp_path, {})
     executor = _LocalToolExecutor(
         backend,
         workspace_id=_WORKSPACE_ID,
@@ -124,6 +126,7 @@ def test_executor_without_reconciled_runtime_fails_soft(tmp_path: Path) -> None:
             complete=False,
             error="Tool environment is unavailable: sync failed",
         ),
+        runtime=None,
     )
 
     async def scenario() -> None:
@@ -155,17 +158,16 @@ def test_worker_environment_composes_backend_base_and_session_overlay(
     backend = _LocalBackendWorkspace(
         tmp_path,
         {"WS_KEY": "from-workspace"},
-        view,
     )
     catalog = asyncio.run(_reconcile_tools(view, backend.filesystem))
 
     async def scenario() -> None:
-        _, executor = await _deploy_runtime(tmp_path, repertoire, backend, catalog)
-        kernel = EnvironmentKernel(
-            tmp_path,
-            backend=backend,
+        opened, executor = await _deploy_runtime(tmp_path, repertoire, backend, catalog)
+        kernel = _environment_kernel(
+            opened,
             tool_catalog=catalog,
             tool_executor=executor,
+            capability_overlay=_LocalCapabilityOverlay(view),
         )
         try:
             await _exec(kernel, "export SESSION_KEY=session-value")
@@ -231,16 +233,16 @@ def test_tool_worker_shares_backend_workspace_cwd_with_shell_and_files(
     )
     _prepare_workspace(tmp_path)
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    backend = _LocalBackendWorkspace(tmp_path, {}, view)
+    backend = _LocalBackendWorkspace(tmp_path, {})
     catalog = asyncio.run(_reconcile_tools(view, backend.filesystem))
 
     async def scenario() -> None:
-        _, executor = await _deploy_runtime(tmp_path, repertoire, backend, catalog)
-        kernel = EnvironmentKernel(
-            tmp_path,
-            backend=backend,
+        opened, executor = await _deploy_runtime(tmp_path, repertoire, backend, catalog)
+        kernel = _environment_kernel(
+            opened,
             tool_catalog=catalog,
             tool_executor=executor,
+            capability_overlay=_LocalCapabilityOverlay(view),
         )
         try:
             subdirectory = tmp_path / "shared-dir"
@@ -334,7 +336,7 @@ def _text(snapshot: dict[str, object], stream: str) -> str:
     )
 
 
-async def _reconcile_tools(view, filesystem, on_diagnostic=None):
-    catalog = await _ToolCatalog.discover(view, on_diagnostic)
+async def _reconcile_tools(view, filesystem, events=None):
+    catalog = await _ToolCatalog.discover(view, events) if events else await _ToolCatalog.discover(view)
     await write_tool_index(volume=view.root, filesystem=filesystem, catalog=catalog)
     return catalog

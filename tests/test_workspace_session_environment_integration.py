@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -64,8 +65,8 @@ def test_public_runtime_combines_workspace_session_and_host_environment(
     later_provider = _scripted_provider((inspect_later_runtime,))
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider_a,
             context_policy=_context_policy,
@@ -118,8 +119,8 @@ def test_public_runtime_combines_workspace_session_and_host_environment(
         _assert_result_statuses(fresh_provider, request_index=1, expected=("exited",))
         await runtime.close()
 
-        later_runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        later_runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=later_provider,
             context_policy=_context_policy,

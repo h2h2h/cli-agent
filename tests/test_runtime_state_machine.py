@@ -19,6 +19,7 @@ from interaction_fakes import _ScriptedInteraction
 
 import cli_agent.runtime.runtime as runtime_module
 from cli_agent.errors import RuntimeStateError, SessionArchivedError
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -53,10 +54,10 @@ def test_lifecycle_operations_follow_the_state_transition_table(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         assert runtime._state is RuntimeState.NO_SESSION
@@ -86,10 +87,10 @@ def test_run_turn_without_an_active_session_is_an_illegal_transition(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         try:
@@ -110,10 +111,10 @@ def test_run_turn_without_an_active_session_is_an_illegal_transition(
 
 def test_lifecycle_operations_fail_closed_after_close(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         await runtime.close()
@@ -137,10 +138,10 @@ def test_concurrent_new_session_calls_serialize_on_one_binding(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         sessions = await asyncio.gather(
@@ -175,10 +176,10 @@ def test_replacement_cancels_a_running_turn_from_another_task(
             yield _completion(AssistantMessage.text("late"))
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=BlockingProvider(),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         await runtime.new_session()
@@ -207,10 +208,10 @@ def test_failed_replacement_leaves_no_half_initialized_binding(
     monkeypatch,
 ) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         await runtime.new_session()
@@ -235,10 +236,10 @@ def test_failed_replacement_leaves_no_half_initialized_binding(
 
 def test_one_runtime_never_binds_two_sessions(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         first = await runtime.new_session()
@@ -258,10 +259,10 @@ def test_archive_and_delete_of_the_active_session_detach_first(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         session = await runtime.new_session()
@@ -298,10 +299,10 @@ def test_resume_rebuilds_system_message_from_the_current_environment(
     )
 
     async def scenario() -> None:
-        async with await AgentRuntime.open(
+        async with await open_default_runtime(
             workspace=tmp_path,
             provider=first_provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         ) as runtime:
             session = await runtime.new_session()
@@ -312,10 +313,10 @@ def test_resume_rebuilds_system_message_from_the_current_environment(
         resumed_provider = ScriptedModelProvider(
             script=((_completion(AssistantMessage.text("done")),),)
         )
-        async with await AgentRuntime.open(
+        async with await open_default_runtime(
             workspace=tmp_path,
             provider=resumed_provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         ) as reopened:
             await reopened.resume_session(session.session_id)
@@ -337,10 +338,10 @@ def test_resume_rebuilds_system_message_from_the_current_environment(
 
 def test_state_lock_is_a_short_hold_synchronous_lock(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         assert isinstance(runtime._state_lock, threading.Lock)

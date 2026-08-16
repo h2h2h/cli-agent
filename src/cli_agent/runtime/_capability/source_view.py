@@ -9,6 +9,7 @@ so a snapshot revision can fingerprint exactly what discovery consumed.
 from __future__ import annotations
 
 import os
+import posixpath
 import stat as stat_module
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -18,6 +19,7 @@ from cli_agent.runtime._capability.facts import (
     _DirectoryEntry,
     _FileMetadata,
     _filesystem_error,
+    _FilesystemError,
     _Provenance,
 )
 from cli_agent.runtime._capability.source import _CAPABILITY_DIRECTORIES
@@ -26,7 +28,7 @@ _DEFAULT_MODE = 0o644
 
 
 @runtime_checkable
-class _LogicalCapabilityView(Protocol):
+class CapabilitySource(Protocol):
     """Read-only effective capability facts for one source tree.
 
     The protocol is satisfied by both the Host source view used by the
@@ -56,7 +58,37 @@ class _LogicalCapabilityView(Protocol):
         ...
 
 
-class _CapabilitySourceView:
+class CapabilitySourceFactory(Protocol):
+    """Create one read-only logical source for an opened Workspace."""
+
+    async def create(self, workspace: _SourceWorkspace) -> CapabilitySource:
+        """Return a source without materializing deployment artifacts."""
+        ...
+
+
+class _SourceFilesystem(Protocol):
+    async def stat(self, path: str) -> _FileMetadata: ...
+
+    async def list(self, path: str) -> tuple[_DirectoryEntry, ...]: ...
+
+    async def read(self, path: str) -> bytes: ...
+
+
+class _SourceWorkspace(Protocol):
+    @property
+    def root(self) -> str: ...
+
+    @property
+    def filesystem(self) -> _SourceFilesystem: ...
+
+    @property
+    def repertoire(self) -> Path: ...
+
+    @property
+    def deployment_volume(self) -> str: ...
+
+
+class _HostCapabilitySource:
     """Effective capability facts computed from Host source, never written.
 
     Upper entries shadow or merge with lower entries exactly like the
@@ -213,10 +245,185 @@ class _CapabilitySourceView:
         return self._whiteouts / relative
 
 
-class _RecordingCapabilityView:
+class _HostCapabilitySourceFactory:
+    """Create the Local Host source over Workspace upper and Repertoire lower."""
+
+    async def create(self, workspace: _SourceWorkspace) -> CapabilitySource:
+        return _HostCapabilitySource(
+            upper_root=Path(workspace.root) / workspace.deployment_volume,
+            repertoire=workspace.repertoire,
+        )
+
+
+class _WorkspaceCapabilitySourceFactory:
+    """Create a source combining Backend upper facts with a Host lower tree."""
+
+    async def create(self, workspace: _SourceWorkspace) -> CapabilitySource:
+        return _WorkspaceCapabilitySource(
+            workspace=workspace,
+            volume=workspace.deployment_volume,
+            repertoire=workspace.repertoire,
+        )
+
+
+class _WorkspaceCapabilitySource:
+    """Read-only logical source for non-Host Workspace filesystems.
+
+    Workspace upper entries are read through ``Workspace.filesystem`` while
+    Repertoire lower entries remain Host-owned inputs. Discovery never copies
+    lower files into the Workspace and never writes whiteouts or projections.
+    """
+
+    def __init__(
+        self,
+        *,
+        workspace: _SourceWorkspace,
+        volume: str,
+        repertoire: Path,
+    ) -> None:
+        self.root = volume
+        self._workspace = workspace
+        self._volume = volume
+        self._repertoire = repertoire
+
+    async def inspect(self, relative_path: str) -> _CapabilityInspection:
+        relative = _managed_path(relative_path)
+        relative_text = relative.as_posix()
+        upper = await self._upper_stat(relative_text)
+        lower_path = self._repertoire / relative
+        lower = _try_host_metadata(lower_path)
+        whiteout = await self._has_whiteout(relative_text)
+
+        if whiteout:
+            provenance: _Provenance | None = "whiteout"
+        elif upper is None:
+            provenance = "repertoire" if lower is not None else None
+        elif lower is None:
+            provenance = "workspace"
+        elif upper.kind == "directory" and lower.kind == "directory":
+            provenance = "repertoire"
+        elif upper.kind == "directory" or lower.kind == "directory":
+            provenance = "workspace"
+        else:
+            upper_content = await self._workspace.filesystem.read(
+                self._upper_path(relative_text),
+            )
+            lower_content = lower_path.read_bytes()
+            provenance = (
+                "repertoire" if upper_content == lower_content else "workspace"
+            )
+
+        valid = True
+        validation_error = None
+        if (
+            provenance == "workspace"
+            and upper is not None
+            and lower is not None
+            and (upper.kind == "directory") != (lower.kind == "directory")
+        ):
+            valid = False
+            validation_error = (
+                "Workspace override type does not match the Repertoire path"
+            )
+        return _CapabilityInspection(
+            relative_path=relative_text,
+            provenance=provenance,
+            shadows_repertoire=(provenance == "workspace" and lower is not None),
+            valid=valid,
+            validation_error=validation_error,
+        )
+
+    async def list(self, relative_path: str) -> tuple[_DirectoryEntry, ...]:
+        relative = _managed_path(relative_path)
+        relative_text = relative.as_posix()
+        try:
+            upper_entries = await self._workspace.filesystem.list(
+                self._upper_path(relative_text),
+            )
+        except _FilesystemError:
+            upper_entries = ()
+        entries = {entry.name: entry for entry in upper_entries}
+
+        lower = self._repertoire / relative
+        if lower.is_dir():
+            try:
+                with os.scandir(lower) as scanned:
+                    for entry in scanned:
+                        if entry.name in entries:
+                            continue
+                        child = posixpath.join(relative_text, entry.name)
+                        if await self._has_whiteout(child):
+                            continue
+                        entries[entry.name] = _DirectoryEntry(
+                            name=entry.name,
+                            metadata=_metadata(entry.stat(follow_symlinks=False)),
+                        )
+            except OSError as exc:
+                raise _filesystem_error(relative_text, exc) from exc
+        return tuple(sorted(entries.values(), key=lambda entry: entry.name))
+
+    async def read(self, relative_path: str) -> bytes:
+        relative = _managed_path(relative_path)
+        relative_text = relative.as_posix()
+        if await self._has_whiteout(relative_text):
+            raise _filesystem_error(
+                relative_text,
+                FileNotFoundError(relative_text),
+            )
+        if await self._upper_stat(relative_text) is not None:
+            return await self._workspace.filesystem.read(
+                self._upper_path(relative_text),
+            )
+        try:
+            return (self._repertoire / relative).read_bytes()
+        except OSError as exc:
+            raise _filesystem_error(relative_text, exc) from exc
+
+    async def stat(self, relative_path: str) -> _FileMetadata:
+        relative = _managed_path(relative_path)
+        relative_text = relative.as_posix()
+        if await self._has_whiteout(relative_text):
+            raise _filesystem_error(
+                relative_text,
+                FileNotFoundError(relative_text),
+            )
+        upper = await self._upper_stat(relative_text)
+        if upper is not None:
+            return upper
+        try:
+            return _metadata(os.stat(self._repertoire / relative))
+        except OSError as exc:
+            raise _filesystem_error(relative_text, exc) from exc
+
+    async def _upper_stat(self, relative: str) -> _FileMetadata | None:
+        try:
+            return await self._workspace.filesystem.stat(self._upper_path(relative))
+        except _FilesystemError:
+            return None
+
+    async def _has_whiteout(self, relative: str) -> bool:
+        try:
+            await self._workspace.filesystem.stat(self._whiteout_path(relative))
+        except _FilesystemError:
+            return False
+        return True
+
+    def _upper_path(self, relative: str) -> str:
+        return posixpath.join(self._volume, relative)
+
+    def _whiteout_path(self, relative: str) -> str:
+        return posixpath.join(
+            self._volume,
+            ".capability-view",
+            "whiteouts",
+            relative,
+        )
+
+
+class _RecordingCapabilitySource:
     """Delegate one logical view and record every read for fingerprinting."""
 
-    def __init__(self, inner: _LogicalCapabilityView) -> None:
+    def __init__(self, inner: CapabilitySource) -> None:
         self._inner = inner
         self._reads: list[tuple[str, bytes]] = []
 
@@ -273,6 +480,15 @@ def _is_exact_lower_link(view_path: Path, lower_path: Path) -> bool:
 
 def _lexists(path: Path) -> bool:
     return os.path.lexists(path)
+
+
+def _try_host_metadata(path: Path) -> _FileMetadata | None:
+    try:
+        return _metadata(os.stat(path))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise _filesystem_error(str(path), exc) from exc
 
 
 def _metadata(stat_result: os.stat_result) -> _FileMetadata:

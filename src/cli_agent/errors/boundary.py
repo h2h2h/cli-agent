@@ -52,7 +52,7 @@ def internal_from_exception(
 def error_boundary(
     operation: str,
     *,
-    on_diagnostic: DiagnosticSink | None = None,
+    sink: DiagnosticSink | None = None,
     passthrough: tuple[type[BaseException], ...] = (),
 ) -> Iterator[None]:
     """Retain classified failures and sanitize unexpected exceptions.
@@ -60,7 +60,7 @@ def error_boundary(
     Classified `CliAgentError` instances, cancellation, and the caller's
     declared legacy exception types re-raise unchanged, so an already
     classified error is never wrapped a second time. Any other
-    `Exception` is reported through ``on_diagnostic`` with full detail
+    `Exception` is reported through ``sink`` with full detail
     and re-raised as a sanitized `InternalRuntimeError`, so an unexpected
     exception never leaks an arbitrary underlying error across a public
     Kernel or Runtime boundary. Expected failures that are expressed as
@@ -69,7 +69,7 @@ def error_boundary(
     Args:
         operation (`str`): Stable boundary operation identifier used in
             the error payload and Diagnostic.
-        on_diagnostic (`DiagnosticSink | None`): Optional sink receiving
+        sink (`DiagnosticSink | None`): Optional sink receiving
             one ``("error.internal", message, detail)`` record before the
             sanitized error is raised.
         passthrough (`tuple[type[BaseException], ...]`): Additional
@@ -85,8 +85,8 @@ def error_boundary(
     except (CliAgentError, asyncio.CancelledError, *passthrough):
         raise
     except Exception as exc:
-        if on_diagnostic is not None:
-            on_diagnostic(
+        if sink is not None:
+            sink(
                 INTERNAL_ERROR_DIAGNOSTIC_KIND,
                 f"{operation} raised an unexpected exception",
                 {

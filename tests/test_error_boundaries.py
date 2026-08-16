@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 
 import pytest
+from host_fakes import _environment_kernel
 from interaction_fakes import _ScriptedInteraction
+from workspace_fakes import _kernel_workspace
 
 from cli_agent.errors import (
     INTERNAL_ERROR_DIAGNOSTIC_KIND,
@@ -17,8 +19,10 @@ from cli_agent.errors import (
     error_boundary,
     internal_from_exception,
 )
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
+    CallbackEventSink,
     ContextPolicy,
     ModelRequest,
     RuntimeDiagnostic,
@@ -26,7 +30,6 @@ from cli_agent.runtime import (
     ToolResult,
     UserMessage,
 )
-from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime.model import ModelContextOverflowSignal
 
 _context_policy = ContextPolicy(
@@ -115,7 +118,7 @@ def test_error_boundary_retains_classified_errors() -> None:
     with pytest.raises(HostFacingError) as raised:
         with error_boundary(
             "runtime.run_turn",
-            on_diagnostic=lambda *item: diagnostics.append(item),
+            sink=lambda *item: diagnostics.append(item),
         ):
             raise original
 
@@ -129,7 +132,7 @@ def test_error_boundary_retains_cancellation() -> None:
     with pytest.raises(asyncio.CancelledError):
         with error_boundary(
             "kernel.dispatch",
-            on_diagnostic=lambda *item: diagnostics.append(item),
+            sink=lambda *item: diagnostics.append(item),
         ):
             raise asyncio.CancelledError
 
@@ -145,7 +148,7 @@ def test_error_boundary_retains_declared_passthrough() -> None:
     with pytest.raises(LegacyTurnError):
         with error_boundary(
             "runtime.run_turn",
-            on_diagnostic=lambda *item: diagnostics.append(item),
+            sink=lambda *item: diagnostics.append(item),
             passthrough=(LegacyTurnError,),
         ):
             raise LegacyTurnError("cannot be recovered safely")
@@ -168,7 +171,7 @@ def test_error_boundary_wraps_unexpected_exceptions() -> None:
     with pytest.raises(InternalRuntimeError) as raised:
         with error_boundary(
             "kernel.dispatch",
-            on_diagnostic=lambda *item: diagnostics.append(item),
+            sink=lambda *item: diagnostics.append(item),
         ):
             raise KeyError("secret-token")
 
@@ -227,9 +230,9 @@ def test_kernel_boundary_wraps_unexpected_exceptions(
         raise KeyError("router bug")
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path,
-            on_diagnostic=received.append,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
+            events=CallbackEventSink(received.append),
         )
         monkeypatch.setattr(kernel._router, "resolve", explode)
         try:
@@ -263,7 +266,7 @@ def test_kernel_boundary_keeps_expected_failures_as_data(
     received: list[RuntimeDiagnostic] = []
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path, on_diagnostic=received.append)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path), events=received.append)
         try:
             unknown = await kernel.dispatch(
                 ToolCall(call_id="call-1", name="bogus", arguments={})
@@ -331,12 +334,12 @@ def test_run_turn_boundary_wraps_unexpected_exceptions(tmp_path: Path) -> None:
     received: list[RuntimeDiagnostic] = []
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=_ExplodingProvider(RuntimeError("provider exploded")),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
-            on_diagnostic=received.append,
+            events=CallbackEventSink(received.append),
         )
         try:
             with pytest.raises(InternalRuntimeError) as raised:
@@ -362,10 +365,10 @@ def test_run_turn_boundary_wraps_unexpected_exceptions(tmp_path: Path) -> None:
 
 def test_run_turn_classifies_second_overflow_as_host_error(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=_OverflowTwiceProvider(),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         try:

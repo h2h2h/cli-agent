@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import ast
 import keyword
-from collections.abc import Callable
 
 from cli_agent.runtime._capability.facts import (
     _DirectoryEntry,
     _FilesystemError,
 )
-from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
+from cli_agent.runtime._capability.mcp.catalog import render_stub, stub_filename
+from cli_agent.runtime._capability.mcp.facts import MCPServerConfig, _MCPServerFacts
+from cli_agent.runtime._capability.source_view import CapabilitySource
 from cli_agent.runtime._capability.tools.facts import ToolEntry
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.host import NULL_EVENTS, EventSink, emit_event
 
 _PARALLEL_SAFE_NAME = "PARALLEL_SAFE"
 _MCP_TOOL_PREFIX = "mcp_"
@@ -28,8 +30,8 @@ class _ToolCatalog:
     @classmethod
     async def discover(
         cls,
-        capability_view: _LogicalCapabilityView,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+        capability_view: CapabilitySource,
+        events: EventSink = NULL_EVENTS,
     ) -> _ToolCatalog:
         """Build trusted entries from one logical capability view.
 
@@ -37,9 +39,9 @@ class _ToolCatalog:
         written and no process or resource is created.
 
         Args:
-            capability_view (`_LogicalCapabilityView`):
+            capability_view (`CapabilitySource`):
                 Effective Runtime-open capability files to inspect.
-            on_diagnostic (`Callable[[RuntimeDiagnostic], None] | None`):
+            events (`EventSink`):
                 Optional callback for non-blocking metadata parse notices.
 
         Returns:
@@ -48,7 +50,12 @@ class _ToolCatalog:
 
         listing = await capability_view.list("tools")
         candidates = sorted(
-            (entry for entry in listing if entry.name.endswith(".py")),
+            (
+                entry
+                for entry in listing
+                if entry.name.endswith(".py")
+                and not entry.name.startswith(_MCP_TOOL_PREFIX)
+            ),
             key=lambda entry: entry.name,
         )
         inspected: list[ToolEntry] = []
@@ -58,13 +65,41 @@ class _ToolCatalog:
                     capability_view,
                     entry,
                     listing,
-                    on_diagnostic,
+                    events,
                 )
             )
         return cls(tuple(inspected))
 
     def get(self, name: str) -> ToolEntry | None:
         return self._by_name.get(name)
+
+    def with_mcp(
+        self,
+        configs: tuple[MCPServerConfig, ...],
+        facts: tuple[_MCPServerFacts, ...],
+    ) -> _ToolCatalog:
+        """Merge generated MCP Tool entries without scanning deployed stubs."""
+
+        by_server = {fact.name: fact for fact in facts}
+        entries = {entry.name: entry for entry in self.entries}
+        for config in configs:
+            fact = by_server.get(config.name)
+            if fact is None:
+                continue
+            source = render_stub(config, fact)
+            tree = ast.parse(source, filename=f"tools/{stub_filename(config.name)}")
+            name = stub_filename(config.name).removesuffix(".py")
+            entries[name] = ToolEntry(
+                name=name,
+                path=f"tools/{stub_filename(config.name)}",
+                provenance=None,
+                shadows_repertoire=False,
+                valid=True,
+                validation_error=None,
+                documentation=ast.get_docstring(tree, clean=False),
+                parallel_safe=False,
+            )
+        return _ToolCatalog(tuple(entries[name] for name in sorted(entries)))
 
     @property
     def valid_entries(self) -> tuple[ToolEntry, ...]:
@@ -136,10 +171,10 @@ class _ToolCatalog:
 
 
 async def _inspect_tool(
-    capability_view: _LogicalCapabilityView,
+    capability_view: CapabilitySource,
     entry: _DirectoryEntry,
     listing: tuple[_DirectoryEntry, ...],
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+    events: EventSink,
 ) -> ToolEntry:
     name = entry.name.removesuffix(".py")
     default_parallel_safe = _default_parallel_safe(name)
@@ -201,7 +236,7 @@ async def _inspect_tool(
     except SyntaxError as exc:
         location = f"line {exc.lineno}" if exc.lineno is not None else "unknown line"
         _emit_parallel_safe_diagnostic(
-            on_diagnostic,
+            events,
             name=name,
             relative=relative,
             default=default_parallel_safe,
@@ -228,7 +263,7 @@ async def _inspect_tool(
         default=default_parallel_safe,
         name=name,
         relative=relative,
-        on_diagnostic=on_diagnostic,
+        events=events,
     )
     return ToolEntry(
         **common,
@@ -267,7 +302,7 @@ def _parse_parallel_safe(
     default: bool,
     name: str,
     relative: str,
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+    events: EventSink,
 ) -> bool:
     declarations: list[ast.expr | None] = []
     invalid_declaration = False
@@ -303,7 +338,7 @@ def _parse_parallel_safe(
 
     if invalid_declaration:
         _emit_parallel_safe_diagnostic(
-            on_diagnostic,
+            events,
             name=name,
             relative=relative,
             default=default,
@@ -331,7 +366,7 @@ def _parallel_safe_error(declarations: list[ast.expr | None]) -> str:
 
 
 def _emit_parallel_safe_diagnostic(
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+    events: EventSink,
     *,
     name: str,
     relative: str,
@@ -339,9 +374,8 @@ def _emit_parallel_safe_diagnostic(
     error: str,
     stage: str,
 ) -> None:
-    if on_diagnostic is None:
-        return
-    on_diagnostic(
+    emit_event(
+        events,
         RuntimeDiagnostic(
             kind="tools.parallel_safe_parse_failed",
             message=(
@@ -355,12 +389,12 @@ def _emit_parallel_safe_diagnostic(
                 "error": error,
                 "default_parallel_safe": default,
             },
-        )
+        ),
     )
 
 
 async def _read_companion_documentation(
-    capability_view: _LogicalCapabilityView,
+    capability_view: CapabilitySource,
     name: str,
     listing: tuple[_DirectoryEntry, ...],
 ) -> str | None:

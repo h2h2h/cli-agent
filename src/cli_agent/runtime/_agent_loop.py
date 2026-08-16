@@ -15,6 +15,7 @@ from cli_agent.runtime._context import ContextEngine, SessionUsage
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._session import ModelCallUsage
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.host import NULL_EVENTS, EventSink, emit_event
 from cli_agent.runtime.model import (
     AssistantMessage,
     ModelCompletion,
@@ -84,7 +85,7 @@ class AgentLoop:
         commit_completion: Callable[
             [AssistantMessage, ModelCallUsage | None], int
         ] | None = None,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+        events: EventSink = NULL_EVENTS,
     ) -> None:
         self._provider = provider
         self._kernel = kernel
@@ -92,7 +93,7 @@ class AgentLoop:
         self._commit = commit
         self._commit_completion = commit_completion
         self._session_id = context.session_id
-        self._on_diagnostic = on_diagnostic
+        self._events = events
 
     @property
     def history(self) -> tuple[ModelMessage, ...]:
@@ -215,12 +216,11 @@ class AgentLoop:
         *,
         detail: Mapping[str, object] | None = None,
     ) -> None:
-        if self._on_diagnostic is None:
-            return
-        self._on_diagnostic(
+        emit_event(
+            self._events,
             RuntimeDiagnostic(
                 kind=kind,
                 message=message,
                 detail=detail or {},
-            )
+            ),
         )

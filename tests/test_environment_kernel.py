@@ -5,7 +5,9 @@ import sys
 from pathlib import Path
 
 import pytest
+from host_fakes import _environment_kernel
 from policy_fakes import _AskExecutablePolicy, _DenyExecutablePolicy
+from workspace_fakes import _kernel_workspace
 
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._capability.command_parser import (
@@ -30,7 +32,7 @@ from cli_agent.runtime._environment.sources import (
 def _router() -> _CommandRouter:
     registry = _SourceRegistry(_builtin_inline_sources())
     return _CommandRouter(
-        shell_source=_ShellSource(),
+        shell_source=_ShellSource(_kernel_workspace(Path.cwd())),
         sources=registry,
     )
 
@@ -39,7 +41,7 @@ def test_executes_short_command_and_retains_ordered_output(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         binding = kernel
         command = _python_command(
             "import os, sys; "
@@ -108,7 +110,7 @@ def test_executes_short_command_and_retains_ordered_output(
 
 def test_reports_nonzero_exit_as_terminal_execution(tmp_path: Path) -> None:
     async def scenario() -> None:
-        binding = EnvironmentKernel(tmp_path)
+        binding = _environment_kernel(_kernel_workspace(tmp_path))
 
         result = await binding.dispatch(
             ToolCall(
@@ -149,8 +151,8 @@ def test_ask_without_interaction_fails_closed_before_execution(
     async def scenario() -> None:
         proof = tmp_path / "proof.txt"
         proof.write_text("preserved")
-        binding = EnvironmentKernel(
-            tmp_path,
+        binding = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=_AskExecutablePolicy(
                 frozenset({"rm"}),
                 rule_id="test.ask-rm",
@@ -169,7 +171,7 @@ def test_ask_without_interaction_fails_closed_before_execution(
         assert _error(result) == {
             "ok": False,
             "code": "policy_denied",
-            "message": "execution requires user interaction but none is configured",
+            "message": "rm requires Host approval",
         }
         assert proof.read_text() == "preserved"
 
@@ -193,10 +195,10 @@ def test_policy_failure_fails_closed_without_starting_command(tmp_path: Path) ->
 
     async def scenario() -> None:
         proof = tmp_path / "proof.txt"
-        binding = EnvironmentKernel(
-            tmp_path,
+        binding = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=FailingPolicy(),  # type: ignore[arg-type]
-            on_diagnostic=diagnostics.append,
+            events=diagnostics.append,
         )
 
         result = await binding.dispatch(
@@ -247,10 +249,10 @@ def test_policy_invalid_evaluation_fails_closed_with_diagnostic(
     diagnostics: list[object] = []
 
     async def scenario() -> None:
-        binding = EnvironmentKernel(
-            tmp_path,
+        binding = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=InvalidPolicy(),  # type: ignore[arg-type]
-            on_diagnostic=diagnostics.append,
+            events=diagnostics.append,
         )
 
         result = await binding.dispatch(
@@ -275,8 +277,8 @@ def test_policy_invalid_evaluation_fails_closed_with_diagnostic(
 
 def test_policy_denial_reports_the_policy_reason(tmp_path: Path) -> None:
     async def scenario() -> None:
-        binding = EnvironmentKernel(
-            tmp_path,
+        binding = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=_DenyExecutablePolicy(
                 frozenset({"rm"}),
                 reason="direct invocation of 'rm' is denied by policy",
@@ -320,7 +322,7 @@ def test_one_policy_hook_evaluates_custom_and_shell_fallback(
 
     async def scenario() -> None:
         policy = CountingPolicy()
-        binding = EnvironmentKernel(tmp_path, policy=policy)
+        binding = _environment_kernel(_kernel_workspace(tmp_path), policy=policy)
         try:
             exported = _output(
                 await binding.dispatch(
@@ -352,7 +354,7 @@ def test_one_policy_hook_evaluates_custom_and_shell_fallback(
 
 def test_policy_none_skips_evaluation_entirely(tmp_path: Path) -> None:
     async def scenario() -> None:
-        binding = EnvironmentKernel(tmp_path)
+        binding = _environment_kernel(_kernel_workspace(tmp_path))
 
         result = await binding.dispatch(
             ToolCall(
@@ -384,8 +386,8 @@ def test_policy_evaluation_carries_no_parsed_command(tmp_path: Path) -> None:
             )
 
     async def scenario() -> None:
-        binding = EnvironmentKernel(
-            tmp_path,
+        binding = _environment_kernel(
+            _kernel_workspace(tmp_path),
             policy=RecordingPolicy(),
         )
 
@@ -413,7 +415,7 @@ def test_wait_timeout_returns_running_execution_and_incremental_output(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         binding = kernel
         try:
             started = await binding.dispatch(
@@ -510,7 +512,7 @@ def test_schedules_shell_executions_fifo_with_one_running_per_session(
             "order = Path('order.txt'); "
             "order.write_text(order.read_text() + 'third\\n')"
         )
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         binding = kernel
         try:
             first = _output(
@@ -606,7 +608,7 @@ def test_promotes_next_shell_execution_after_process_start_failure(
         first_spawn_started = asyncio.Event()
         release_first_spawn = asyncio.Event()
         proof = tmp_path / "promoted-after-failure"
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         binding = kernel
         try:
             first = _output(
@@ -665,7 +667,7 @@ def test_defaults_to_thirty_two_pending_executions(tmp_path: Path) -> None:
     async def scenario() -> None:
         started = tmp_path / "default-capacity-started"
         release = tmp_path / "default-capacity-release"
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         binding = kernel
         try:
             running = _output(
@@ -727,7 +729,7 @@ def test_configured_pending_capacity_releases_on_promotion(
         first_release = tmp_path / "configured-first-release"
         second_started = tmp_path / "configured-second-started"
         second_release = tmp_path / "configured-second-release"
-        kernel = EnvironmentKernel(tmp_path, queue_limit=1)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path), queue_limit=1)
         binding = kernel
         try:
             first = _output(
@@ -830,8 +832,8 @@ def test_policy_denial_bypasses_saturated_queue_and_new_session_is_fresh(
     async def scenario() -> None:
         started = tmp_path / "denial-capacity-started"
         release = tmp_path / "denial-capacity-release"
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             queue_limit=1,
             policy=_DenyExecutablePolicy(
                 frozenset({"rm"}),
@@ -881,8 +883,8 @@ def test_policy_denial_bypasses_saturated_queue_and_new_session_is_fresh(
             assert len(kernel._executions) == 2
 
             await binding.close()
-            fresh_kernel = EnvironmentKernel(
-                tmp_path,
+            fresh_kernel = _environment_kernel(
+                _kernel_workspace(tmp_path),
                 queue_limit=1,
             )
             fresh = _output(
@@ -917,7 +919,7 @@ def test_kill_removes_queued_execution_and_reuses_capacity(
         release = tmp_path / f"cancel-{cancel_index}-release"
         order = tmp_path / f"cancel-{cancel_index}-order"
         labels = ("first", "middle", "last")
-        kernel = EnvironmentKernel(tmp_path, queue_limit=3)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path), queue_limit=3)
         binding = kernel
         try:
             running = _output(
@@ -1055,7 +1057,7 @@ def test_killing_queued_execution_wakes_exec_and_output_waiters(
         started = tmp_path / "waiter-running-started"
         release = tmp_path / "waiter-running-release"
         must_not_start = tmp_path / "queued-must-not-start"
-        kernel = EnvironmentKernel(tmp_path, queue_limit=1)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path), queue_limit=1)
         binding = kernel
         try:
             await binding.dispatch(
@@ -1175,7 +1177,7 @@ def test_output_bound_discards_later_chunks_and_preserves_first_cursor(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path, chunk_limit=1)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path), chunk_limit=1)
         binding = kernel
         try:
             started = _output(
@@ -1247,7 +1249,7 @@ def test_kill_terminates_shell_process_group_and_descendant(tmp_path: Path) -> N
             "print('ready', flush=True); "
             "time.sleep(10)"
         )
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         binding = kernel
         try:
             started = _output(
@@ -1309,7 +1311,7 @@ def test_close_terminates_shell_process_group(tmp_path: Path) -> None:
             "print('ready', flush=True); "
             "time.sleep(10)"
         )
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         binding = kernel
         try:
             started = _output(
@@ -1375,7 +1377,7 @@ def test_returns_structured_invalid_argument_errors(
     call: ToolCall,
 ) -> None:
     async def scenario() -> None:
-        binding = EnvironmentKernel(tmp_path)
+        binding = _environment_kernel(_kernel_workspace(tmp_path))
 
         result = await binding.dispatch(call)
 
@@ -1394,7 +1396,7 @@ def test_returns_structured_invalid_argument_errors(
 @pytest.mark.parametrize("name", ("output", "kill"))
 def test_rejects_unknown_execution_ids(tmp_path: Path, name: str) -> None:
     async def scenario() -> None:
-        binding = EnvironmentKernel(tmp_path)
+        binding = _environment_kernel(_kernel_workspace(tmp_path))
 
         result = await binding.dispatch(
             ToolCall(
@@ -1415,7 +1417,7 @@ def test_rejects_unknown_execution_ids(tmp_path: Path, name: str) -> None:
 
 def test_closes_kernel_idempotently(tmp_path: Path) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
 
         await kernel.close()
         await kernel.close()

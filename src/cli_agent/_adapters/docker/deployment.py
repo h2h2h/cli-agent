@@ -22,18 +22,23 @@ volume without mapping any Host path into the container namespace.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
 import posixpath
 import shlex
 import weakref
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from cli_agent._adapters.local.tool_runtime import (
+    effective_requirements,
+    worker_template,
+)
 from cli_agent.runtime._backend import _WorkspaceFilesystem
 from cli_agent.runtime._backend.docker.backend import _DockerBackendWorkspace
 from cli_agent.runtime._backend.docker.execution import (
@@ -45,17 +50,14 @@ from cli_agent.runtime._backend.facts import (
     _FileMetadata,
     _ToolExecutionRequest,
 )
-from cli_agent.runtime._backend.local.tool_runtime import (
-    effective_requirements,
-    worker_template,
-)
+from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._capability.deployment import (
     DEPLOYMENT_MANIFEST,
     DEPLOYMENT_SCHEMA_VERSION,
     TOOL_RUNTIME_DIRECTORY,
     DeploymentSnapshot,
     StaleDeploymentError,
-    ToolExecutor,
+    ToolRuntimeSnapshot,
     _DeploymentManifest,
     commit_manifest,
     publish_artifacts,
@@ -70,6 +72,10 @@ from cli_agent.runtime._capability.facts import (
     _FilesystemError,
     _Provenance,
 )
+from cli_agent.runtime._capability.mcp.discovery import (
+    MCPDiscoveryEnvironment,
+    read_mcp_source,
+)
 from cli_agent.runtime._capability.mcp.facts import (
     MCPServerConfig,
     _MCPServerFacts,
@@ -78,21 +84,18 @@ from cli_agent.runtime._capability.mcp.facts import (
 from cli_agent.runtime._capability.mcp.stubs import materialize_stubs
 from cli_agent.runtime._capability.projections import render_catalog_indexes
 from cli_agent.runtime._capability.source import _CAPABILITY_DIRECTORIES
-from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._environment.handlers.base import _CommandContext
 from cli_agent.runtime._environment.handlers.executions import _text_execution
 from cli_agent.runtime._execution import (
     BackendExecutionError,
     ExecutionHandle,
 )
-from cli_agent.runtime._project_instructions import (
-    _ProjectInstructions,
-    validate_instructions,
-)
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.host import NULL_EVENTS, EventSink, emit_event
 
 if TYPE_CHECKING:
-    from cli_agent.runtime._capability.provider import CapabilitySnapshot
+    from cli_agent.runtime._capability.snapshot import CapabilitySnapshot
+    from cli_agent.runtime._capability.source_view import CapabilitySource
     from cli_agent.runtime._workspace import Workspace
 
 _WORKER_FILENAME = "worker.py"
@@ -102,10 +105,12 @@ _VIEW_DIRECTORY = ".capability-view"
 _LOWER_DIRECTORY = "lower"
 _WHITEOUT_DIRECTORY = "whiteouts"
 _DISCOVERY_RETRIES = 3
-_AGENTS_MD_FILENAME = "AGENTS.md"
+_CONTAINER_DEFAULT_PATH = (
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
 _DEPLOY_LOCKS: weakref.WeakKeyDictionary[
     asyncio.AbstractEventLoop,
-    dict[Path, asyncio.Lock],
+    dict[str, asyncio.Lock],
 ] = weakref.WeakKeyDictionary()
 
 
@@ -131,6 +136,122 @@ class _DockerToolRuntime:
             and self.tools_directory is not None
             and self.binding_directory is not None
             and self.error is None
+        )
+
+
+class _DockerMCPDiscovery:
+    """Discover MCP facts in a transient Docker execution context."""
+
+    def __init__(
+        self,
+        events: EventSink = NULL_EVENTS,
+    ) -> None:
+        self._events = events
+
+    async def discover(
+        self,
+        configs: tuple[MCPServerConfig, ...],
+        source: CapabilitySource,
+        environment: MCPDiscoveryEnvironment,
+    ) -> tuple[_MCPServerFacts, ...]:
+        """Return logical facts without materializing capability stubs."""
+
+        if not configs:
+            return ()
+        backend = environment.backend
+        if not isinstance(backend, _DockerBackendWorkspace):
+            raise ValueError("Docker MCP discovery requires a Docker Backend")
+        child_environment = dict(environment.execution_base_environment())
+        files = await read_mcp_source(source)
+        payload = json.dumps(
+            {
+                "servers": [config.to_dict() for config in configs],
+                "retries": _DISCOVERY_RETRIES,
+                "files": {
+                    path: base64.b64encode(content).decode("ascii")
+                    for path, content in files.items()
+                },
+            },
+        ).encode("utf-8")
+        try:
+            venv = "/tmp/cli-agent-mcp-discovery"
+            python = f"{venv}/bin/python"
+            bin_directory = f"{venv}/bin"
+            child_environment["VIRTUAL_ENV"] = venv
+            configured_path = child_environment.get("PATH")
+            child_environment["PATH"] = os.pathsep.join(
+                value
+                for value in (
+                    bin_directory,
+                    configured_path,
+                    _CONTAINER_DEFAULT_PATH,
+                )
+                if value
+            )
+            child_environment["PYTHONNOUSERSITE"] = "1"
+            child_environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            command = (
+                f"python3 -m venv --without-pip {_quote(venv)}"
+                f" && {_quote(python)} -m ensurepip --upgrade"
+                f" && {_quote(python)} -m pip install --quiet"
+                " --disable-pip-version-check --retries 0 --timeout 5 mcp"
+                f" && {_quote(python)} -c {shlex.quote(_DISCOVERY_SCRIPT)}"
+            )
+            exit_code, output = await _run_docker_setup(
+                backend,
+                command=command,
+                environment=child_environment,
+                input_data=payload,
+                mount_workspace=False,
+            )
+        except BackendExecutionError as exc:
+            for config in configs:
+                self._emit_failure(config.name, str(exc))
+            return ()
+        parsed = _parse_discovery_output(output) if exit_code == 0 else None
+        if parsed is None:
+            for config in configs:
+                self._emit_failure(config.name, _tail(output))
+            return ()
+        facts: list[_MCPServerFacts] = []
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str):
+                continue
+            tools = entry.get("tools")
+            if not isinstance(tools, list):
+                self._emit_failure(name, str(entry.get("error", "")))
+                continue
+            facts.append(
+                _MCPServerFacts(
+                    name=name,
+                    tools=tuple(
+                        _MCPToolFacts(
+                            name=tool["name"],
+                            description=str(tool.get("description", "")),
+                            input_schema=tool.get("input_schema", {}),
+                        )
+                        for tool in tools
+                        if isinstance(tool, dict)
+                        and isinstance(tool.get("name"), str)
+                    ),
+                ),
+            )
+        return tuple(facts)
+
+    def _emit_failure(self, server: str, error: str) -> None:
+        emit_event(
+            self._events,
+            RuntimeDiagnostic(
+                kind="mcp.discovery_failed",
+                message=(
+                    f"MCP server {server} discovery failed after "
+                    f"{_DISCOVERY_RETRIES} attempts"
+                ),
+                detail={"server": server, "error": error},
+            ),
         )
 
 
@@ -300,6 +421,56 @@ class _DockerCapabilityView:
         return volume_path(self._volume, _VIEW_DIRECTORY, _WHITEOUT_DIRECTORY, relative)
 
 
+class _DockerCapabilityOverlay:
+    """Own the Docker materialized view; mutations already target its upper."""
+
+    def __init__(self, view: _DockerCapabilityView) -> None:
+        self.view = view
+
+    @classmethod
+    async def materialize(
+        cls,
+        backend: _DockerBackendWorkspace,
+        volume: str,
+        repertoire: Path,
+    ) -> _DockerCapabilityOverlay:
+        return cls(
+            await _DockerCapabilityView.materialize(
+                backend,
+                volume,
+                repertoire,
+            ),
+        )
+
+    def wrap_file(self, path: str, execution: ExecutionHandle) -> ExecutionHandle:
+        del path
+        return execution
+
+    def wrap_shell(
+        self,
+        command: ShellParseResult,
+        cwd: str,
+        execution: ExecutionHandle,
+    ) -> ExecutionHandle:
+        del command, cwd
+        return execution
+
+    async def close(self) -> None:
+        return None
+
+
+class _DockerCapabilityOverlayFactory:
+    async def create(self, workspace: Workspace) -> _DockerCapabilityOverlay:
+        backend = workspace.backend
+        if not isinstance(backend, _DockerBackendWorkspace):
+            raise ValueError("Docker overlay requires a Docker Backend")
+        return await _DockerCapabilityOverlay.materialize(
+            backend,
+            workspace.deployment_volume,
+            workspace.repertoire,
+        )
+
+
 class _DockerToolExecutor:
     """ToolExecutor over the Docker Tool Runtime in one Workspace.
 
@@ -318,7 +489,7 @@ class _DockerToolExecutor:
         workspace_id: str,
         revision: str,
         deployment: DeploymentSnapshot,
-        runtime: _DockerToolRuntime | None,
+        runtime: ToolRuntimeSnapshot | None,
     ) -> None:
         self._backend = backend
         self._workspace_id = workspace_id
@@ -429,207 +600,39 @@ class _DockerToolExecutor:
         )
 
 
+class _DockerToolExecutorFactory:
+    """Create Docker executors solely from deployment result facts."""
+
+    def create(
+        self,
+        workspace: Workspace,
+        snapshot: CapabilitySnapshot,
+        deployment: DeploymentSnapshot,
+    ) -> _DockerToolExecutor:
+        backend = workspace.backend
+        if not isinstance(backend, _DockerBackendWorkspace):
+            raise ValueError("Docker ToolExecutor requires a Docker Backend")
+        return _DockerToolExecutor(
+            backend,
+            workspace_id=workspace.id,
+            revision=snapshot.revision,
+            deployment=deployment,
+            runtime=deployment.tool_runtime,
+        )
+
+
 class _DockerCapabilityDeployment:
     """Docker deployment between CapabilitySnapshots and a Workspace."""
 
     def __init__(
         self,
         *,
-        state_root: Path,
-        repertoire: Path,
-        volume: str,
-        backend: _DockerBackendWorkspace,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+        events: EventSink = NULL_EVENTS,
     ) -> None:
-        self._state_root = state_root
-        self._repertoire = repertoire
-        self._volume = volume
-        self._backend = backend
-        self._on_diagnostic = on_diagnostic
+        self._events = events
         self._manifest: _DeploymentManifest | None = None
         self._manifest_loaded = False
         self._realized: dict[str, str] = {}
-        self._deployment: DeploymentSnapshot | None = None
-
-    def executor(
-        self,
-        workspace: Workspace,
-        *,
-        revision: str,
-    ) -> ToolExecutor:
-        """Return the ToolExecutor bound to the latest reconciled deployment."""
-
-        docker_backend = workspace.backend
-        if not isinstance(docker_backend, _DockerBackendWorkspace):
-            raise ValueError(
-                "Docker ToolExecutor requires a Docker Backend Workspace",
-            )
-        deployment = self._deployment or DeploymentSnapshot(
-            workspace_id=workspace.id,
-            revision=revision,
-            layout_version=DEPLOYMENT_SCHEMA_VERSION,
-            complete=False,
-            error="Tool environment is unavailable",
-        )
-        return _DockerToolExecutor(
-            docker_backend,
-            workspace_id=workspace.id,
-            revision=revision,
-            deployment=deployment,
-            runtime=docker_backend._tool_runtime,
-        )
-
-    async def attach(
-        self,
-        workspace: Workspace,
-    ) -> _LogicalCapabilityView:
-        """Materialize the Docker Bound Capability View (idempotent)."""
-
-        docker_backend = workspace.backend
-        if not isinstance(docker_backend, _DockerBackendWorkspace):
-            raise ValueError(
-                "Docker deployment requires a Docker Backend Workspace",
-            )
-        return await _DockerCapabilityView.materialize(
-            docker_backend,
-            self._volume,
-            self._repertoire,
-        )
-
-    async def discover_mcp(
-        self,
-        configs: tuple[MCPServerConfig, ...],
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
-    ) -> tuple[_MCPServerFacts, ...]:
-        """Discover Workspace MCP servers from the Docker execution context.
-
-        One transient setup container installs the MCP client and contacts
-        every configured server with the container execution environment;
-        the container is removed afterwards, so discovery leaves nothing
-        behind. Exhaustion of one server's attempts emits a diagnostic and
-        produces no facts for that server.
-        """
-
-        if not configs:
-            return ()
-        environment = dict(self._backend.execution_base_environment())
-        payload = json.dumps(
-            {
-                "servers": [config.to_dict() for config in configs],
-                "retries": _DISCOVERY_RETRIES,
-            },
-        ).encode("utf-8")
-        try:
-            effective = effective_requirements(b"", include_mcp=True)
-            await publish_artifacts(
-                self._backend.filesystem,
-                {
-                    volume_path(
-                        self._volume,
-                        TOOL_RUNTIME_DIRECTORY,
-                        _EFFECTIVE_REQUIREMENTS,
-                    ): effective,
-                },
-            )
-            runtime = await _ensure_docker_tool_runtime(
-                self._backend,
-                volume=self._volume,
-                effective=effective,
-            )
-            if not runtime.available or runtime.python is None:
-                raise BackendExecutionError(
-                    runtime.error or "Docker MCP discovery runtime is unavailable",
-                )
-            bin_directory = posixpath.dirname(runtime.python)
-            environment["VIRTUAL_ENV"] = posixpath.dirname(bin_directory)
-            environment["PATH"] = bin_directory + os.pathsep + os.defpath
-            environment["PYTHONNOUSERSITE"] = "1"
-            environment["PYTHONDONTWRITEBYTECODE"] = "1"
-            command = f"{_quote(runtime.python)} -c {shlex.quote(_DISCOVERY_SCRIPT)}"
-            exit_code, output = await _run_docker_setup(
-                self._backend,
-                command=command,
-                environment=environment,
-                input_data=payload,
-            )
-        except BackendExecutionError as exc:
-            for config in configs:
-                self._emit(
-                    "mcp.discovery_failed",
-                    f"MCP server {config.name} discovery failed after "
-                    f"{_DISCOVERY_RETRIES} attempts",
-                    {"server": config.name, "error": str(exc)},
-                )
-            return ()
-        parsed = _parse_discovery_output(output) if exit_code == 0 else None
-        if parsed is None:
-            for config in configs:
-                self._emit(
-                    "mcp.discovery_failed",
-                    f"MCP server {config.name} discovery failed after "
-                    f"{_DISCOVERY_RETRIES} attempts",
-                    {"server": config.name, "error": _tail(output)},
-                )
-            return ()
-        facts: list[_MCPServerFacts] = []
-        for entry in parsed:
-            if not isinstance(entry, dict):
-                continue
-            name = entry.get("name")
-            if not isinstance(name, str):
-                continue
-            tools = entry.get("tools")
-            if not isinstance(tools, list):
-                self._emit(
-                    "mcp.discovery_failed",
-                    f"MCP server {name} discovery failed after "
-                    f"{_DISCOVERY_RETRIES} attempts",
-                    {"server": name, "error": str(entry.get("error", ""))},
-                )
-                continue
-            facts.append(
-                _MCPServerFacts(
-                    name=name,
-                    tools=tuple(
-                        _MCPToolFacts(
-                            name=tool["name"],
-                            description=str(tool.get("description", "")),
-                            input_schema=tool.get("input_schema", {}),
-                        )
-                        for tool in tools
-                        if isinstance(tool, dict) and isinstance(tool.get("name"), str)
-                    ),
-                ),
-            )
-        return tuple(facts)
-
-    async def materialize_stubs(
-        self,
-        workspace: Workspace,
-        configs: tuple[MCPServerConfig, ...],
-        facts: tuple[_MCPServerFacts, ...],
-    ) -> None:
-        """Project generated MCP stubs and the invocation binding.
-
-        Unchanged stub and binding domains are skipped via the completion
-        manifest; a binding materialization failure keeps the previous
-        deployment in place.
-        """
-
-        async with self._deployment_lock():
-            manifest = await self._load_manifest(workspace)
-            realized = self._realized_digests(manifest)
-            realized, _ = await materialize_stubs(
-                filesystem=workspace.filesystem,
-                volume=self._volume,
-                workspace_id=workspace.id,
-                configs=configs,
-                facts=facts,
-                manifest=manifest,
-                realized=realized,
-                on_diagnostic=self._on_diagnostic,
-            )
-            self._realized = realized
 
     async def reconcile(
         self,
@@ -653,11 +656,22 @@ class _DockerCapabilityDeployment:
             raise ValueError(
                 "Docker deployment requires a Docker Backend Workspace",
             )
-        async with self._deployment_lock():
+        volume = workspace.deployment_volume
+        async with self._deployment_lock(workspace.id):
             manifest = await self._load_manifest(workspace)
             realized = self._realized_digests(manifest)
+            realized, _ = await materialize_stubs(
+                filesystem=workspace.filesystem,
+                volume=volume,
+                workspace_id=workspace.id,
+                configs=snapshot.mcp_servers,
+                facts=snapshot.mcp_facts,
+                manifest=manifest,
+                realized=realized,
+                events=self._events,
+            )
             indexes = {
-                volume_path(self._volume, key): content
+                volume_path(volume, key): content
                 for key, content in render_catalog_indexes(
                     snapshot=snapshot,
                 ).items()
@@ -682,14 +696,14 @@ class _DockerCapabilityDeployment:
                 tool_domains = {
                     "worker": {
                         volume_path(
-                            self._volume,
+                            volume,
                             TOOL_RUNTIME_DIRECTORY,
                             _WORKER_FILENAME,
                         ): worker,
                     },
                     "requirements": {
                         volume_path(
-                            self._volume,
+                            volume,
                             TOOL_RUNTIME_DIRECTORY,
                             _EFFECTIVE_REQUIREMENTS,
                         ): effective,
@@ -704,7 +718,7 @@ class _DockerCapabilityDeployment:
                 )
                 runtime = await _ensure_docker_tool_runtime(
                     docker_backend,
-                    volume=self._volume,
+                    volume=volume,
                     effective=effective,
                 )
             except asyncio.CancelledError:
@@ -718,27 +732,24 @@ class _DockerCapabilityDeployment:
                     or (runtime.error if runtime is not None else None)
                     or "Tool environment is unavailable"
                 )
-                if runtime is not None:
-                    docker_backend._attach_tool_runtime(runtime)
                 snapshot_result = DeploymentSnapshot(
                     workspace_id=workspace.id,
                     revision=snapshot.revision,
                     layout_version=DEPLOYMENT_SCHEMA_VERSION,
                     complete=False,
                     error=reason,
+                    tool_runtime=_docker_runtime_snapshot(runtime, reason),
                 )
-                self._deployment = snapshot_result
                 return snapshot_result
 
             await commit_manifest(
                 workspace.filesystem,
-                self._volume,
+                volume,
                 workspace_id=workspace.id,
                 revision=snapshot.revision,
                 realized=realized,
                 previous=manifest,
             )
-            docker_backend._attach_tool_runtime(runtime)
             snapshot_result = DeploymentSnapshot(
                 workspace_id=workspace.id,
                 revision=snapshot.revision,
@@ -746,8 +757,8 @@ class _DockerCapabilityDeployment:
                 complete=True,
                 error=None,
                 mounts=(docker_backend.volume,),
+                tool_runtime=_docker_runtime_snapshot(runtime, None),
             )
-            self._deployment = snapshot_result
             return snapshot_result
 
     async def _load_manifest(
@@ -759,7 +770,7 @@ class _DockerCapabilityDeployment:
         if not self._manifest_loaded:
             self._manifest = await read_manifest(
                 workspace.filesystem,
-                volume_path(self._volume, DEPLOYMENT_MANIFEST),
+                volume_path(workspace.deployment_volume, DEPLOYMENT_MANIFEST),
             )
             self._manifest_loaded = True
         return self._manifest
@@ -779,17 +790,21 @@ class _DockerCapabilityDeployment:
 
         try:
             return await workspace.filesystem.read(
-                volume_path(self._volume, "tools", "requirements.txt"),
+                volume_path(
+                    workspace.deployment_volume,
+                    "tools",
+                    "requirements.txt",
+                ),
             )
         except _FilesystemError:
             return b""
 
-    def _deployment_lock(self) -> asyncio.Lock:
+    def _deployment_lock(self, workspace_id: str) -> asyncio.Lock:
         """Return the per-Workspace deployment lock for this event loop."""
 
         loop = asyncio.get_running_loop()
         locks = _DEPLOY_LOCKS.setdefault(loop, {})
-        return locks.setdefault(self._state_root, asyncio.Lock())
+        return locks.setdefault(workspace_id, asyncio.Lock())
 
     def _emit(
         self,
@@ -797,26 +812,10 @@ class _DockerCapabilityDeployment:
         message: str,
         detail: Mapping[str, object] | None = None,
     ) -> None:
-        if self._on_diagnostic is None:
-            return
-        self._on_diagnostic(
+        emit_event(
+            self._events,
             RuntimeDiagnostic(kind=kind, message=message, detail=detail or {}),
         )
-
-
-async def _docker_project_instructions(
-    backend: _DockerBackendWorkspace,
-) -> _ProjectInstructions | None:
-    """Load and validate the Workspace-root ``AGENTS.md`` from the volume."""
-
-    try:
-        content = await backend.filesystem.read(_AGENTS_MD_FILENAME)
-    except _FilesystemError:
-        return None
-    return validate_instructions(
-        source=f"{backend.root}/{_AGENTS_MD_FILENAME}",
-        content=content,
-    )
 
 
 async def _ensure_docker_tool_runtime(
@@ -884,6 +883,27 @@ async def _ensure_docker_tool_runtime(
         tools_directory=tools_directory,
         binding_directory=absolute_tool_directory,
         error=None,
+    )
+
+
+def _docker_runtime_snapshot(
+    runtime: _DockerToolRuntime | None,
+    error: str | None,
+) -> ToolRuntimeSnapshot:
+    if runtime is None:
+        return ToolRuntimeSnapshot(
+            python=None,
+            worker=None,
+            tools_directory=None,
+            binding_directory=None,
+            error=error,
+        )
+    return ToolRuntimeSnapshot(
+        python=runtime.python,
+        worker=runtime.worker,
+        tools_directory=runtime.tools_directory,
+        binding_directory=runtime.binding_directory,
+        error=error or runtime.error,
     )
 
 
@@ -983,8 +1003,10 @@ def _tail(output: str) -> str:
 
 _DISCOVERY_SCRIPT = r"""
 import asyncio
+import base64
 import json
 import os
+from pathlib import Path
 import sys
 
 from mcp import ClientSession
@@ -992,8 +1014,19 @@ from mcp import ClientSession
 
 def main():
     payload = json.load(sys.stdin)
+    materialize_source(payload.get("files", {}))
     json.dump(asyncio.run(discover_all(payload)), sys.stdout)
     sys.stdout.write("\n")
+
+
+def materialize_source(files):
+    root = Path("/workspace/.workspace").resolve()
+    for relative, encoded in files.items():
+        target = (root / relative).resolve()
+        if not target.is_relative_to(root):
+            raise ValueError("invalid MCP source path")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(base64.b64decode(encoded, validate=True))
 
 
 async def discover_all(payload):

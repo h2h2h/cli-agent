@@ -3,13 +3,12 @@
 The Local Backend is the reference RFC-0012/RFC-0014 implementation. The
 Backend owns every Host side-effect for execution and filesystem I/O
 (Host ``Path`` operations, subprocess creation, ambient environment merge)
-while exposing only backend-neutral facts through ``_BackendWorkspace`` /
-``_WorkspaceFilesystem``. The Local CapabilityDeployment owns capability
-materialization: Capability View attach, MCP discovery and bindings, stub
-projection, and the Tool worker environment.
+while exposing only backend-neutral facts through ``Backend`` /
+``_WorkspaceFilesystem``. Capability materialization and Tool execution live
+in outer adapters and are deliberately not exported by this package.
 
-The Local-internal implementation classes are re-exported here so tests
-and the Runtime resource bootstrap can construct fixtures without reaching
+The Local-internal Backend implementation classes are re-exported here so
+Workspace factories and Backend tests can construct them without reaching
 into specific submodules.
 """
 
@@ -22,12 +21,10 @@ from cli_agent.runtime._backend.local.shell import (
     _LocalShellExecution,
     _ProcessExecution,
 )
-from cli_agent.runtime._backend.local.view import _LocalCapabilityView
 
 __all__ = [
     "_LocalBackend",
     "_LocalBackendWorkspace",
-    "_LocalCapabilityView",
     "_LocalShellExecution",
     "_LocalWorkspaceFilesystem",
     "_ProcessExecution",

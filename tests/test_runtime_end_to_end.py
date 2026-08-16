@@ -7,6 +7,7 @@ from pathlib import Path
 from interaction_fakes import _ScriptedInteraction
 
 import cli_agent.runtime as runtime_package
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -87,8 +88,8 @@ def test_runs_the_smallest_deterministic_agent_loop(
     )
 
     async def scenario() -> None:
-        async with await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        async with await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             context_policy=_context_policy,
@@ -213,8 +214,8 @@ def test_skill_is_discoverable_and_loaded_on_demand(
     )
 
     async def scenario() -> None:
-        async with await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        async with await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             repertoire=repertoire,
@@ -275,8 +276,8 @@ def test_skill_is_discoverable_and_loaded_on_demand(
     )
 
     async def second_scenario() -> None:
-        async with await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        async with await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             repertoire=repertoire,
@@ -308,7 +309,10 @@ def test_skill_is_discoverable_and_loaded_on_demand(
         "AssistantMessage",
         "ShellParseResult",
         "ContextPolicy",
+        "CallbackEventSink",
         "ExecutionPolicy",
+        "EventSink",
+        "HostServices",
         "JSONValue",
         "ModelCompletion",
         "ModelEvent",
@@ -320,7 +324,9 @@ def test_skill_is_discoverable_and_loaded_on_demand(
         "PolicyAction",
         "PolicyEvaluation",
         "RuntimeClosedError",
+        "RuntimeComponents",
         "RuntimeDiagnostic",
+        "RuntimeEvent",
         "ScriptedModelProvider",
         "SessionUsage",
         "SystemMessage",
@@ -336,6 +342,7 @@ def test_skill_is_discoverable_and_loaded_on_demand(
         "UserMessage",
         "UserOption",
         "UserQuestion",
+        "WorkspaceConfig",
     )
 
 

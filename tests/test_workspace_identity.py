@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
+from cli_agent._workspaces import (
+    _load_workspace_identity,
+    _LocalWorkspaceFactory,
+)
 from cli_agent.errors.workspace import WorkspaceMismatchError
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -16,16 +21,12 @@ from cli_agent.runtime import (
     UserMessage,
 )
 from cli_agent.runtime._backend import (
-    _BackendWorkspace,
+    Backend,
     _FileEdit,
     _FileEditRequest,
     _FilesystemError,
     _FileWriteRequest,
     _WorkspaceFilesystem,
-)
-from cli_agent.runtime._workspace import (
-    _load_workspace_identity,
-    _LocalWorkspaceFactory,
 )
 
 _user_interaction = _ScriptedInteraction("allow_once")
@@ -80,7 +81,7 @@ def test_factory_binds_stable_identity_and_backend(tmp_path: Path) -> None:
         assert first.id.startswith("local:")
         assert first.id != other.id
         assert first.root == str(tmp_path.resolve())
-        assert isinstance(first.backend, _BackendWorkspace)
+        assert isinstance(first.backend, Backend)
         assert isinstance(first.filesystem, _WorkspaceFilesystem)
         await first.close()
         await second.close()
@@ -177,20 +178,20 @@ def test_workspace_mismatch_fails_closed_before_provider_or_tools(
     )
 
     async def scenario() -> None:
-        runtime_a = await AgentRuntime.open(
+        runtime_a = await open_default_runtime(
             workspace=workspace_a,
             provider=provider,
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         session = await runtime_a.new_session()
         await _collect_turn(runtime_a, "hello")
         await runtime_a.close()
 
-        runtime_b = await AgentRuntime.open(
+        runtime_b = await open_default_runtime(
             workspace=workspace_b,
             provider=ScriptedModelProvider(script=()),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         try:
@@ -218,19 +219,19 @@ def test_same_workspace_existing_session_resumes_explicitly(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
+        runtime = await open_default_runtime(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         session = await runtime.new_session()
         await runtime.close()
 
-        resumed = await AgentRuntime.open(
+        resumed = await open_default_runtime(
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
-            user_interaction=_user_interaction,
+            interaction=_user_interaction,
             context_policy=_context_policy,
         )
         try:

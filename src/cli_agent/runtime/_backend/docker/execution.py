@@ -255,6 +255,7 @@ async def _run_docker_setup(
     command: str,
     environment: dict[str, str],
     input_data: bytes | None = None,
+    mount_workspace: bool = True,
 ) -> tuple[int, str]:
     """Run one transient setup execution and return its exit code and output.
 
@@ -276,6 +277,7 @@ async def _run_docker_setup(
     config = workspace._setup_container_config(
         command=command,
         environment=environment,
+        mount_workspace=mount_workspace,
     )
     container = await workspace._create_container(config, stdin=input_data is not None)
     workspace._track_container(container.id)

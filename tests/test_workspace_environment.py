@@ -5,8 +5,8 @@ import pytest
 from interaction_fakes import _ScriptedInteraction
 
 import cli_agent.runtime.runtime as runtime_module
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
-    AgentRuntime,
     ContextPolicy,
     ScriptedModelProvider,
 )
@@ -45,14 +45,14 @@ def test_runtime_open_loads_complete_dotenv_environment(
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
         )
 
-        assert dict(runtime._resources.base_env) == {
+        assert dict(runtime._resources.workspace.base_environment) == {
             "API_BASE_URL": " https://example.test/api ",
             "DUPLICATE": "second",
             "EMPTY": "",
@@ -64,7 +64,7 @@ def test_runtime_open_loads_complete_dotenv_environment(
             "value": "lower",
         }
         with pytest.raises(TypeError):
-            runtime._resources.base_env["NEW"] = "value"  # type: ignore[index]
+            runtime._resources.workspace.base_environment["NEW"] = "value"  # type: ignore[index]
         await runtime.close()
 
     asyncio.run(scenario())
@@ -76,22 +76,22 @@ def test_workspace_environment_is_loaded_once_per_runtime(tmp_path: Path) -> Non
     environment.write_text("VALUE=first\n", encoding="utf-8")
 
     async def scenario() -> None:
-        first_runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        first_runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
         )
         environment.write_text("VALUE=second\n", encoding="utf-8")
-        second_runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        second_runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
         )
 
-        assert first_runtime._resources.base_env == {"VALUE": "first"}
-        assert second_runtime._resources.base_env == {"VALUE": "second"}
+        assert first_runtime._resources.workspace.base_environment == {"VALUE": "first"}
+        assert second_runtime._resources.workspace.base_environment == {"VALUE": "second"}
         await first_runtime.close()
         await second_runtime.close()
 
@@ -129,8 +129,8 @@ def test_runtime_open_rejects_malformed_workspace_environment(
 
     async def scenario() -> None:
         with pytest.raises(ValueError, match=message) as raised:
-            await AgentRuntime.open(
-                user_interaction=_user_interaction,
+            await open_default_runtime(
+                interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
                 context_policy=_context_policy,
@@ -158,8 +158,8 @@ def test_runtime_open_rejects_workspace_environment_symbolic_link(
             ValueError,
             match="must be a real regular file",
         ) as raised:
-            await AgentRuntime.open(
-                user_interaction=_user_interaction,
+            await open_default_runtime(
+                interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
                 context_policy=_context_policy,
@@ -179,8 +179,8 @@ def test_runtime_open_reports_first_invalid_dotenv_line(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         with pytest.raises(ValueError, match="at line 2") as raised:
-            await AgentRuntime.open(
-                user_interaction=_user_interaction,
+            await open_default_runtime(
+                interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
                 context_policy=_context_policy,

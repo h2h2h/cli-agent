@@ -5,26 +5,54 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from interaction_fakes import _ScriptedInteraction
 
 import cli_agent.runtime._resources as resources_module
-from cli_agent.runtime._backend import _BackendWorkspace
+from cli_agent.presets import local_runtime_components
+from cli_agent.runtime import ContextPolicy, WorkspaceConfig
 from cli_agent.runtime._capability.deployment import DeploymentSnapshot
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
-from cli_agent.runtime._capability.provider import (
+from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+from cli_agent.runtime._capability.snapshot import (
     CAPABILITY_SCHEMA_VERSION,
     CapabilitySnapshot,
 )
-from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
-from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._project_instructions import _ProjectInstructions
 from cli_agent.runtime._resources import (
+    CapabilityBinding,
     _reconcile_runtime_resources,
     _RuntimeResources,
 )
+
+_CONTEXT_POLICY = ContextPolicy(
+    context_window_tokens=16_384,
+    output_reserve_tokens=2_048,
+    safety_margin_tokens=0,
+)
+
+
+def _components(state_path: Path):
+    return local_runtime_components(
+        interaction=_ScriptedInteraction("allow_once"),
+        context_policy=_CONTEXT_POLICY,
+        state_path=state_path,
+    )
+
+
+async def _reconcile(
+    workspace: Path,
+    *,
+    repertoire: Path | None = None,
+):
+    return await _reconcile_runtime_resources(
+        config=WorkspaceConfig(root=workspace, repertoire=repertoire),
+        components=_components(workspace.parent / f"{workspace.name}-state.sqlite3"),
+    )
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -44,29 +72,21 @@ def test_reconcile_returns_complete_resource_aggregate(tmp_path: Path) -> None:
     _environment(workspace, "TOKEN=secret\n")
 
     async def scenario() -> None:
-        resources = await _reconcile_runtime_resources(
-            workspace=workspace,
-            repertoire=None,
-            on_diagnostic=None,
-        )
+        resources = await _reconcile(workspace)
 
         assert isinstance(resources, _RuntimeResources)
         assert resources.workspace.root == str(workspace.resolve())
         assert resources.workspace.id.startswith("local:")
-        assert isinstance(resources.backend, _BackendWorkspace)
-        assert resources.backend is resources.workspace.backend
-        assert resources.backend.root == str(workspace.resolve())
-        assert isinstance(resources.base_env, Mapping)
-        assert dict(resources.base_env) == {"TOKEN": "secret"}
-        assert isinstance(resources.capability_view, _LogicalCapabilityView)
-        assert isinstance(resources.deployment, DeploymentSnapshot)
-        assert resources.deployment.workspace_id == resources.workspace.id
-        assert len(resources.deployment.revision) == 64
-        assert resources.deployment.complete, resources.deployment.error
-        assert resources.snapshot.project_instructions is None
-        assert isinstance(resources.snapshot.tools, _ToolCatalog)
-        assert isinstance(resources.snapshot.skills, _SkillCatalog)
-        assert isinstance(resources.snapshot.library, _LibraryCatalog)
+        assert not hasattr(resources, "backend")
+        assert resources.workspace.backend.root == str(workspace.resolve())
+        assert dict(resources.workspace.base_environment) == {"TOKEN": "secret"}
+        assert resources.capabilities.snapshot.project_instructions is None
+        assert isinstance(resources.capabilities.snapshot.tools, _ToolCatalog)
+        assert isinstance(resources.capabilities.snapshot.skills, _SkillCatalog)
+        assert isinstance(resources.capabilities.snapshot.library, _LibraryCatalog)
+        assert not hasattr(resources, "capability_view")
+        assert not hasattr(resources, "deployment")
+        await resources.close()
 
     asyncio.run(scenario())
 
@@ -78,17 +98,15 @@ def test_reconcile_loads_workspace_agents_md_snapshot(tmp_path: Path) -> None:
     (workspace / "AGENTS.md").write_text(content, encoding="utf-8")
 
     async def scenario() -> None:
-        resources = await _reconcile_runtime_resources(
-            workspace=workspace,
-            repertoire=None,
-            on_diagnostic=None,
-        )
+        resources = await _reconcile(workspace)
 
-        assert isinstance(resources.snapshot.project_instructions, _ProjectInstructions)
-        assert resources.snapshot.project_instructions.source == str(
+        snapshot = resources.capabilities.snapshot
+        assert isinstance(snapshot.project_instructions, _ProjectInstructions)
+        assert snapshot.project_instructions.source == str(
             workspace.resolve() / "AGENTS.md"
         )
-        assert resources.snapshot.project_instructions.text == content
+        assert snapshot.project_instructions.text == content
+        await resources.close()
 
     asyncio.run(scenario())
 
@@ -100,17 +118,14 @@ def test_base_environment_is_immutable_and_excluded_from_repr(
     _environment(workspace, "TOKEN=secret\n")
 
     async def scenario() -> None:
-        resources = await _reconcile_runtime_resources(
-            workspace=workspace,
-            repertoire=None,
-            on_diagnostic=None,
-        )
+        resources = await _reconcile(workspace)
 
         with pytest.raises(TypeError):
-            resources.base_env["NEW"] = "value"  # type: ignore[index]
+            resources.workspace.base_environment["NEW"] = "value"  # type: ignore[index]
         representation = repr(resources)
         assert "TOKEN" not in representation
         assert "secret" not in representation
+        await resources.close()
 
     asyncio.run(scenario())
 
@@ -152,6 +167,14 @@ def test_reconcile_runs_steps_in_documented_order(
             self.id = "local:00000000000000000000000000000000"
 
         @property
+        def base_environment(self) -> Mapping[str, str]:
+            return self.backend.workspace_environment
+
+        @staticmethod
+        async def flush() -> None:
+            return None
+
+        @property
         def state_root(self) -> Path:
             return _FakePaths.state
 
@@ -185,46 +208,46 @@ def test_reconcile_runs_steps_in_documented_order(
             return _FakeSnapshot(library)
 
     class _FakeCapabilityProvider:
+        async def discover(
+            self,
+            source: object,
+            *,
+            mcp_discovery: object,
+            mcp_environment: object,
+            project_instructions: object,
+        ) -> _FakeSnapshot:
+            del project_instructions
+            await mcp_discovery.discover((), source, mcp_environment)  # type: ignore[attr-defined]
+            order.append("snapshot")
+            return _FakeSnapshot(None)
+
+    class _FakeSourceFactory:
         def __init__(self, **kwargs: object) -> None:
             del kwargs
 
-        async def discover_mcp_configs(self) -> tuple[object, ...]:
-            order.append("mcp_configs")
-            return ()
+        @staticmethod
+        async def create(workspace: object) -> object:
+            del workspace
+            order.append("source_create")
+            return object()
 
-        async def discover(self, *, mcp_configs: object = None) -> _FakeSnapshot:
-            del mcp_configs
-            order.append("snapshot")
-            return _FakeSnapshot(None)
+    class _FakeMCPDiscovery:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        @staticmethod
+        async def discover(
+            configs: tuple[object, ...],
+            source: object,
+            workspace: object,
+        ) -> tuple[object, ...]:
+            del configs, source, workspace
+            order.append("mcp_discovery")
+            return ()
 
     class _FakeDeployment:
         def __init__(self, **kwargs: object) -> None:
             del kwargs
-
-        @staticmethod
-        async def attach(workspace: object) -> object:
-            del workspace
-            order.append("view_attach")
-            return object()
-
-        @staticmethod
-        async def discover_mcp(
-            configs: tuple[object, ...],
-            on_diagnostic: object = None,
-        ) -> tuple[object, ...]:
-            del configs, on_diagnostic
-            order.append("mcp_discovery")
-            return ()
-
-        @staticmethod
-        async def materialize_stubs(
-            workspace: object,
-            configs: tuple[object, ...],
-            facts: tuple[object, ...],
-        ) -> None:
-            del workspace, configs, facts
-            order.append("mcp_stubs")
-            return None
 
         @staticmethod
         async def reconcile(snapshot: object, workspace: object) -> object:
@@ -238,9 +261,26 @@ def test_reconcile_runs_steps_in_documented_order(
                 error=None,
             )
 
+    class _FakeOverlay:
         @staticmethod
-        def executor(workspace: object, *, revision: str) -> object:
-            del workspace, revision
+        async def close() -> None:
+            return None
+
+    class _FakeOverlayFactory:
+        @staticmethod
+        async def create(workspace: object) -> _FakeOverlay:
+            del workspace
+            order.append("overlay_materialize")
+            return _FakeOverlay()
+
+    class _FakeExecutorFactory:
+        @staticmethod
+        def create(
+            workspace: object,
+            snapshot: object,
+            deployment: object,
+        ) -> object:
+            del workspace, snapshot, deployment
             order.append("tool_executor")
             return object()
 
@@ -269,79 +309,67 @@ def test_reconcile_runs_steps_in_documented_order(
         ) -> object:
             del capability_view, filesystem, summary_cache
             order.append("library_catalog")
-            return object()
+            return _FakeLibraryCatalog()
 
-    monkeypatch.setattr(
-        resources_module,
-        "_LocalWorkspaceFactory",
-        _FakeLocalWorkspaceFactory,
-    )
-    monkeypatch.setattr(
-        resources_module,
-        "CapabilityProvider",
-        _FakeCapabilityProvider,
-    )
-    monkeypatch.setattr(
-        resources_module,
-        "_LocalCapabilityDeployment",
-        _FakeDeployment,
-    )
-    monkeypatch.setattr(resources_module, "_StateDatabase", _FakeStateDatabase)
-    monkeypatch.setattr(resources_module, "_SummaryCache", _FakeSummaryCache)
-    monkeypatch.setattr(resources_module, "SessionStore", _FakeSessionStore)
+        async def close(self) -> None:
+            return None
+
     monkeypatch.setattr(resources_module, "_LibraryCatalog", _FakeLibraryCatalog)
+    components = replace(
+        _components(tmp_path / "state.sqlite3"),
+        workspace_factory=_FakeLocalWorkspaceFactory(),
+        capability_source_factory=_FakeSourceFactory(),
+        capability_provider=_FakeCapabilityProvider(),
+        mcp_discovery=_FakeMCPDiscovery(),
+        capability_deployment=_FakeDeployment(),
+        capability_overlay_factory=_FakeOverlayFactory(),
+        tool_executor_factory=_FakeExecutorFactory(),
+    )
 
     async def scenario() -> None:
         resources = await _reconcile_runtime_resources(
-            workspace=tmp_path,
-            repertoire=None,
-            on_diagnostic=None,
+            config=WorkspaceConfig(root=tmp_path),
+            components=components,
         )
 
         assert order == [
             "workspace_open",
-            "view_attach",
-            "mcp_configs",
+            "source_create",
             "mcp_discovery",
-            "mcp_stubs",
             "snapshot",
-            "state_database",
-            "summary_cache",
-            "session_store",
+            "overlay_materialize",
             "library_catalog",
             "deployment_reconcile",
             "tool_executor",
         ]
         assert resources.workspace.root == str(_FakePaths.root)
-        assert dict(resources.base_env) == {"TOKEN": "secret"}
+        assert dict(resources.workspace.base_environment) == {"TOKEN": "secret"}
+        await resources.close()
 
     asyncio.run(scenario())
 
 
-def test_aggregate_pins_the_deployment_snapshot(
+def test_aggregate_keeps_only_consumed_capability_binding(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path)
 
     async def scenario() -> None:
-        await _reconcile_runtime_resources(
-            workspace=workspace,
-            repertoire=None,
-            on_diagnostic=None,
-        )
+        resources = await _reconcile(workspace)
 
         assert {
             field.name for field in _RuntimeResources.__dataclass_fields__.values()
         } == {
             "workspace",
-            "backend",
-            "base_env",
-            "capability_view",
-            "snapshot",
-            "deployment",
-            "tool_executor",
+            "capabilities",
             "session_store",
         }
+        assert set(CapabilityBinding.__dataclass_fields__) == {
+            "snapshot",
+            "tool_executor",
+            "overlay",
+        }
+        await resources.close()
 
     asyncio.run(scenario())
 
@@ -355,15 +383,31 @@ def test_tool_environment_failure_is_fail_soft_in_the_deployment(
     conflict.write_text("not a directory\n", encoding="utf-8")
 
     async def scenario() -> None:
+        captured: list[DeploymentSnapshot] = []
+
+        class CapturingExecutorFactory:
+            def create(
+                self,
+                workspace: object,
+                snapshot: object,
+                deployment: DeploymentSnapshot,
+            ) -> object:
+                del workspace, snapshot
+                captured.append(deployment)
+                return object()
+
+        components = replace(
+            _components(tmp_path / "state.sqlite3"),
+            tool_executor_factory=CapturingExecutorFactory(),
+        )
         resources = await _reconcile_runtime_resources(
-            workspace=workspace,
-            repertoire=None,
-            on_diagnostic=None,
+            config=WorkspaceConfig(root=workspace),
+            components=components,
         )
 
-        deployment = resources.deployment
-        assert deployment.complete is False
-        assert "must be a real directory" in (deployment.error or "")
+        assert captured[0].complete is False
+        assert "must be a real directory" in (captured[0].error or "")
+        await resources.close()
 
     asyncio.run(scenario())
 
@@ -376,11 +420,7 @@ def test_reconcile_propagates_workspace_environment_failure(
 
     async def scenario() -> None:
         with pytest.raises(ValueError, match="must use KEY=VALUE"):
-            await _reconcile_runtime_resources(
-                workspace=workspace,
-                repertoire=None,
-                on_diagnostic=None,
-            )
+            await _reconcile(workspace)
 
     asyncio.run(scenario())
 
@@ -393,11 +433,7 @@ def test_reconcile_requires_existing_workspace(tmp_path: Path) -> None:
             ValueError,
             match="workspace must be an existing directory",
         ):
-            await _reconcile_runtime_resources(
-                workspace=missing,
-                repertoire=None,
-                on_diagnostic=None,
-            )
+            await _reconcile(missing)
 
     asyncio.run(scenario())
     assert not missing.exists()
@@ -433,7 +469,8 @@ def test_environment_kernel_does_not_accept_resource_aggregate() -> None:
     parameters = inspect.signature(EnvironmentKernel.__init__).parameters
     assert "resources" not in parameters
     assert "capability_view" not in parameters
-    assert "backend" in parameters
+    assert "workspace" in parameters
+    assert "backend" not in parameters
 
 
 class _TrackingWorkspace:
@@ -453,6 +490,13 @@ class _TrackingWorkspace:
         self._library_failure = library_failure
 
     @property
+    def base_environment(self) -> Mapping[str, str]:
+        return self.workspace_environment
+
+    def execution_base_environment(self) -> Mapping[str, str]:
+        return {}
+
+    @property
     def state_root(self) -> Path:
         return Path("/fake/.workspace")
 
@@ -462,6 +506,9 @@ class _TrackingWorkspace:
 
     async def close(self) -> None:
         self.order.append("workspace.close")
+
+    async def flush(self) -> None:
+        await self.backend.flush()
 
 
 class _TrackingBackendWorkspace:
@@ -535,41 +582,46 @@ class _NoopSnapshot:
 
 
 class _NoopCapabilityProvider:
+    async def discover(
+        self,
+        source: object,
+        *,
+        mcp_discovery: object,
+        mcp_environment: object,
+        project_instructions: object,
+    ) -> _NoopSnapshot:
+        del project_instructions
+        await mcp_discovery.discover((), source, mcp_environment)  # type: ignore[attr-defined]
+        return _NoopSnapshot()
+
+
+class _NoopSourceFactory:
     def __init__(self, **kwargs: object) -> None:
         del kwargs
 
-    async def discover_mcp_configs(self) -> tuple[object, ...]:
-        return ()
+    @staticmethod
+    async def create(workspace: object) -> object:
+        del workspace
+        return object()
 
-    async def discover(self, *, mcp_configs: object = None) -> _NoopSnapshot:
-        del mcp_configs
-        return _NoopSnapshot()
+
+class _NoopMCPDiscovery:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+    @staticmethod
+    async def discover(
+        configs: tuple[object, ...],
+        source: object,
+        workspace: object,
+    ) -> tuple[object, ...]:
+        del configs, source, workspace
+        return ()
 
 
 class _NoopDeployment:
     def __init__(self, **kwargs: object) -> None:
         del kwargs
-
-    async def attach(self, workspace: object) -> object:
-        del workspace
-        return object()
-
-    async def discover_mcp(
-        self,
-        configs: tuple[object, ...],
-        on_diagnostic: object = None,
-    ) -> tuple[object, ...]:
-        del configs, on_diagnostic
-        return ()
-
-    async def materialize_stubs(
-        self,
-        workspace: object,
-        configs: tuple[object, ...],
-        facts: tuple[object, ...],
-    ) -> None:
-        del workspace, configs, facts
-        return None
 
     async def reconcile(self, snapshot: object, workspace: object) -> object:
         del snapshot, workspace
@@ -581,9 +633,28 @@ class _NoopDeployment:
             error=None,
         )
 
+
+class _NoopOverlay:
+    order: list[str] = []
+
+    async def close(self) -> None:
+        self.order.append("overlay.close")
+
+
+class _NoopOverlayFactory:
+    async def create(self, workspace: object) -> _NoopOverlay:
+        del workspace
+        return _NoopOverlay()
+
+
+class _NoopExecutorFactory:
     @staticmethod
-    def executor(workspace: object, *, revision: str) -> object:
-        del workspace, revision
+    def create(
+        workspace: object,
+        snapshot: object,
+        deployment: object,
+    ) -> object:
+        del workspace, snapshot, deployment
         return object()
 
 
@@ -598,58 +669,52 @@ class _NoopLibraryCatalog:
         return object()
 
 
-def _install_noop_reconcile_fakes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def _noop_components(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     order: list[str] = []
     _TrackingLocalWorkspaceFactory.order = order
-    _TrackingStateDatabase.order = order
-    monkeypatch.setattr(
-        resources_module,
-        "_LocalWorkspaceFactory",
-        _TrackingLocalWorkspaceFactory,
-    )
-    monkeypatch.setattr(
-        resources_module,
-        "CapabilityProvider",
-        _NoopCapabilityProvider,
-    )
-    monkeypatch.setattr(resources_module, "_LocalCapabilityDeployment", _NoopDeployment)
-    monkeypatch.setattr(resources_module, "_StateDatabase", _TrackingStateDatabase)
-    monkeypatch.setattr(resources_module, "_SummaryCache", _NoopSummaryCache)
-    monkeypatch.setattr(resources_module, "SessionStore", _NoopSessionStore)
+    _NoopOverlay.order = order
     monkeypatch.setattr(resources_module, "_LibraryCatalog", _NoopLibraryCatalog)
-    return order
+    components = replace(
+        _components(tmp_path / "state.sqlite3"),
+        workspace_factory=_TrackingLocalWorkspaceFactory(),
+        capability_source_factory=_NoopSourceFactory(),
+        capability_provider=_NoopCapabilityProvider(),
+        mcp_discovery=_NoopMCPDiscovery(),
+        capability_deployment=_NoopDeployment(),
+        capability_overlay_factory=_NoopOverlayFactory(),
+        tool_executor_factory=_NoopExecutorFactory(),
+    )
+    return order, components
 
 
 def test_reconcile_failure_closes_opened_resources_in_reverse_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FailingDeployment:
-        def __init__(self, **kwargs: object) -> None:
-            del kwargs
+    class FailingMCPDiscovery:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
 
-        async def attach(self, workspace: object) -> object:
-            del workspace
-            return object()
-
-        async def discover_mcp(
+        async def discover(
             self,
             configs: tuple[object, ...],
-            on_diagnostic: object = None,
+            source: object,
+            workspace: object,
         ) -> tuple[object, ...]:
+            del configs, source, workspace
             raise RuntimeError("mcp discovery exploded")
 
-    order = _install_noop_reconcile_fakes(monkeypatch)
-    monkeypatch.setattr(
-        resources_module, "_LocalCapabilityDeployment", FailingDeployment
-    )
+    order, components = _noop_components(tmp_path, monkeypatch)
+    components = replace(components, mcp_discovery=FailingMCPDiscovery())
 
     with pytest.raises(RuntimeError, match="mcp discovery exploded"):
         asyncio.run(
             _reconcile_runtime_resources(
-                workspace=tmp_path,
-                repertoire=None,
-                on_diagnostic=None,
+                config=WorkspaceConfig(root=tmp_path),
+                components=components,
             )
         )
 
@@ -665,48 +730,51 @@ def test_reconcile_failure_at_index_publish_closes_opened_resources(
             del snapshot, workspace
             raise RuntimeError("index publish exploded")
 
-    order = _install_noop_reconcile_fakes(monkeypatch)
-    monkeypatch.setattr(
-        resources_module,
-        "_LocalCapabilityDeployment",
-        FailingIndexDeployment,
+    order, components = _noop_components(tmp_path, monkeypatch)
+    components = replace(
+        components,
+        capability_deployment=FailingIndexDeployment(),
     )
 
     with pytest.raises(RuntimeError, match="index publish exploded"):
         asyncio.run(
             _reconcile_runtime_resources(
-                workspace=tmp_path,
-                repertoire=None,
-                on_diagnostic=None,
+                config=WorkspaceConfig(root=tmp_path),
+                components=components,
             )
         )
 
-    assert order == ["workspace_open", "db.open", "db.close", "workspace.close"]
+    assert order == ["workspace_open", "overlay.close", "workspace.close"]
 
 
 def test_project_instruction_load_failure_closes_opened_resources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    order = _install_noop_reconcile_fakes(monkeypatch)
+    order, components = _noop_components(tmp_path, monkeypatch)
 
     class _RaisingSnapshotProvider(_NoopCapabilityProvider):
-        async def discover(self, *, mcp_configs: object = None) -> _NoopSnapshot:
-            del mcp_configs
+        async def discover(
+            self,
+            source: object,
+            *,
+            mcp_discovery: object,
+            mcp_environment: object,
+            project_instructions: object,
+        ) -> _NoopSnapshot:
+            del source, mcp_discovery, mcp_environment, project_instructions
             raise ValueError("AGENTS.md is not valid UTF-8")
 
-    monkeypatch.setattr(
-        resources_module,
-        "CapabilityProvider",
-        _RaisingSnapshotProvider,
+    components = replace(
+        components,
+        capability_provider=_RaisingSnapshotProvider(),
     )
 
     with pytest.raises(ValueError, match="not valid UTF-8"):
         asyncio.run(
             _reconcile_runtime_resources(
-                workspace=tmp_path,
-                repertoire=None,
-                on_diagnostic=None,
+                config=WorkspaceConfig(root=tmp_path),
+                components=components,
             )
         )
 
@@ -731,19 +799,14 @@ def test_workspace_open_failure_propagates_without_fallback(
             calls += 1
             raise ValueError("backend constraint failed")
 
-    order = _install_noop_reconcile_fakes(monkeypatch)
-    monkeypatch.setattr(
-        resources_module,
-        "_LocalWorkspaceFactory",
-        FailingFactory,
-    )
+    order, components = _noop_components(tmp_path, monkeypatch)
+    components = replace(components, workspace_factory=FailingFactory())
 
     with pytest.raises(ValueError, match="backend constraint failed"):
         asyncio.run(
             _reconcile_runtime_resources(
-                workspace=tmp_path,
-                repertoire=None,
-                on_diagnostic=None,
+                config=WorkspaceConfig(root=tmp_path),
+                components=components,
             )
         )
 
@@ -772,25 +835,43 @@ def test_aggregate_close_follows_reverse_dependency_order(tmp_path: Path) -> Non
         def __init__(self, backend: object) -> None:
             self.backend = backend
 
+        async def flush(self) -> None:
+            await self.backend.flush()  # type: ignore[attr-defined]
+
         @staticmethod
         async def close() -> None:
             order.append("workspace.close")
 
+    class FakeOverlay:
+        @staticmethod
+        async def close() -> None:
+            order.append("overlay.close")
+
+    class FakeSessionStore:
+        @staticmethod
+        def close() -> None:
+            order.append("session_store.close")
+
     backend = FakeBackend()
     resources = _RuntimeResources(
         workspace=FakeWorkspace(backend),  # type: ignore[arg-type]
-        backend=backend,  # type: ignore[arg-type]
-        base_env={},
-        capability_view=object(),
-        snapshot=_fake_snapshot(FakeLibraryCatalog()),  # type: ignore[arg-type]
-        deployment=_fake_deployment(),
-        tool_executor=object(),  # type: ignore[arg-type]
-        session_store=object(),  # type: ignore[arg-type]
+        capabilities=CapabilityBinding(
+            snapshot=_fake_snapshot(FakeLibraryCatalog()),  # type: ignore[arg-type]
+            tool_executor=object(),  # type: ignore[arg-type]
+            overlay=FakeOverlay(),  # type: ignore[arg-type]
+        ),
+        session_store=FakeSessionStore(),  # type: ignore[arg-type]
     )
 
     asyncio.run(resources.close())
 
-    assert order == ["library.close", "flush", "workspace.close"]
+    assert order == [
+        "library.close",
+        "overlay.close",
+        "flush",
+        "workspace.close",
+        "session_store.close",
+    ]
 
 
 def test_aggregate_close_attempts_every_step_and_surfaces_failure(
@@ -815,25 +896,41 @@ def test_aggregate_close_attempts_every_step_and_surfaces_failure(
         def __init__(self, backend: object) -> None:
             self.backend = backend
 
+        async def flush(self) -> None:
+            await self.backend.flush()  # type: ignore[attr-defined]
+
         async def close(self) -> None:
             await self.backend.close()  # type: ignore[attr-defined]
 
+    class FakeOverlay:
+        @staticmethod
+        async def close() -> None:
+            return None
+
+    class FakeSessionStore:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
     backend = FailingBackend()
+    session_store = FakeSessionStore()
     resources = _RuntimeResources(
         workspace=FakeWorkspace(backend),  # type: ignore[arg-type]
-        backend=backend,  # type: ignore[arg-type]
-        base_env={},
-        capability_view=object(),
-        snapshot=_fake_snapshot(FakeLibraryCatalog()),  # type: ignore[arg-type]
-        deployment=_fake_deployment(),
-        tool_executor=object(),  # type: ignore[arg-type]
-        session_store=object(),  # type: ignore[arg-type]
+        capabilities=CapabilityBinding(
+            snapshot=_fake_snapshot(FakeLibraryCatalog()),  # type: ignore[arg-type]
+            tool_executor=object(),  # type: ignore[arg-type]
+            overlay=FakeOverlay(),  # type: ignore[arg-type]
+        ),
+        session_store=session_store,  # type: ignore[arg-type]
     )
 
     with pytest.raises(RuntimeError, match="flush exploded"):
         asyncio.run(resources.close())
 
     assert backend.closed
+    assert session_store.closed
 
 
 def _fake_snapshot(library: object) -> CapabilitySnapshot:

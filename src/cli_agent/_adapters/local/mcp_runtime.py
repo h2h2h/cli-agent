@@ -12,7 +12,7 @@ credentials or transport streams.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -22,6 +22,7 @@ from cli_agent.runtime._capability.mcp.facts import (
     _MCPToolFacts,
 )
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.host import NULL_EVENTS, EventSink, emit_event
 
 _DISCOVERY_RETRIES = 3
 _BINDING_FILENAME = "mcp_binding.py"
@@ -30,7 +31,7 @@ _BINDING_FILENAME = "mcp_binding.py"
 async def discover_servers(
     configs: tuple[MCPServerConfig, ...],
     base_environment: Mapping[str, str],
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+    events: EventSink = NULL_EVENTS,
 ) -> tuple[_MCPServerFacts, ...]:
     """Discover every configured server and return provider-neutral facts.
 
@@ -40,7 +41,7 @@ async def discover_servers(
     """
 
     results = await asyncio.gather(
-        *(_discover(config, base_environment, on_diagnostic) for config in configs)
+        *(_discover(config, base_environment, events) for config in configs)
     )
     return tuple(fact for fact in results if fact is not None)
 
@@ -54,7 +55,7 @@ def binding_filename() -> str:
 async def _discover(
     config: MCPServerConfig,
     base_environment: Mapping[str, str],
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+    events: EventSink,
 ) -> _MCPServerFacts | None:
     """Contact one server and return its discovered Tool facts, or None."""
 
@@ -77,7 +78,7 @@ async def _discover(
                 ),
             )
     _emit(
-        on_diagnostic,
+        events,
         "mcp.discovery_failed",
         f"MCP server {config.name} discovery failed after "
         f"{_DISCOVERY_RETRIES} attempts",
@@ -251,11 +252,12 @@ def _server_binding(config: MCPServerConfig) -> dict[str, object]:
 
 
 def _emit(
-    on_diagnostic: Callable[[RuntimeDiagnostic], None] | None,
+    events: EventSink,
     kind: str,
     message: str,
     detail: Mapping[str, object] | None = None,
 ) -> None:
-    if on_diagnostic is None:
-        return
-    on_diagnostic(RuntimeDiagnostic(kind=kind, message=message, detail=detail or {}))
+    emit_event(
+        events,
+        RuntimeDiagnostic(kind=kind, message=message, detail=detail or {}),
+    )

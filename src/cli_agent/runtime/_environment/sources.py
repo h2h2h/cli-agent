@@ -12,7 +12,6 @@ from collections.abc import Callable, Iterable
 from typing import Protocol, runtime_checkable
 
 from cli_agent.runtime._backend import (
-    _BackendWorkspace,
     _FilesystemExecution,
     _ShellExecutionRequest,
     _ToolBinding,
@@ -21,6 +20,7 @@ from cli_agent.runtime._backend import (
 )
 from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._capability.deployment import ToolExecutor
+from cli_agent.runtime._capability.overlay import CapabilityOverlay
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._capability.tools.grammar import parse_tool_command
 from cli_agent.runtime._environment.handlers.base import (
@@ -37,6 +37,7 @@ from cli_agent.runtime._environment.handlers.files import (
     parse_files_command,
 )
 from cli_agent.runtime._execution import ExecutionHandle
+from cli_agent.runtime._workspace import Workspace
 
 _ParallelSafety = bool | Callable[[ShellParseResult], bool]
 _Preparer = Callable[[_ExecutionRequest, _CommandContext], ExecutionHandle]
@@ -132,9 +133,11 @@ class _FileSource:
         self,
         filesystem: _WorkspaceFilesystem | None = None,
         mark_dirty: Callable[[str], None] | None = None,
+        overlay: CapabilityOverlay | None = None,
     ) -> None:
         self._filesystem = filesystem
         self._mark_dirty = mark_dirty
+        self._overlay = overlay
 
     def parallel_safe(self, command: ShellParseResult) -> bool:
         del command
@@ -168,7 +171,7 @@ class _FileSource:
                 success=False,
             )
         if facts.operation == "write":
-            return _FilesystemExecution(
+            execution = _FilesystemExecution(
                 _write_operation(
                     filesystem,
                     facts.path,
@@ -177,11 +180,12 @@ class _FileSource:
                     self._mark_dirty,
                 )
             )
+            return self._wrap(facts.path, context, execution)
         try:
             edits = parse_edit_payload(stdin)
         except ValueError as exc:
             return _text_execution(f"{exc}\n", success=False)
-        return _FilesystemExecution(
+        execution = _FilesystemExecution(
             _edit_operation(
                 filesystem,
                 facts.path,
@@ -190,18 +194,33 @@ class _FileSource:
                 self._mark_dirty,
             )
         )
+        return self._wrap(facts.path, context, execution)
+
+    def _wrap(
+        self,
+        path: str,
+        context: _CommandContext,
+        execution: ExecutionHandle,
+    ) -> ExecutionHandle:
+        overlay = self._overlay
+        filesystem = self._filesystem
+        if overlay is None or filesystem is None:
+            return execution
+        resolved = filesystem.resolve(path, context.cwd)
+        return overlay.wrap_file(resolved.path, execution)
 
 
 class _ShellSource:
-    """The ordinary command fallback routed to the Backend Workspace."""
+    """The ordinary command fallback routed through the Workspace."""
 
     name = None
     isolated = True
 
     def __init__(
         self,
-        backend: _BackendWorkspace | None = None,
+        workspace: Workspace,
         *,
+        overlay: CapabilityOverlay | None = None,
         parallel_commands: frozenset[str] = frozenset(),
     ) -> None:
         invalid = sorted(
@@ -213,7 +232,8 @@ class _ShellSource:
             raise ValueError(
                 "parallel Shell command names must be non-empty executable basenames"
             )
-        self._backend = backend
+        self._workspace = workspace
+        self._overlay = overlay
         self._parallel_commands = parallel_commands
 
     def parallel_safe(self, command: ShellParseResult) -> bool:
@@ -230,17 +250,22 @@ class _ShellSource:
         request: _ExecutionRequest,
         context: _CommandContext,
     ) -> ExecutionHandle:
-        backend = self._backend
-        if backend is None:
-            raise RuntimeError("Shell source requires a Backend Workspace")
         stdin = request.stdin
-        return backend.prepare_shell(
+        execution = self._workspace.prepare_shell(
             _ShellExecutionRequest(
                 command=request.command,
                 cwd=str(context.cwd),
                 environment=context.environment,
                 input_data=stdin.encode("utf-8") if stdin is not None else None,
             )
+        )
+        overlay = self._overlay
+        if overlay is None:
+            return execution
+        return overlay.wrap_shell(
+            request.command,
+            str(context.cwd),
+            execution,
         )
 
 

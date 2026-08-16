@@ -4,11 +4,13 @@ import sys
 from pathlib import Path
 
 import pytest
+from host_fakes import _environment_kernel
+from workspace_fakes import _kernel_workspace
 
+from cli_agent._adapters.local.view import _LocalCapabilityView
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -29,7 +31,9 @@ from cli_agent.runtime._execution import (
 )
 
 
-def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> None:
+def test_router_prefers_custom_registry_and_keeps_process_choice_private(
+    tmp_path: Path,
+) -> None:
     def prepare_cli_read(command, context):
         del command, context
 
@@ -54,7 +58,10 @@ def test_router_prefers_custom_registry_and_keeps_process_choice_private() -> No
         )
     )
     router = _CommandRouter(
-        shell_source=_ShellSource(parallel_commands=frozenset({"cat"})),
+        shell_source=_ShellSource(
+            _kernel_workspace(tmp_path),
+            parallel_commands=frozenset({"cat"}),
+        ),
         sources=registry,
     )
 
@@ -82,7 +89,7 @@ def test_cd_is_a_session_persistent_custom_command(tmp_path: Path) -> None:
     async def scenario() -> None:
         child = tmp_path / "child"
         child.mkdir()
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             changed = _output(await _exec(kernel, "cd child"))
             pwd = _output(await _exec(kernel, "pwd"))
@@ -109,8 +116,8 @@ def test_parallel_shell_batch_respects_serial_custom_barrier(
         second_started = tmp_path / "second-started"
         second_release = tmp_path / "second-release"
         observed = tmp_path / "observed"
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             queue_limit=4,
             parallel_limit=2,
             parallel_commands=frozenset({Path(sys.executable).name}),
@@ -178,11 +185,11 @@ def test_files_command_resolves_to_custom_route_and_is_serial(
     (repertoire / "tools").mkdir(parents=True)
     lower = repertoire / "tools" / "calc.py"
     lower.write_text("LOWER = 1\n", encoding="utf-8")
-    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path, backend=_LocalBackendWorkspace(tmp_path, {}, view)
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path, _LocalBackendWorkspace(tmp_path, {}))
         )
         try:
             registered = kernel._router._sources.resolve(
@@ -233,8 +240,8 @@ def test_files_command_cannot_be_silently_overridden(tmp_path: Path) -> None:
         return _InlineExecution(execute)
 
     with pytest.raises(ValueError, match="already registered"):
-        EnvironmentKernel(
-            tmp_path,
+        _environment_kernel(
+            _kernel_workspace(tmp_path),
             custom_sources=(
                 (
                     "files",
@@ -261,7 +268,7 @@ def test_files_head_is_not_matched_by_path_qualified_commands(
     tmp_path: Path,
     raw: str,
 ) -> None:
-    kernel = EnvironmentKernel(tmp_path)
+    kernel = _environment_kernel(_kernel_workspace(tmp_path))
 
     resolved = kernel._router._sources.resolve(parse_shell_ast(raw))
 
@@ -285,7 +292,7 @@ def test_malformed_files_forms_fail_on_files_route_not_shell(
     raw: str,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             snapshot = _output(await _exec(kernel, raw))
             assert snapshot["status"] == "failed"

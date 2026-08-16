@@ -19,25 +19,22 @@ from __future__ import annotations
 
 import asyncio
 import weakref
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from cli_agent.runtime._backend.local.backend import _LocalBackendWorkspace
-from cli_agent.runtime._backend.local.executor import _LocalToolExecutor
-from cli_agent.runtime._backend.local.mcp_runtime import discover_servers
-from cli_agent.runtime._backend.local.tool_runtime import (
+from cli_agent._adapters.local.tool_runtime import (
+    _LocalToolRuntime,
     effective_requirements,
     ensure_tool_runtime,
     worker_template,
 )
-from cli_agent.runtime._backend.local.view import _LocalCapabilityView
 from cli_agent.runtime._capability.deployment import (
     DEPLOYMENT_MANIFEST,
     DEPLOYMENT_SCHEMA_VERSION,
     TOOL_RUNTIME_DIRECTORY,
     DeploymentSnapshot,
-    ToolExecutor,
+    ToolRuntimeSnapshot,
     _DeploymentManifest,
     commit_manifest,
     publish_domains,
@@ -45,25 +42,21 @@ from cli_agent.runtime._capability.deployment import (
     volume_path,
 )
 from cli_agent.runtime._capability.facts import _FilesystemError
-from cli_agent.runtime._capability.mcp.facts import (
-    MCPServerConfig,
-    _MCPServerFacts,
-)
 from cli_agent.runtime._capability.mcp.stubs import materialize_stubs
 from cli_agent.runtime._capability.projections import render_catalog_indexes
-from cli_agent.runtime._capability.source_view import _LogicalCapabilityView
 from cli_agent.runtime._capability.workspace import _ensure_real_directory
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.host import NULL_EVENTS, EventSink, emit_event
 
 if TYPE_CHECKING:
-    from cli_agent.runtime._capability.provider import CapabilitySnapshot
+    from cli_agent.runtime._capability.snapshot import CapabilitySnapshot
     from cli_agent.runtime._workspace import Workspace
 
 _WORKER_FILENAME = "worker.py"
 _EFFECTIVE_REQUIREMENTS = "effective-requirements.txt"
 _DEPLOY_LOCKS: weakref.WeakKeyDictionary[
     asyncio.AbstractEventLoop,
-    dict[Path, asyncio.Lock],
+    dict[str, asyncio.Lock],
 ] = weakref.WeakKeyDictionary()
 
 
@@ -73,120 +66,12 @@ class _LocalCapabilityDeployment:
     def __init__(
         self,
         *,
-        state_root: Path,
-        repertoire: Path,
-        volume: str,
-        base_environment: Callable[[], Mapping[str, str]],
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+        events: EventSink = NULL_EVENTS,
     ) -> None:
-        self._state_root = state_root
-        self._repertoire = repertoire
-        self._volume = volume
-        self._base_environment = base_environment
-        self._on_diagnostic = on_diagnostic
+        self._events = events
         self._manifest: _DeploymentManifest | None = None
         self._manifest_loaded = False
         self._realized: dict[str, str] = {}
-        self._deployment: DeploymentSnapshot | None = None
-
-    def executor(
-        self,
-        workspace: Workspace,
-        *,
-        revision: str,
-    ) -> ToolExecutor:
-        """Return the ToolExecutor bound to the latest reconciled deployment.
-
-        The executor validates the active deployment before every Tool
-        execution; a Runtime-open reconcile failure is stored as an
-        incomplete deployment so Tool runs fail classified instead of
-        running a stale worker.
-        """
-
-        local_backend = workspace.backend
-        if not isinstance(local_backend, _LocalBackendWorkspace):
-            raise ValueError(
-                "Local ToolExecutor requires a Local Backend Workspace",
-            )
-        deployment = self._deployment or DeploymentSnapshot(
-            workspace_id=workspace.id,
-            revision=revision,
-            layout_version=DEPLOYMENT_SCHEMA_VERSION,
-            complete=False,
-            error="Tool environment is unavailable",
-        )
-        return _LocalToolExecutor(
-            local_backend,
-            workspace_id=workspace.id,
-            revision=revision,
-            deployment=deployment,
-        )
-
-    async def attach(
-        self,
-        workspace: Workspace,
-    ) -> _LogicalCapabilityView:
-        """Materialize and bind the Local Capability View (idempotent).
-
-        Attaching fills View gaps and removes stale lower links without
-        disturbing Workspace-owned upper files or whiteouts, then binds the
-        View to the Backend Workspace so filesystem copy-up and Shell
-        mutation preparation observe capability mutations.
-        """
-
-        view = _LocalCapabilityView.materialize(
-            state_root=self._state_root,
-            repertoire=self._repertoire,
-        )
-        local_backend = workspace.backend
-        if not isinstance(local_backend, _LocalBackendWorkspace):
-            raise ValueError(
-                "Local deployment requires a Local Backend Workspace",
-            )
-        local_backend._bind_capability_view(view)
-        return view
-
-    async def discover_mcp(
-        self,
-        configs: tuple[MCPServerConfig, ...],
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
-    ) -> tuple[_MCPServerFacts, ...]:
-        """Discover Workspace MCP servers from the Local execution context."""
-
-        return await discover_servers(
-            configs,
-            self._base_environment(),
-            on_diagnostic or self._on_diagnostic,
-        )
-
-    async def materialize_stubs(
-        self,
-        workspace: Workspace,
-        configs: tuple[MCPServerConfig, ...],
-        facts: tuple[_MCPServerFacts, ...],
-    ) -> None:
-        """Project generated MCP stubs and the invocation binding.
-
-        Unchanged stub and binding domains are skipped via the completion
-        manifest. A binding materialization failure keeps the previous
-        deployment in place, emits one ``mcp.binding_failed`` diagnostic,
-        and skips stub projection for this round.
-        """
-
-        async with self._deployment_lock():
-            manifest = await self._load_manifest(workspace)
-            realized = self._realized_digests(manifest)
-            realized, _ = await materialize_stubs(
-                filesystem=workspace.filesystem,
-                volume=self._volume,
-                workspace_id=workspace.id,
-                configs=configs,
-                facts=facts,
-                manifest=manifest,
-                realized=realized,
-                on_diagnostic=self._on_diagnostic,
-            )
-            self._realized = realized
 
     async def reconcile(
         self,
@@ -204,11 +89,23 @@ class _LocalCapabilityDeployment:
         manifest is only rewritten after every domain materialized.
         """
 
-        async with self._deployment_lock():
+        volume = workspace.deployment_volume
+        state_root = Path(workspace.root) / volume
+        async with self._deployment_lock(workspace.id):
             manifest = await self._load_manifest(workspace)
             realized = self._realized_digests(manifest)
+            realized, _ = await materialize_stubs(
+                filesystem=workspace.filesystem,
+                volume=volume,
+                workspace_id=workspace.id,
+                configs=snapshot.mcp_servers,
+                facts=snapshot.mcp_facts,
+                manifest=manifest,
+                realized=realized,
+                events=self._events,
+            )
             indexes = {
-                volume_path(self._volume, key): content
+                volume_path(volume, key): content
                 for key, content in render_catalog_indexes(
                     snapshot=snapshot,
                 ).items()
@@ -224,7 +121,7 @@ class _LocalCapabilityDeployment:
             runtime = None
             error: str | None = None
             try:
-                tool_root = self._state_root / TOOL_RUNTIME_DIRECTORY
+                tool_root = state_root / TOOL_RUNTIME_DIRECTORY
                 _ensure_real_directory(tool_root, label="Tool environment path")
                 requirements = await self._read_requirements(workspace)
                 effective = effective_requirements(requirements)
@@ -232,14 +129,14 @@ class _LocalCapabilityDeployment:
                 tool_domains = {
                     "worker": {
                         volume_path(
-                            self._volume,
+                            volume,
                             TOOL_RUNTIME_DIRECTORY,
                             _WORKER_FILENAME,
                         ): worker,
                     },
                     "requirements": {
                         volume_path(
-                            self._volume,
+                            volume,
                             TOOL_RUNTIME_DIRECTORY,
                             _EFFECTIVE_REQUIREMENTS,
                         ): effective,
@@ -254,7 +151,7 @@ class _LocalCapabilityDeployment:
                 )
                 runtime = await ensure_tool_runtime(
                     tool_root,
-                    tools_directory=self._state_root / "tools",
+                    tools_directory=state_root / "tools",
                     effective_content=effective,
                 )
             except asyncio.CancelledError:
@@ -268,39 +165,32 @@ class _LocalCapabilityDeployment:
                     or (runtime.error if runtime is not None else None)
                     or "Tool environment is unavailable"
                 )
-                if runtime is not None:
-                    local_backend = workspace.backend
-                    if isinstance(local_backend, _LocalBackendWorkspace):
-                        local_backend._attach_tool_runtime(runtime)
                 snapshot_result = DeploymentSnapshot(
                     workspace_id=workspace.id,
                     revision=snapshot.revision,
                     layout_version=DEPLOYMENT_SCHEMA_VERSION,
                     complete=False,
                     error=reason,
+                    tool_runtime=_local_runtime_snapshot(runtime, reason),
                 )
-                self._deployment = snapshot_result
                 return snapshot_result
 
             await commit_manifest(
                 workspace.filesystem,
-                self._volume,
+                volume,
                 workspace_id=workspace.id,
                 revision=snapshot.revision,
                 realized=realized,
                 previous=manifest,
             )
-            local_backend = workspace.backend
-            if isinstance(local_backend, _LocalBackendWorkspace):
-                local_backend._attach_tool_runtime(runtime)
             snapshot_result = DeploymentSnapshot(
                 workspace_id=workspace.id,
                 revision=snapshot.revision,
                 layout_version=DEPLOYMENT_SCHEMA_VERSION,
                 complete=True,
                 error=None,
+                tool_runtime=_local_runtime_snapshot(runtime, None),
             )
-            self._deployment = snapshot_result
             return snapshot_result
 
     async def _load_manifest(
@@ -312,7 +202,7 @@ class _LocalCapabilityDeployment:
         if not self._manifest_loaded:
             self._manifest = await read_manifest(
                 workspace.filesystem,
-                volume_path(self._volume, DEPLOYMENT_MANIFEST),
+                volume_path(workspace.deployment_volume, DEPLOYMENT_MANIFEST),
             )
             self._manifest_loaded = True
         return self._manifest
@@ -332,17 +222,21 @@ class _LocalCapabilityDeployment:
 
         try:
             return await workspace.filesystem.read(
-                volume_path(self._volume, "tools", "requirements.txt"),
+                volume_path(
+                    workspace.deployment_volume,
+                    "tools",
+                    "requirements.txt",
+                ),
             )
         except _FilesystemError:
             return b""
 
-    def _deployment_lock(self) -> asyncio.Lock:
+    def _deployment_lock(self, workspace_id: str) -> asyncio.Lock:
         """Return the per-Workspace deployment lock for this event loop."""
 
         loop = asyncio.get_running_loop()
         locks = _DEPLOY_LOCKS.setdefault(loop, {})
-        return locks.setdefault(self._state_root, asyncio.Lock())
+        return locks.setdefault(workspace_id, asyncio.Lock())
 
     def _emit(
         self,
@@ -350,8 +244,32 @@ class _LocalCapabilityDeployment:
         message: str,
         detail: Mapping[str, object] | None = None,
     ) -> None:
-        if self._on_diagnostic is None:
-            return
-        self._on_diagnostic(
+        emit_event(
+            self._events,
             RuntimeDiagnostic(kind=kind, message=message, detail=detail or {}),
         )
+
+
+def _local_runtime_snapshot(
+    runtime: _LocalToolRuntime | None,
+    error: str | None,
+) -> ToolRuntimeSnapshot:
+    if runtime is None:
+        return ToolRuntimeSnapshot(
+            python=None,
+            worker=None,
+            tools_directory=None,
+            binding_directory=None,
+            error=error,
+        )
+    return ToolRuntimeSnapshot(
+        python=str(runtime.python) if runtime.python is not None else None,
+        worker=str(runtime.worker) if runtime.worker is not None else None,
+        tools_directory=(
+            str(runtime.tools_directory)
+            if runtime.tools_directory is not None
+            else None
+        ),
+        binding_directory=str(runtime.root),
+        error=error or runtime.error,
+    )

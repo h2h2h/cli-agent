@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cli_agent.runtime._capability.provider import CapabilitySnapshot
+from cli_agent.runtime._capability.snapshot import CapabilitySnapshot
 from cli_agent.runtime._project_instructions import _ProjectInstructions
 from cli_agent.runtime.model import SystemMessage
 

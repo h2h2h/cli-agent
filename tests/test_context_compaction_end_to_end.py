@@ -15,9 +15,11 @@ import pytest
 from interaction_fakes import _ScriptedInteraction
 
 from cli_agent.errors.context import ContextExhaustedError
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
+    CallbackEventSink,
     ContextPolicy,
     ModelCompletion,
     ModelEvent,
@@ -411,12 +413,12 @@ async def _open_runtime(
     context_policy: ContextPolicy,
     received: list[RuntimeDiagnostic] | None,
 ) -> AgentRuntime:
-    return await AgentRuntime.open(
+    return await open_default_runtime(
         workspace=tmp_path,
         provider=provider,
-        user_interaction=_user_interaction,
+        interaction=_user_interaction,
         context_policy=context_policy,
-        on_diagnostic=received.append if received is not None else None,
+        events=CallbackEventSink(received.append) if received is not None else None,
     )
 
 

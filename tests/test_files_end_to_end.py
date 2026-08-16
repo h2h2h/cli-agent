@@ -8,12 +8,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+from host_fakes import _environment_kernel
 from policy_fakes import _AllowAllPolicy
+from workspace_fakes import _kernel_workspace
 
+from cli_agent._adapters.local.view import _LocalCapabilityView
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -32,7 +34,7 @@ def test_files_write_execution_snapshot_is_fully_observable(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             snapshot = _output(
                 await _exec(
@@ -62,7 +64,7 @@ def test_files_edit_change_is_visible_in_git_diff(tmp_path: Path) -> None:
     _git_init(tmp_path)
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             edited = _output(
                 await _exec(
@@ -98,9 +100,8 @@ def test_files_write_in_view_under_policy_never_pierces_repertoire(
     view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path,
-            backend=_LocalBackendWorkspace(tmp_path, {}, view),
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path, _LocalBackendWorkspace(tmp_path, {})),
             policy=_AllowAllPolicy(),
         )
         try:
@@ -153,7 +154,7 @@ def test_files_edit_rejection_leaves_file_untouched_through_kernel(
     target.write_text("abab\n", encoding="utf-8")
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             result = _output(
                 await _exec(
@@ -174,7 +175,7 @@ def test_files_edit_rejection_leaves_file_untouched_through_kernel(
 
 def test_files_write_without_stdin_fails_through_kernel(tmp_path: Path) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             result = _output(await _exec(kernel, "files write missing.txt"))
             assert result["status"] == "failed"
@@ -191,7 +192,7 @@ def test_files_write_content_may_contain_heredoc_markers(tmp_path: Path) -> None
     content = "hello\nEOF\nworld\nEDI\n"
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             written = _output(
                 await _exec(kernel, "files write data.txt", stdin=content)
@@ -211,8 +212,8 @@ def test_files_command_waits_behind_serial_barrier(tmp_path: Path) -> None:
     written = tmp_path / "behind.txt"
 
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             parallel_commands=frozenset({Path(sys.executable).name}),
             parallel_limit=1,
         )

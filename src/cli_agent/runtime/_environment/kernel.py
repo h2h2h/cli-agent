@@ -3,25 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import suppress
-from pathlib import Path
 from uuid import uuid4
 
 from cli_agent.errors import error_boundary
-from cli_agent.runtime._backend import _BackendWorkspace
-from cli_agent.runtime._backend.local import _LocalBackendWorkspace
 from cli_agent.runtime._capability.command_parser import (
     ShellParseResult,
     parse_shell_ast,
 )
 from cli_agent.runtime._capability.deployment import ToolExecutor
 from cli_agent.runtime._capability.library.catalog import _LibraryCatalog
+from cli_agent.runtime._capability.overlay import CapabilityOverlay
 from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
 from cli_agent.runtime._environment.handlers.base import _ExecutionRequest
 from cli_agent.runtime._environment.interaction import (
     UserAnswer,
-    UserInteraction,
     UserOption,
     UserQuestion,
 )
@@ -51,7 +48,9 @@ from cli_agent.runtime._environment.sources import (
     _SourceRegistry,
     _ToolSource,
 )
+from cli_agent.runtime._workspace import Workspace
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.host import HostServices, emit_event
 from cli_agent.runtime.model import ToolCall, ToolResult
 
 _ALLOW_ONCE_OPTIONS = (
@@ -65,9 +64,8 @@ class EnvironmentKernel:
 
     def __init__(
         self,
-        workspace: str | Path,
+        workspace: Workspace,
         *,
-        backend: _BackendWorkspace | None = None,
         base_env: Mapping[str, str] | None = None,
         policy: ExecutionPolicy | None = None,
         chunk_limit: int = 2_000,
@@ -76,34 +74,31 @@ class EnvironmentKernel:
         parallel_limit: int = _DEFAULT_PARALLEL_LIMIT,
         parallel_commands: frozenset[str] | None = None,
         custom_sources: Iterable[tuple[str, ExecutionSource]] = (),
-        user_interaction: UserInteraction | None = None,
+        host: HostServices,
         session_id: str | None = None,
         library_catalog: _LibraryCatalog | None = None,
         tool_catalog: _ToolCatalog | None = None,
         tool_executor: ToolExecutor | None = None,
-        on_diagnostic: Callable[[RuntimeDiagnostic], None] | None = None,
+        capability_overlay: CapabilityOverlay | None = None,
     ) -> None:
-        host_workspace = Path(workspace).resolve()
-        if backend is None:
-            backend = _LocalBackendWorkspace(host_workspace, {})
-        self._backend = backend
-        self._workspace = backend.root
+        self._workspace = workspace
         self._policy = policy
-        self._user_interaction = user_interaction
+        self._user_interaction = host.interaction
         self._session_id = session_id
-        self._on_diagnostic = on_diagnostic
+        self._events = host.events
         self._library_catalog = library_catalog
-        entries = list(_builtin_inline_sources(backend.filesystem))
+        entries = list(_builtin_inline_sources(workspace.filesystem))
         entries.append(
             (
                 "files",
                 _FileSource(
-                    backend.filesystem,
+                    workspace.filesystem,
                     mark_dirty=(
                         library_catalog.mark_path_dirty
                         if library_catalog is not None
                         else None
                     ),
+                    overlay=capability_overlay,
                 ),
             )
         )
@@ -111,13 +106,14 @@ class EnvironmentKernel:
         entries.extend(custom_sources)
         self._router = _CommandRouter(
             shell_source=_ShellSource(
-                backend,
+                workspace,
+                overlay=capability_overlay,
                 parallel_commands=frozenset(parallel_commands or ()),
             ),
             sources=_SourceRegistry(entries),
         )
         self._env = dict(base_env or {})
-        self._cwd = backend.root
+        self._cwd = workspace.root
         self._executions: dict[str, ExecutionRecord] = {}
         self._interaction_tasks: set[asyncio.Task[object]] = set()
         self._closed = False
@@ -148,7 +144,7 @@ class EnvironmentKernel:
 
         with error_boundary(
             "kernel.dispatch",
-            on_diagnostic=self._boundary_diagnostic,
+            sink=self._boundary_diagnostic,
         ):
             return await self._dispatch(call)
 
@@ -200,7 +196,7 @@ class EnvironmentKernel:
 
         with error_boundary(
             "kernel.dispatch",
-            on_diagnostic=self._boundary_diagnostic,
+            sink=self._boundary_diagnostic,
         ):
             return await self._dispatch_batch(calls)
 
@@ -507,14 +503,13 @@ class EnvironmentKernel:
     ) -> None:
         """Emit one structured Host notice when a callback is configured."""
 
-        if self._on_diagnostic is None:
-            return
-        self._on_diagnostic(
+        emit_event(
+            self._events,
             RuntimeDiagnostic(
                 kind=kind,
                 message=message,
                 detail=detail or {},
-            )
+            ),
         )
 
 

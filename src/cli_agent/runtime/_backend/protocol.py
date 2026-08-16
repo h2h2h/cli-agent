@@ -31,19 +31,19 @@ from cli_agent.runtime._execution import ExecutionHandle
 
 
 @runtime_checkable
-class _Backend(Protocol):
+class BackendFactory(Protocol):
     """Open one Backend Workspace from Host-side sources."""
 
     async def open_workspace(
         self,
         source: _WorkspaceSource,
-    ) -> _BackendWorkspace:
+    ) -> Backend:
         """Open a live Workspace; any open failure must fail closed."""
         ...
 
 
 @runtime_checkable
-class _BackendWorkspace(Protocol):
+class Backend(Protocol):
     """One live Runtime-owned Workspace shared by every Session Kernel."""
 
     @property

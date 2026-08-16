@@ -17,12 +17,13 @@ from pathlib import Path
 import pytest
 from interaction_fakes import _ScriptedInteraction
 
+import cli_agent._workspaces as workspace_module
 import cli_agent.runtime._capability.library.catalog as library_module
-import cli_agent.runtime._workspace as workspace_module
 import cli_agent.runtime.runtime as runtime_module
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
-    AgentRuntime,
     AssistantMessage,
+    CallbackEventSink,
     ContextPolicy,
     ModelCompletion,
     RuntimeClosedError,
@@ -46,22 +47,20 @@ class _TrackingEnvironmentKernel:
 
     def __init__(
         self,
-        workspace: str | Path,
+        workspace: object,
         *,
-        backend: object,
         base_env: Mapping[str, str],
         policy: object,
         library_catalog: object,
         tool_catalog: object,
         tool_executor: object,
-        user_interaction: object,
+        capability_overlay: object,
+        host: object,
         session_id: str,
         parallel_commands: frozenset[str],
-        on_diagnostic: object | None,
     ) -> None:
-        del workspace, backend, base_env, policy, library_catalog, tool_catalog
-        del tool_executor, user_interaction, session_id, parallel_commands
-        del on_diagnostic
+        del workspace, base_env, policy, library_catalog, tool_catalog
+        del tool_executor, capability_overlay, host, session_id, parallel_commands
         self.close_count = 0
         self.events: list[str] = []
         self.instances.append(self)
@@ -99,8 +98,8 @@ def test_runtime_close_follows_rfc_close_order(tmp_path: Path, monkeypatch) -> N
     )
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             context_policy=_context_policy,
@@ -109,8 +108,8 @@ def test_runtime_close_follows_rfc_close_order(tmp_path: Path, monkeypatch) -> N
         async for _ in runtime.run_turn(UserMessage.text("A")):
             pass
         order: list[str] = []
-        library = runtime._resources.snapshot.library
-        backend = runtime._resources.backend
+        library = runtime._resources.capabilities.snapshot.library
+        backend = runtime._resources.workspace.backend
 
         async def record_kernel_close() -> None:
             order.append("kernel.close")
@@ -163,20 +162,20 @@ def test_kernel_close_failure_does_not_leak_resources(
     received: list[RuntimeDiagnostic] = []
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             context_policy=_context_policy,
-            on_diagnostic=received.append,
+            events=CallbackEventSink(received.append),
         )
         await runtime.new_session()
         async for _ in runtime.run_turn(UserMessage.text("A")):
             pass
 
         closed: list[str] = []
-        library = runtime._resources.snapshot.library
-        backend = runtime._resources.backend
+        library = runtime._resources.capabilities.snapshot.library
+        backend = runtime._resources.workspace.backend
 
         async def failing_kernel_close() -> None:
             raise RuntimeError("kernel close exploded")
@@ -213,8 +212,8 @@ def test_runtime_close_rejects_new_turns_and_stays_idempotent(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
@@ -247,8 +246,8 @@ def test_runtime_close_cancels_active_turn_before_closing_backend(
 
     async def scenario() -> None:
         provider = BlockingProvider()
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             context_policy=_context_policy,
@@ -269,7 +268,7 @@ def test_runtime_close_cancels_active_turn_before_closing_backend(
 
         assert events == []
         assert runtime.closed
-        assert runtime._resources.backend._closed
+        assert runtime._resources.workspace.backend._closed
 
     asyncio.run(scenario())
 
@@ -278,8 +277,8 @@ def test_runtime_close_from_turn_consumer_does_not_wait_on_itself(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(
                 script=((_completion(AssistantMessage.text("done")),),)
@@ -295,7 +294,7 @@ def test_runtime_close_from_turn_consumer_does_not_wait_on_itself(
             await anext(turn)
 
         assert runtime.closed
-        assert runtime._resources.backend._closed
+        assert runtime._resources.workspace.backend._closed
 
     asyncio.run(scenario())
 
@@ -307,24 +306,24 @@ def test_flush_failure_is_visible_and_runtime_stays_closed(
     received: list[RuntimeDiagnostic] = []
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
-            on_diagnostic=received.append,
+            events=CallbackEventSink(received.append),
         )
 
         async def fail_flush() -> None:
             raise RuntimeError("flush exploded")
 
-        monkeypatch.setattr(runtime._resources.backend, "flush", fail_flush)
+        monkeypatch.setattr(runtime._resources.workspace, "flush", fail_flush)
 
         with pytest.raises(RuntimeError, match="flush exploded"):
             await runtime.close()
 
         assert runtime.closed
-        assert runtime._resources.backend._closed
+        assert runtime._resources.workspace.backend._closed
         assert any(diagnostic.kind == "runtime.close_failed" for diagnostic in received)
         await runtime.close()
 
@@ -335,18 +334,18 @@ def test_close_failure_is_visible_via_diagnostic(tmp_path: Path, monkeypatch) ->
     received: list[RuntimeDiagnostic] = []
 
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
-            on_diagnostic=received.append,
+            events=CallbackEventSink(received.append),
         )
 
         async def fail_close() -> None:
             raise RuntimeError("workspace close exploded")
 
-        monkeypatch.setattr(runtime._resources.backend, "close", fail_close)
+        monkeypatch.setattr(runtime._resources.workspace, "close", fail_close)
 
         with pytest.raises(RuntimeError, match="workspace close exploded"):
             await runtime.close()
@@ -385,8 +384,8 @@ def test_runtime_close_terminates_running_executions(tmp_path: Path) -> None:
                 (_completion(AssistantMessage.text("done")),),
             )
         )
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=provider,
             context_policy=_context_policy,
@@ -397,11 +396,6 @@ def test_runtime_close_terminates_running_executions(tmp_path: Path) -> None:
 
         kernel = runtime._binding.kernel
         state = next(iter(kernel._executions.values()))
-        for _ in range(100):
-            prepared = state.handle
-            if prepared is not None and prepared._process._process is not None:
-                break
-            await asyncio.sleep(0.02)
         assert state.status == "running"
 
         await runtime.close()
@@ -414,13 +408,13 @@ def test_runtime_close_terminates_running_executions(tmp_path: Path) -> None:
 
 def test_runtime_close_cancels_library_worker(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime = await AgentRuntime.open(
-            user_interaction=_user_interaction,
+        runtime = await open_default_runtime(
+            interaction=_user_interaction,
             workspace=tmp_path,
             provider=ScriptedModelProvider(script=()),
             context_policy=_context_policy,
         )
-        catalog = runtime._resources.snapshot.library
+        catalog = runtime._resources.capabilities.snapshot.library
         assert catalog._worker_task is not None
 
         await runtime.close()
@@ -450,17 +444,17 @@ def test_worker_start_failure_rolls_back_opened_resources(
     monkeypatch.setattr(workspace_module, "_LocalBackend", _RecordingBackend)
 
     def fail_start(
-        self: object, provider: object, on_diagnostic: object = None
+        self: object, provider: object, events: object = None
     ) -> None:
-        del self, provider, on_diagnostic
+        del self, provider, events
         raise RuntimeError("worker start exploded")
 
     monkeypatch.setattr(library_module._LibraryCatalog, "start", fail_start)
 
     with pytest.raises(RuntimeError, match="worker start exploded"):
         asyncio.run(
-            AgentRuntime.open(
-                user_interaction=_user_interaction,
+            open_default_runtime(
+                interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
                 context_policy=_context_policy,
@@ -489,8 +483,8 @@ def test_backend_open_failure_never_creates_local_execution(
 
     with pytest.raises(ValueError, match="backend constraint failed"):
         asyncio.run(
-            AgentRuntime.open(
-                user_interaction=_user_interaction,
+            open_default_runtime(
+                interaction=_user_interaction,
                 workspace=tmp_path,
                 provider=ScriptedModelProvider(script=()),
                 context_policy=_context_policy,

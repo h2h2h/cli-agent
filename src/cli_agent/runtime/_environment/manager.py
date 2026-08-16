@@ -123,7 +123,7 @@ class ExecutionManager:
         source = record.route.source
         isolate_context = source.isolated or record.route.parallel_safe
         context = _CommandContext(
-            workspace=session._workspace,
+            workspace=session._workspace.root,
             cwd=session._cwd,
             environment=dict(session._env) if isolate_context else session._env,
             set_cwd=None if isolate_context else session._set_cwd,

@@ -15,9 +15,9 @@ import os
 import shutil
 import stat
 import tempfile
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
 
 from cli_agent.runtime._backend.edit import _detect_line_ending, _split_bom, apply_edits
 from cli_agent.runtime._backend.facts import (
@@ -32,9 +32,6 @@ from cli_agent.runtime._backend.facts import (
     _ResolvedPath,
 )
 
-if TYPE_CHECKING:
-    from cli_agent.runtime._backend.local.view import _LocalCapabilityView
-
 
 def _noop() -> None:
     """Provide an always-open lifecycle gate for standalone filesystem tests."""
@@ -46,11 +43,9 @@ class _LocalWorkspaceFilesystem:
     def __init__(
         self,
         root: Path,
-        view_provider: Callable[[], _LocalCapabilityView | None] | None = None,
         ensure_open: Callable[[], None] | None = None,
     ) -> None:
         self._root = root
-        self._view_provider = view_provider or (lambda: None)
         self._ensure_open = ensure_open or _noop
 
     def resolve(self, path: str, cwd: str) -> _ResolvedPath:
@@ -159,14 +154,7 @@ class _LocalWorkspaceFilesystem:
         return _resolve_path(self._root, path)
 
     def _prepare_target(self, path: str) -> Path:
-        target = self._resolve(path)
-        view = self._view_provider()
-        if view is not None:
-            try:
-                view.prepare_path(target)
-            except ValueError as exc:
-                raise _FilesystemError("invalid_path", str(exc)) from exc
-        return target
+        return self._resolve(path)
 
 
 def _resolve_path(root: Path, path: str) -> Path:

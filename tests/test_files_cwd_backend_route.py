@@ -12,9 +12,12 @@ import posixpath
 from pathlib import Path
 from typing import Literal, cast
 
+from host_fakes import _environment_kernel
+from workspace_fakes import _kernel_workspace
+
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._backend import (
-    _BackendWorkspace,
+    Backend,
     _FileEdit,
     _FileEditRequest,
     _FileEditResult,
@@ -281,10 +284,10 @@ def test_kernel_uses_backend_root_for_files_and_default_cd(tmp_path: Path) -> No
             _FileMetadata(kind="directory", size=0, mtime_ns=0, mode=0o755)
         )
         backend = cast(
-            _BackendWorkspace,
+            Backend,
             _BackendWithDistinctRoot(filesystem),
         )
-        kernel = EnvironmentKernel(tmp_path, backend=backend)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path, backend))
         try:
             written = await _exec(
                 kernel,
@@ -338,7 +341,7 @@ def test_filesystem_execution_cancel_before_run_has_no_side_effects(
 
 def test_cd_and_files_see_shell_created_paths(tmp_path: Path) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
             created = await _exec(
                 kernel, "mkdir -p generated && echo data > generated/item.txt"

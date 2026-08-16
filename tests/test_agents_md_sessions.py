@@ -7,6 +7,7 @@ from pathlib import Path
 
 from interaction_fakes import _ScriptedInteraction
 
+from cli_agent.presets import open_default_runtime
 from cli_agent.runtime import (
     AgentRuntime,
     AssistantMessage,
@@ -37,10 +38,10 @@ async def _open_runtime(
     tmp_path: Path,
     provider: ScriptedModelProvider,
 ) -> AgentRuntime:
-    return await AgentRuntime.open(
+    return await open_default_runtime(
         workspace=tmp_path,
         provider=provider,
-        user_interaction=_user_interaction,
+        interaction=_user_interaction,
         context_policy=_context_policy,
     )
 

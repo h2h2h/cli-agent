@@ -1,6 +1,7 @@
 """Provider-neutral building blocks for the cli-agent Runtime."""
 
 from cli_agent.runtime._capability.command_parser import ShellParseResult
+from cli_agent.runtime._composition import RuntimeComponents, WorkspaceConfig
 from cli_agent.runtime._context import (
     ContextPolicy,
     SessionUsage,
@@ -18,6 +19,12 @@ from cli_agent.runtime._environment.policy import (
 )
 from cli_agent.runtime._syscalls import SyscallSchema
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
+from cli_agent.runtime.host import (
+    CallbackEventSink,
+    EventSink,
+    HostServices,
+    RuntimeEvent,
+)
 from cli_agent.runtime.model import (
     AssistantMessage,
     JSONValue,
@@ -47,7 +54,10 @@ __all__ = (
     "AssistantMessage",
     "ShellParseResult",
     "ContextPolicy",
+    "CallbackEventSink",
     "ExecutionPolicy",
+    "EventSink",
+    "HostServices",
     "JSONValue",
     "ModelCompletion",
     "ModelEvent",
@@ -59,7 +69,9 @@ __all__ = (
     "PolicyAction",
     "PolicyEvaluation",
     "RuntimeClosedError",
+    "RuntimeComponents",
     "RuntimeDiagnostic",
+    "RuntimeEvent",
     "ScriptedModelProvider",
     "SessionUsage",
     "SystemMessage",
@@ -75,4 +87,5 @@ __all__ = (
     "UserMessage",
     "UserOption",
     "UserQuestion",
+    "WorkspaceConfig",
 )

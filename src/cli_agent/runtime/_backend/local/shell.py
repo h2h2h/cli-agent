@@ -14,7 +14,7 @@ import signal
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from cli_agent.runtime._capability.command_parser import ShellParseResult
 from cli_agent.runtime._execution import (
@@ -24,9 +24,6 @@ from cli_agent.runtime._execution import (
     ExitStatus,
     _normalized_exit_status,
 )
-
-if TYPE_CHECKING:
-    from cli_agent.runtime._backend.local.view import _LocalCapabilityView
 
 _ProcessSpawner = Callable[[], Awaitable[asyncio.subprocess.Process]]
 
@@ -39,12 +36,8 @@ class _LocalShellExecution:
         command: ShellParseResult,
         cwd: Path,
         environment: Mapping[str, str],
-        mutation: _LocalCapabilityView | None,
         input_data: bytes | None = None,
     ) -> None:
-        self._command = command
-        self._cwd = cwd
-        self._mutation = mutation
         self._run_started = False
         self._kill_requested = False
         self._process = _ProcessExecution(
@@ -56,17 +49,9 @@ class _LocalShellExecution:
         if self._run_started:
             raise RuntimeError("ExecutionHandle.run called more than once")
         self._run_started = True
-        mutation = self._mutation
-        if mutation is None:
-            return await self._process.run(sink)
-        async with mutation.prepare_shell(
-            self._command,
-            self._cwd,
-            cancelled=lambda: self._kill_requested,
-        ) as prepared:
-            if not prepared:
-                return ExitStatus(_KILLED_BEFORE_START)
-            return await self._process.run(sink)
+        if self._kill_requested:
+            return ExitStatus(_KILLED_BEFORE_START)
+        return await self._process.run(sink)
 
     async def kill(self) -> None:
         self._kill_requested = True

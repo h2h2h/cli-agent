@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from workspace_fakes import _kernel_workspace
 
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment.handlers.base import (
@@ -88,10 +89,15 @@ def test_registry_rejects_duplicate_source_names() -> None:
         )
 
 
-def test_router_returns_source_and_parallel_safe_without_driver_fields() -> None:
+def test_router_returns_source_and_parallel_safe_without_driver_fields(
+    tmp_path: Path,
+) -> None:
     registry = _SourceRegistry(_builtin_inline_sources())
     router = _CommandRouter(
-        shell_source=_ShellSource(parallel_commands=frozenset({"cat"})),
+        shell_source=_ShellSource(
+            _kernel_workspace(tmp_path),
+            parallel_commands=frozenset({"cat"}),
+        ),
         sources=registry,
     )
 
@@ -112,10 +118,13 @@ def test_router_returns_source_and_parallel_safe_without_driver_fields() -> None
     )
 
 
-def test_router_resolve_has_no_policy_or_scheduler_dependencies() -> None:
+def test_router_resolve_has_no_policy_or_scheduler_dependencies(tmp_path: Path) -> None:
     registry = _SourceRegistry(_builtin_inline_sources())
     router = _CommandRouter(
-        shell_source=_ShellSource(parallel_commands=frozenset({"cat"})),
+        shell_source=_ShellSource(
+            _kernel_workspace(tmp_path),
+            parallel_commands=frozenset({"cat"}),
+        ),
         sources=registry,
     )
 

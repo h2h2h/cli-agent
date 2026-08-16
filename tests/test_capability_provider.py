@@ -14,15 +14,16 @@ import asyncio
 import hashlib
 import importlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from cli_agent.runtime._capability.provider import (
-    CAPABILITY_SCHEMA_VERSION,
-    CapabilityProvider,
-)
-from cli_agent.runtime._capability.source_view import _CapabilitySourceView
+from cli_agent.runtime import CallbackEventSink
+from cli_agent.runtime._capability.mcp.facts import MCPServerConfig, _MCPServerFacts
+from cli_agent.runtime._capability.provider import DefaultCapabilityProvider
+from cli_agent.runtime._capability.snapshot import CAPABILITY_SCHEMA_VERSION
+from cli_agent.runtime._capability.source_view import _HostCapabilitySource
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._project_instructions import _ProjectInstructions
 from cli_agent.runtime._system_message import assemble_system_message
@@ -36,6 +37,57 @@ _FORBIDDEN_MODULES = frozenset(
 )
 
 
+class _DiscoveryContext:
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self.backend = object()
+
+    @property
+    def root(self) -> str:
+        return str(self._root)
+
+    def execution_base_environment(self) -> Mapping[str, str]:
+        return {}
+
+    async def load_project_instructions(self) -> _ProjectInstructions | None:
+        path = self._root / "AGENTS.md"
+        if not path.is_file():
+            return None
+        return _ProjectInstructions(
+            source=str(path),
+            text=path.read_text(encoding="utf-8"),
+        )
+
+
+class _NoopMCPDiscovery:
+    async def discover(
+        self,
+        configs: tuple[MCPServerConfig, ...],
+        source: object,
+        environment: object,
+    ) -> tuple[_MCPServerFacts, ...]:
+        del configs, source, environment
+        return ()
+
+
+class _ProviderHarness:
+    def __init__(self, source: _HostCapabilitySource, root: Path) -> None:
+        self._provider = DefaultCapabilityProvider()
+        self._source = source
+        self._context = _DiscoveryContext(root)
+
+    async def discover(self):
+        return await self._provider.discover(
+            self._source,
+            mcp_discovery=_NoopMCPDiscovery(),
+            mcp_environment=self._context,
+            project_instructions=self._context,
+        )
+
+    def capture_events(self, callback: object) -> None:
+        self._provider._events = CallbackEventSink(callback)  # type: ignore[arg-type]
+
+
 def _provider(tmp_path: Path, *, workspace: Path | None = None):
     root = workspace if workspace is not None else tmp_path / "workspace"
     root.mkdir(exist_ok=True)
@@ -44,8 +96,8 @@ def _provider(tmp_path: Path, *, workspace: Path | None = None):
     for name in ("tools", "skills", "library", "_mcp"):
         (repertoire / name).mkdir(parents=True, exist_ok=True)
     (root / ".workspace" / "tools").mkdir(parents=True, exist_ok=True)
-    view = _CapabilitySourceView(upper_root=paths.state, repertoire=repertoire)
-    return CapabilityProvider(view=view, workspace=root), root, repertoire
+    view = _HostCapabilitySource(upper_root=paths.state, repertoire=repertoire)
+    return _ProviderHarness(view, root), root, repertoire
 
 
 def _tool(directory: Path, name: str, source: str) -> None:
@@ -220,8 +272,8 @@ def test_discovery_creates_no_files_or_processes(tmp_path: Path) -> None:
     (repertoire / "tools").mkdir(parents=True)
     _tool(repertoire / "tools", "calc", '"""Calc."""\nVALUE = 1\n')
 
-    view = _CapabilitySourceView(upper_root=paths.state, repertoire=repertoire)
-    provider = CapabilityProvider(view=view, workspace=root)
+    view = _HostCapabilitySource(upper_root=paths.state, repertoire=repertoire)
+    provider = _ProviderHarness(view, root)
 
     before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
     snapshot = asyncio.run(provider.discover())
@@ -266,7 +318,7 @@ def test_malformed_mcp_config_is_reported_and_skipped(tmp_path: Path) -> None:
         "{not json", encoding="utf-8"
     )
     received: list[object] = []
-    provider._on_diagnostic = received.append
+    provider.capture_events(received.append)
 
     snapshot = asyncio.run(provider.discover())
 

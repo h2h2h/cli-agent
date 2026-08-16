@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from cli_agent.runtime._backend import (
-    _BackendWorkspace,
+    Backend,
     _FileEdit,
     _FileEditRequest,
     _FileEditResult,
@@ -39,7 +39,7 @@ def test_open_exposes_resolved_host_root_as_backend_path(tmp_path: Path) -> None
     async def scenario() -> None:
         workspace = await _open_workspace(tmp_path)
 
-        assert isinstance(workspace, _BackendWorkspace)
+        assert isinstance(workspace, Backend)
         assert isinstance(workspace.filesystem, _LocalWorkspaceFilesystem)
         assert workspace.root == str(tmp_path.resolve())
 

@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from cli_agent._adapters.local.view import _LocalCapabilityView
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
 )
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment.handlers.base import (
@@ -197,7 +197,7 @@ def _write(
     view: _LocalCapabilityView | None = None,
 ) -> tuple[ExitStatus, _RecordedOutput]:
     output = _RecordedOutput()
-    backend = _LocalBackendWorkspace(cwd, {}, view)
+    backend = _LocalBackendWorkspace(cwd, {})
     execution = _FileSource(backend.filesystem).prepare(
         _ExecutionRequest(command=parse_shell_ast(command), stdin=stdin),
         _CommandContext(workspace=str(cwd), cwd=str(cwd), environment={}),

@@ -3,6 +3,9 @@ import shlex
 import sys
 from pathlib import Path
 
+from host_fakes import _environment_kernel
+from workspace_fakes import _kernel_workspace
+
 from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
@@ -38,12 +41,12 @@ def test_parser_reports_only_generic_shell_syntax_facts() -> None:
 
 def test_top_level_export_is_atomic_and_session_private(tmp_path: Path) -> None:
     async def scenario() -> None:
-        kernel_a = EnvironmentKernel(
-            tmp_path,
+        kernel_a = _environment_kernel(
+            _kernel_workspace(tmp_path),
             base_env={"BASE": "workspace"},
         )
-        kernel_b = EnvironmentKernel(
-            tmp_path,
+        kernel_b = _environment_kernel(
+            _kernel_workspace(tmp_path),
             base_env={"BASE": "workspace"},
         )
         try:
@@ -81,7 +84,7 @@ def test_export_uses_shell_fifo_and_queued_kill_prevents_mutation(
     async def scenario() -> None:
         started = tmp_path / "started"
         release = tmp_path / "release"
-        kernel = EnvironmentKernel(tmp_path, queue_limit=2)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path), queue_limit=2)
         try:
             running = _output(
                 await _exec(
@@ -126,8 +129,8 @@ def test_nested_export_uses_shell_while_custom_export_rejects_composition(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        kernel = EnvironmentKernel(
-            tmp_path,
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
             base_env={"BASE": "workspace"},
         )
         try:
@@ -153,7 +156,7 @@ def test_session_close_kills_queued_export_without_mutation(tmp_path: Path) -> N
     async def scenario() -> None:
         started = tmp_path / "close-started"
         release = tmp_path / "close-release"
-        kernel = EnvironmentKernel(tmp_path)
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
         await _exec(
             kernel,
             _blocking_command(started, release),

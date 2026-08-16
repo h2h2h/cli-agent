@@ -1,6 +1,6 @@
 """Local file-level Capability View materialized in the Workspace.
 
-Implements the logical ``_LogicalCapabilityView`` contract (``root``,
+Implements the logical ``CapabilitySource`` contract (``root``,
 ``inspect``, ``list``, ``read``, ``stat``) with Host file mechanics: exact
 lower symlinks, Workspace copy-up, persistent whiteouts, and the Shell
 mutation lock. Materialization is owned by the CapabilityDeployment plane

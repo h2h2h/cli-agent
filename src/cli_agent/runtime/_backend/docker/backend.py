@@ -1,6 +1,6 @@
 """Docker Backend: containerized Workspace execution and volume filesystem.
 
-The Docker Backend implements the same ``_BackendWorkspace`` seam as the
+The Docker Backend implements the same ``Backend`` seam as the
 Local Backend: every ordinary Shell execution runs in one ephemeral
 container that mounts a persistent Workspace volume at ``/workspace``, and
 every filesystem operation executes inside a long-lived helper container
@@ -9,11 +9,8 @@ unreachable, the image is missing and cannot be pulled, or the volume
 cannot be provisioned; execution-time daemon failures surface as
 ``BackendExecutionError`` and never masquerade as command exit codes.
 
-Capability materialization and Tool worker execution (RFC-0017) live in
-the Docker CapabilityDeployment: the deployment attaches the materialized
-Tool Runtime to this Backend through the Docker-only ``_tool_runtime``
-seam, and every execution mounts the persistent capability volume without
-mapping any Host path into the container namespace.
+Capability materialization and Tool worker execution (RFC-0017) live outside
+the Backend; every execution mounts only its explicitly composed volumes.
 """
 
 from __future__ import annotations
@@ -43,7 +40,6 @@ from cli_agent.runtime._execution import BackendExecutionError, ExecutionHandle
 if TYPE_CHECKING:
     from aiodocker.containers import DockerContainer
 
-    from cli_agent.runtime._backend.docker.deployment import _DockerToolRuntime
 
 _NOT_FOUND = 404
 
@@ -130,7 +126,6 @@ class _DockerBackendWorkspace:
         self._volume = volume
         self._helper = helper
         self._live_containers: set[str] = set()
-        self._tool_runtime: _DockerToolRuntime | None = None
         self._closed = False
         self.filesystem = _DockerWorkspaceFilesystem(self)
 
@@ -212,17 +207,6 @@ class _DockerBackendWorkspace:
         """Deregister one reaped execution container."""
 
         self._live_containers.discard(container_id)
-
-    def _attach_tool_runtime(self, runtime: _DockerToolRuntime) -> None:
-        """Bind one materialized Docker Tool Runtime (Docker-only seam).
-
-        The Backend public protocol never exposes Tool Runtime mechanics;
-        the Docker CapabilityDeployment uses this seam to record the venv
-        Python, worker, and binding paths the ToolExecutor consumes.
-        """
-
-        self._ensure_open()
-        self._tool_runtime = runtime
 
     async def _create_execution_container(
         self,
@@ -315,20 +299,27 @@ class _DockerBackendWorkspace:
         *,
         command: str,
         environment: dict[str, str],
+        mount_workspace: bool = True,
     ) -> JSONObject:
-        """Return one transient setup container config over the volume."""
+        """Return one transient setup container config.
+
+        Discovery uses an isolated container filesystem; deployment setup
+        explicitly mounts the persistent Workspace volume.
+        """
 
         self._ensure_open()
         source = self._source
-        return {
+        config: dict[str, JSONValue] = {
             "Image": source.image,
             "Cmd": ["/bin/sh", "-c", command],
-            "WorkingDir": source.root,
+            "WorkingDir": source.root if mount_workspace else "/",
             "Env": [f"{key}={value}" for key, value in environment.items()],
-            "HostConfig": {
-                "Binds": [f"{self._volume}:{source.root}"],
-            },
         }
+        if mount_workspace:
+            config["HostConfig"] = {
+                "Binds": [f"{self._volume}:{source.root}"],
+            }
+        return config
 
     async def _fs_call(self, payload: dict[str, object]) -> dict[str, object]:
         """Run one filesystem request inside the helper container.

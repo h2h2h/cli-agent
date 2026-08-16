@@ -13,17 +13,17 @@ from pathlib import Path
 
 import pytest
 
+from cli_agent._adapters.local.executor import _LocalToolExecutor
+from cli_agent._adapters.local.view import _LocalCapabilityView
 from cli_agent.runtime._backend import _ToolBinding, _ToolExecutionRequest
 from cli_agent.runtime._backend.local import (
     _LocalBackendWorkspace,
-    _LocalCapabilityView,
     _ProcessExecution,
 )
-from cli_agent.runtime._backend.local.executor import _LocalToolExecutor
-from cli_agent.runtime._backend.local.tool_runtime import _LocalToolRuntime
 from cli_agent.runtime._capability.deployment import (
     DeploymentSnapshot,
     ToolExecutor,
+    ToolRuntimeSnapshot,
 )
 from cli_agent.runtime._capability.workspace import _prepare_workspace
 from cli_agent.runtime._environment.handlers.base import _CommandContext
@@ -50,6 +50,13 @@ def _complete_deployment(
         layout_version=1,
         complete=True,
         error=None,
+        tool_runtime=ToolRuntimeSnapshot(
+            python="/nonexistent/python",
+            worker="/nonexistent/worker.py",
+            tools_directory="/nonexistent/tools",
+            binding_directory="/nonexistent/runtime",
+            error=None,
+        ),
     )
 
 
@@ -73,6 +80,7 @@ def _executor(
         workspace_id=workspace_id,
         revision=revision,
         deployment=deployment,
+        runtime=deployment.tool_runtime,
     )
 
 
@@ -81,8 +89,8 @@ def _backend(tmp_path: Path) -> _LocalBackendWorkspace:
     repertoire = tmp_path / "repertoire"
     for name in ("tools", "skills", "library"):
         (repertoire / name).mkdir(parents=True, exist_ok=True)
-    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    return _LocalBackendWorkspace(tmp_path, {}, view)
+    _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    return _LocalBackendWorkspace(tmp_path, {})
 
 
 def test_executor_conforms_to_the_tool_executor_protocol(
@@ -95,15 +103,6 @@ def test_executor_conforms_to_the_tool_executor_protocol(
 
 def test_prepare_is_synchronous_and_creates_no_process(tmp_path: Path) -> None:
     backend = _backend(tmp_path)
-    backend._attach_tool_runtime(
-        _LocalToolRuntime(
-            root=tmp_path / ".workspace" / ".tool-environment",
-            python=Path("/nonexistent/python"),
-            worker=Path("/nonexistent/worker.py"),
-            tools_directory=tmp_path / ".workspace" / "tools",
-            error=None,
-        )
-    )
     executor = _executor(backend, deployment=_complete_deployment())
 
     execution = executor.prepare(
@@ -218,15 +217,6 @@ def test_invalid_bindings_are_rejected_before_any_side_effect(
     tmp_path: Path,
 ) -> None:
     backend = _backend(tmp_path)
-    backend._attach_tool_runtime(
-        _LocalToolRuntime(
-            root=tmp_path / ".workspace" / ".tool-environment",
-            python=Path("/nonexistent/python"),
-            worker=Path("/nonexistent/worker.py"),
-            tools_directory=tmp_path / ".workspace" / "tools",
-            error=None,
-        )
-    )
     executor = _executor(backend, deployment=_complete_deployment())
 
     async def scenario() -> None:
@@ -260,27 +250,22 @@ def test_invalid_bindings_are_rejected_before_any_side_effect(
 def test_worker_run_streams_output_and_maps_failures_to_exit_codes(
     tmp_path: Path,
 ) -> None:
-    from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
-    from cli_agent.runtime._capability.provider import (
+    from cli_agent._adapters.local.deployment import _LocalCapabilityDeployment
+    from cli_agent._workspaces import _LocalWorkspace
+    from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+    from cli_agent.runtime._capability.snapshot import (
         CAPABILITY_SCHEMA_VERSION,
         CapabilitySnapshot,
     )
-    from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
     from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-    from cli_agent.runtime._workspace import _LocalWorkspace
 
     _prepare_workspace(tmp_path)
     repertoire = tmp_path.parent / f"{tmp_path.name}-repertoire"
     for name in ("tools", "skills", "library"):
         (repertoire / name).mkdir(parents=True, exist_ok=True)
-    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    backend = _LocalBackendWorkspace(tmp_path, {}, view)
-    deployment = _LocalCapabilityDeployment(
-        state_root=tmp_path / ".workspace",
-        repertoire=repertoire,
-        volume=".workspace",
-        base_environment=backend.execution_base_environment,
-    )
+    _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    backend = _LocalBackendWorkspace(tmp_path, {})
+    deployment = _LocalCapabilityDeployment()
     opened = _LocalWorkspace(_WORKSPACE_ID, tmp_path, backend, repertoire)
     snapshot = CapabilitySnapshot(
         revision=_REVISION,
@@ -331,15 +316,6 @@ def test_missing_worker_environment_is_a_mechanism_failure(
     tmp_path: Path,
 ) -> None:
     backend = _backend(tmp_path)
-    backend._attach_tool_runtime(
-        _LocalToolRuntime(
-            root=tmp_path / ".workspace" / ".tool-environment",
-            python=Path("/nonexistent/python"),
-            worker=Path("/nonexistent/worker.py"),
-            tools_directory=tmp_path / ".workspace" / "tools",
-            error=None,
-        )
-    )
     executor = _executor(backend, deployment=_complete_deployment())
 
     async def scenario() -> None:
@@ -356,27 +332,22 @@ def test_missing_worker_environment_is_a_mechanism_failure(
 
 
 def test_queued_kill_never_starts_the_worker(tmp_path: Path) -> None:
-    from cli_agent.runtime._backend.local.deployment import _LocalCapabilityDeployment
-    from cli_agent.runtime._capability.provider import (
+    from cli_agent._adapters.local.deployment import _LocalCapabilityDeployment
+    from cli_agent._workspaces import _LocalWorkspace
+    from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
+    from cli_agent.runtime._capability.snapshot import (
         CAPABILITY_SCHEMA_VERSION,
         CapabilitySnapshot,
     )
-    from cli_agent.runtime._capability.skills.catalog import _SkillCatalog
     from cli_agent.runtime._capability.tools.catalog import _ToolCatalog
-    from cli_agent.runtime._workspace import _LocalWorkspace
 
     _prepare_workspace(tmp_path)
     repertoire = tmp_path.parent / f"{tmp_path.name}-repertoire"
     for name in ("tools", "skills", "library"):
         (repertoire / name).mkdir(parents=True, exist_ok=True)
-    view = _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
-    backend = _LocalBackendWorkspace(tmp_path, {}, view)
-    deployment = _LocalCapabilityDeployment(
-        state_root=tmp_path / ".workspace",
-        repertoire=repertoire,
-        volume=".workspace",
-        base_environment=backend.execution_base_environment,
-    )
+    _LocalCapabilityView.materialize(tmp_path / ".workspace", repertoire)
+    backend = _LocalBackendWorkspace(tmp_path, {})
+    deployment = _LocalCapabilityDeployment()
     opened = _LocalWorkspace(_WORKSPACE_ID, tmp_path, backend, repertoire)
     snapshot = CapabilitySnapshot(
         revision=_REVISION,
