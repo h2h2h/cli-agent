@@ -16,7 +16,7 @@ from cli_agent.runtime._environment.records import (
     OutputBuffer,
     _notify_changed,
 )
-from cli_agent.runtime._environment.routing import _ExecutionRoute
+from cli_agent.runtime._environment.router import _ExecutionRoute
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
 from cli_agent.runtime._execution import (
     BackendExecutionError,

@@ -10,7 +10,7 @@ from cli_agent.runtime._environment.handlers.base import (
     _ExecutionRequest,
 )
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
-from cli_agent.runtime._environment.routing import (
+from cli_agent.runtime._environment.router import (
     _CommandRouter,
     _ExecutionRoute,
 )

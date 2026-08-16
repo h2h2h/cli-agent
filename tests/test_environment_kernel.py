@@ -20,7 +20,7 @@ from cli_agent.runtime._environment.policy import (
     PolicyEvaluation,
 )
 from cli_agent.runtime._environment.records import ExecutionRecord
-from cli_agent.runtime._environment.routing import _CommandRouter
+from cli_agent.runtime._environment.router import _CommandRouter
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
 from cli_agent.runtime._environment.sources import (
     _builtin_inline_sources,

@@ -19,7 +19,7 @@ _FORBIDDEN_MODULES = frozenset(
         "cli_agent._adapters",
         "cli_agent._workspaces",
         "cli_agent.runtime._environment.kernel",
-        "cli_agent.runtime._environment.routing",
+        "cli_agent.runtime._environment.router",
         "cli_agent.runtime._environment.scheduler",
         "cli_agent.runtime._environment.protocol",
         "cli_agent.runtime._syscalls",

@@ -10,7 +10,7 @@ from typing import Literal
 from cli_agent.runtime._environment.handlers.base import (
     _ExecutionRequest,
 )
-from cli_agent.runtime._environment.routing import _ExecutionRoute
+from cli_agent.runtime._environment.router import _ExecutionRoute
 from cli_agent.runtime._execution import ExecutionHandle
 from cli_agent.runtime.model import JSONValue
 

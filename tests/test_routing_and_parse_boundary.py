@@ -12,7 +12,7 @@ from cli_agent.runtime import ToolCall, ToolResult
 from cli_agent.runtime._backend.local import _LocalBackendWorkspace
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
 from cli_agent.runtime._environment.records import ExecutionRecord
-from cli_agent.runtime._environment.routing import _ExecutionRoute
+from cli_agent.runtime._environment.router import _ExecutionRoute
 from cli_agent.runtime._environment.scheduler import _ExecutionScheduler
 from cli_agent.runtime._environment.sources import _InlineSource
 from cli_agent.runtime._execution import (

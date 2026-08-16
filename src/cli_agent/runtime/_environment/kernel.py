@@ -35,7 +35,7 @@ from cli_agent.runtime._environment.protocol import (
     _validate_arguments,
 )
 from cli_agent.runtime._environment.records import ExecutionRecord
-from cli_agent.runtime._environment.routing import _CommandRouter
+from cli_agent.runtime._environment.router import _CommandRouter
 from cli_agent.runtime._environment.scheduler import (
     _DEFAULT_PARALLEL_LIMIT,
     _DEFAULT_QUEUE_LIMIT,

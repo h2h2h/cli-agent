@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from cli_agent.runtime._environment.handlers.base import _ExecutionRequest
 from cli_agent.runtime._environment.records import ExecutionRecord
-from cli_agent.runtime._environment.routing import _ExecutionRoute
+from cli_agent.runtime._environment.router import _ExecutionRoute
 
 _DEFAULT_QUEUE_LIMIT = 32
 _DEFAULT_PARALLEL_LIMIT = 4

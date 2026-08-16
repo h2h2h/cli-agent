@@ -15,7 +15,7 @@ from cli_agent.runtime._backend.local import (
 from cli_agent.runtime._capability.command_parser import parse_shell_ast
 from cli_agent.runtime._environment import EnvironmentKernel
 from cli_agent.runtime._environment.handlers.executions import _InlineExecution
-from cli_agent.runtime._environment.routing import (
+from cli_agent.runtime._environment.router import (
     _CommandRouter,
 )
 from cli_agent.runtime._environment.sources import (

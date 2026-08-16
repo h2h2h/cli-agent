@@ -36,7 +36,27 @@ class _CommandRouter:
         self._sources = sources
 
     def resolve(self, command: ShellParseResult) -> _ExecutionRoute:
-        """Select one Source and its schedule fact without performing work."""
+        """Select one Source and its schedule fact without performing work.
+
+        Routing order:
+
+        1. Look up the parsed command head in the Source Registry. The
+           registry holds the built-in reserved heads (``cd``, ``export``,
+           ``files``, ``tools``) plus any custom sources registered by the
+           host; matching is an exact head-to-name lookup, so a custom
+           command head always wins over the Shell fallback.
+        2. If the head is not registered (``None``), fall back to the Shell
+           Source: every unregistered command, including unknown or
+           bare-executable commands, is executed as an ordinary shell
+           command through the Workspace.
+        3. Compute the selected Source's ``parallel_safe`` scheduling fact
+           for this exact command and bundle it with the Source into an
+           immutable ``_ExecutionRoute``. The scheduler later reuses this
+           precomputed fact without re-parsing or re-evaluating the command.
+
+        No execution work happens here; resolution only picks the handler
+        family and its schedule fact.
+        """
 
         source = self._sources.resolve(command)
         if source is None:
