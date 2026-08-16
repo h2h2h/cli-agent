@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import json
 import os
+import re
 import select
 import signal
 import sys
 import termios
 import time
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,7 @@ from cli_agent.config import CliConfig
 from cli_agent.runtime import (
     AssistantMessage,
     ModelCompletion,
+    ModelEvent,
     ScriptedModelProvider,
     TextDelta,
     ToolCall,
@@ -163,6 +166,100 @@ def test_cli_pty_runtime_exception_restores_terminal(tmp_path: Path) -> None:
     assert "ScriptedModelProvider received more model requests" not in (
         result.terminal_output
     )
+
+
+def test_cli_pty_markdown_renders_in_one_shot_and_interactive_modes(
+    tmp_path: Path,
+) -> None:
+    one_shot_workspace = tmp_path / "one-shot"
+    interactive_workspace = tmp_path / "interactive"
+    one_shot_workspace.mkdir()
+    interactive_workspace.mkdir()
+    one_shot = _run_cli_pty(
+        one_shot_workspace,
+        scenario="markdown-one-shot",
+        stdout_is_tty=True,
+        initial_marker=None,
+        steps=(),
+    )
+    interactive = _run_cli_pty(
+        interactive_workspace,
+        scenario="markdown",
+        stdout_is_tty=True,
+        steps=(
+            (b"render markdown\r", _COMPLETION_STOP),
+            (b"", _PROMPT),
+            (b":q\r", None),
+        ),
+    )
+
+    _assert_renderer_restored(one_shot)
+    _assert_restored(interactive)
+    assert one_shot.report["exit_code"] == 0
+    assert interactive.report["exit_code"] == 0
+    for result in (one_shot, interactive):
+        _assert_markdown_content(result.terminal_output)
+        assert "**bold**" not in result.terminal_output
+        assert "| key | value |" not in result.terminal_output
+    assert _markdown_content_signature(one_shot.terminal_output) == (
+        _markdown_content_signature(interactive.terminal_output)
+    )
+
+
+def test_cli_pty_markdown_keeps_tool_diagnostic_between_segments(
+    tmp_path: Path,
+) -> None:
+    result = _run_cli_pty(
+        tmp_path,
+        scenario="markdown-tool",
+        stdout_is_tty=True,
+        steps=(
+            (b"render markdown\r", _COMPLETION_STOP),
+            (b"", _PROMPT),
+            (b":q\r", None),
+        ),
+    )
+
+    _assert_restored(result)
+    assert result.report["exit_code"] == 0
+    text = result.terminal_output
+    assert text.index("Before") < text.index("[tool] exec") < text.index("After")
+    assert "\033[1m" in text
+    assert "**bold**" not in text
+
+
+def test_cli_pty_markdown_no_color_removes_markdown_ansi(
+    tmp_path: Path,
+) -> None:
+    result = _run_cli_pty(
+        tmp_path,
+        scenario="markdown-no-color",
+        stdout_is_tty=True,
+        initial_marker=None,
+        steps=(),
+    )
+
+    assert _without_pendin(result.after) == _without_pendin(result.before)
+    assert result.report["exit_code"] == 0
+    assert "bold" in result.terminal_output
+    assert "\033[1m" not in result.terminal_output
+    assert "**bold**" not in result.terminal_output
+
+
+def test_cli_pty_markdown_interrupt_restores_terminal(
+    tmp_path: Path,
+) -> None:
+    result = _run_cli_pty(
+        tmp_path,
+        scenario="markdown-interrupt",
+        stdout_is_tty=True,
+        steps=((b"render markdown\r", b"Partial"), (b"\x03", None)),
+    )
+
+    _assert_renderer_restored(result)
+    assert result.report["exit_code"] == 130
+    assert result.report["tasks"] == ["render markdown"]
+    assert "cli-agent: interrupted" in result.terminal_output
 
 
 @pytest.mark.parametrize(
@@ -353,6 +450,8 @@ def _run_cli_pty(
     *,
     scenario: str,
     steps: Sequence[tuple[bytes, bytes | None]],
+    stdout_is_tty: bool = False,
+    initial_marker: bytes | None = _PROMPT,
 ) -> _PtyResult:
     master_fd, slave_fd = os.openpty()
     stdout_read, stdout_write = os.pipe()
@@ -374,6 +473,7 @@ def _run_cli_pty(
             report_write=report_write,
             workspace=workspace,
             scenario=scenario,
+            stdout_is_tty=stdout_is_tty,
         )
 
     os.close(stdout_write)
@@ -381,7 +481,9 @@ def _run_cli_pty(
     terminal_output = bytearray()
     child_reaped = False
     try:
-        offset = _read_until(master_fd, _PROMPT, terminal_output)
+        offset = 0
+        if initial_marker is not None:
+            offset = _read_until(master_fd, initial_marker, terminal_output)
         for input_data, marker in steps:
             os.write(master_fd, input_data)
             if marker is not None:
@@ -434,9 +536,10 @@ def _run_cli_child(
     report_write: int,
     workspace: Path,
     scenario: str,
+    stdout_is_tty: bool,
 ) -> None:
     os.dup2(slave_fd, 0)
-    os.dup2(stdout_write, 1)
+    os.dup2(slave_fd if stdout_is_tty else stdout_write, 1)
     os.dup2(slave_fd, 2)
     for fd in (slave_fd, stdout_write):
         if fd > 2:
@@ -448,7 +551,14 @@ def _run_cli_child(
 
     try:
         provider, execution_policy = _scenario(workspace, scenario)
-        config = _config(workspace)
+        task = (
+            "render markdown"
+            if scenario in {"markdown-one-shot", "markdown-no-color"}
+            else None
+        )
+        config = _config(workspace, task=task)
+        if scenario == "markdown-no-color":
+            os.environ["NO_COLOR"] = "1"
         cli_module.parse_cli_config = lambda argv=None: config
         cli_module.build_provider = lambda current_config: provider
         run_agent = cli_module.run_agent
@@ -520,6 +630,12 @@ def _scenario(
                 reason="direct invocation of 'rm' requires Host approval",
             ),
         )
+    if name in {"markdown", "markdown-one-shot", "markdown-no-color"}:
+        return _markdown_provider(), None
+    if name == "markdown-tool":
+        return _markdown_tool_provider(), None
+    if name == "markdown-interrupt":
+        return _InterruptingProvider(), None
     raise AssertionError(f"unknown PTY scenario: {name}")
 
 
@@ -539,6 +655,62 @@ def _completion_events() -> tuple[TextDelta | ModelCompletion, ...]:
     )
 
 
+def _markdown_provider() -> ScriptedModelProvider:
+    text = (
+        TextDelta(text="Intro **bold**.\n\n"),
+        TextDelta(text="| key | value |\n|---|---|\n| one | two |\n\n"),
+        TextDelta(text="Final `code`."),
+    )
+    return ScriptedModelProvider(
+        script=(
+            (
+                *text,
+                ModelCompletion(
+                    message=AssistantMessage.text("Intro **bold**."),
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+
+
+def _markdown_tool_provider() -> ScriptedModelProvider:
+    call = ToolCall(
+        call_id="markdown_tool",
+        name="exec",
+        arguments={"command": "printf tool-result"},
+    )
+    return ScriptedModelProvider(
+        script=(
+            (
+                TextDelta(text="Before **bold**.\n\n"),
+                ToolCallReady(call=call),
+                ModelCompletion(
+                    message=AssistantMessage(content=(call,)),
+                    finish_reason="tool_calls",
+                ),
+            ),
+            (
+                TextDelta(text="After **tool**."),
+                ModelCompletion(
+                    message=AssistantMessage.text("After **tool**."),
+                    finish_reason="stop",
+                ),
+            ),
+        )
+    )
+
+
+class _InterruptingProvider:
+    def __init__(self) -> None:
+        self.requests: list[object] = []
+
+    async def generate(self, request: object) -> AsyncIterator[ModelEvent]:
+        self.requests.append(request)
+        yield TextDelta(text="Partial **answer**")
+        await asyncio.Event().wait()
+
+
 def _provider_tasks(provider: ScriptedModelProvider) -> list[str]:
     tasks: list[str] = []
     user_count = 0
@@ -554,9 +726,9 @@ def _provider_tasks(provider: ScriptedModelProvider) -> list[str]:
     return tasks
 
 
-def _config(workspace: Path) -> CliConfig:
+def _config(workspace: Path, *, task: str | None = None) -> CliConfig:
     return CliConfig(
-        task=None,
+        task=task,
         workspace=workspace,
         base_url="https://models.example/v1",
         model="test-model",
@@ -571,6 +743,25 @@ def _assert_restored(result: _PtyResult) -> None:
     assert _without_pendin(result.after) == _without_pendin(result.before)
     assert "\x1b[?2004l" in result.terminal_output
     assert "\x1b[?25h" in result.terminal_output
+
+
+def _assert_renderer_restored(result: _PtyResult) -> None:
+    assert _without_pendin(result.after) == _without_pendin(result.before)
+    assert "\x1b[?25h" in result.terminal_output
+
+
+def _assert_markdown_content(text: str) -> None:
+    assert "bold" in text
+    assert "Final" in text
+    assert "code" in text
+    assert all(marker in text for marker in ("key", "value", "one", "two"))
+
+
+def _markdown_content_signature(text: str) -> str:
+    start = text.index("Intro")
+    end = text.index("code", start) + len("code")
+    visible = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text[start:end])
+    return " ".join(visible.split())
 
 
 def _without_pendin(attrs: list[Any]) -> list[Any]:

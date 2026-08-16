@@ -10,6 +10,7 @@ from typing import Protocol, TextIO
 from rich.console import Console as _Console
 from rich.live import Live as _Live
 from rich.markdown import Markdown as _Markdown
+from rich.theme import Theme as _Theme
 
 from cli_agent.errors import HostFacingError
 from cli_agent.runtime import (
@@ -43,6 +44,7 @@ class _MarkdownRenderer(Protocol):
 
 
 _REFRESH_PER_SECOND = 5
+_MARKDOWN_THEME = _Theme({"markdown.code": "bold yellow"})
 
 _HOST_ERROR_MESSAGES = {
     "session_not_found": "Session was not found.",
@@ -71,6 +73,7 @@ class MarkdownStreamRenderer:
             highlight=False,
             color_system=None if no_color else "auto",
             force_terminal=False if no_color else None,
+            theme=_MARKDOWN_THEME,
         )
         self._buffer: list[str] = []
         self._live: _Live | None = None

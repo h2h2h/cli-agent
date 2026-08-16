@@ -39,6 +39,18 @@ def test_renderer_renders_markdown_styles_and_table() -> None:
     assert "| a | b |" not in value
 
 
+def test_inline_code_uses_a_readable_style_without_background() -> None:
+    output = _TerminalOutput()
+    renderer = MarkdownStreamRenderer(output)
+
+    renderer.feed("`code`")
+    renderer.finish()
+
+    value = output.getvalue()
+    assert "\033[1;33m" in value
+    assert "\033[1;33;40m" not in value
+
+
 def test_fragmented_feed_matches_single_feed() -> None:
     fragmented_output = _TerminalOutput()
     fragmented = MarkdownStreamRenderer(fragmented_output)
