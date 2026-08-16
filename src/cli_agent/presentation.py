@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol, TextIO
@@ -44,7 +45,9 @@ class _MarkdownRenderer(Protocol):
 
 
 _REFRESH_PER_SECOND = 5
+_HEIGHT_MARGIN = 4
 _MARKDOWN_THEME = _Theme({"markdown.code": "bold #a0522d"})
+_FENCE_PATTERN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 _HOST_ERROR_MESSAGES = {
     "session_not_found": "Session was not found.",
@@ -76,10 +79,22 @@ class MarkdownStreamRenderer:
             theme=_MARKDOWN_THEME,
         )
         self._buffer: list[str] = []
+        self._code_fence: str | None = None
+        # Conservative upper bound of the active segment's rendered height;
+        # exact measurement only happens once the bound nears the screen.
+        self._height_bound = 0
         self._live: _Live | None = None
 
     def feed(self, text: str) -> None:
-        """Append streamed Markdown and refresh the active Live display."""
+        """Append streamed Markdown and refresh the active Live display.
+
+        Once the rendered segment reaches terminal height it is settled as
+        static text and the next fragment opens a fresh Live segment below,
+        so a Live region never grows taller than the screen.  Taller regions
+        cannot be repainted in place (cursor-up clamps at the top row) and
+        every refresh would scroll a duplicate of the document head into the
+        terminal scrollback.
+        """
 
         if not text:
             return
@@ -95,7 +110,17 @@ class MarkdownStreamRenderer:
             self._live = live
         if not live.is_started:
             live.start()
-        live.update(_Markdown("".join(self._buffer)))
+        markdown = self._markdown()
+        live.update(markdown)
+        self._height_bound += (
+            2 * text.count("\n") + len(text) // self._console.size.width + 2
+        )
+        if self._height_bound < self._console.size.height - _HEIGHT_MARGIN:
+            return
+        height = self._rendered_height(markdown)
+        self._height_bound = height
+        if height >= self._console.size.height:
+            self._settle_overflow()
 
     def suspend(self) -> None:
         """Stop the current Live display and close its rendered text segment."""
@@ -106,7 +131,9 @@ class MarkdownStreamRenderer:
 
         live.stop()
         self._live = None
+        self._code_fence = _open_code_fence(self._text())
         self._buffer.clear()
+        self._height_bound = _HEIGHT_MARGIN if self._code_fence is not None else 0
 
     def resume(self) -> None:
         """Prepare a fresh Live display for the next streamed fragment."""
@@ -115,21 +142,104 @@ class MarkdownStreamRenderer:
             self._live = self._new_live()
 
     def finish(self) -> None:
-        """Stop Live and clear the renderer for safe reuse."""
+        """Stop Live, flush pending text, and clear the renderer for reuse."""
 
         live = self._live
         if live is not None:
             live.stop()
             self._live = None
+        elif self._enabled and self._buffer:
+            pending = self._new_live()
+            pending.start()
+            pending.update(self._markdown())
+            pending.stop()
+        self._code_fence = None
+        self._height_bound = 0
         self._buffer.clear()
 
     def _new_live(self) -> _Live:
+        # Streaming frames stay within the screen because feed() settles at
+        # terminal height; stop() forces "visible" for the complete final
+        # frame, so the default "ellipsis" overflow never clips in practice.
         return _Live(
             console=self._console,
             auto_refresh=True,
             refresh_per_second=_REFRESH_PER_SECOND,
-            vertical_overflow="visible",
         )
+
+    def _text(self) -> str:
+        text = "".join(self._buffer)
+        if self._code_fence is not None:
+            text = f"{self._code_fence}\n{text}"
+        return text
+
+    def _markdown(self) -> _Markdown:
+        return self._markdown_of("".join(self._buffer))
+
+    def _markdown_of(self, text: str) -> _Markdown:
+        if self._code_fence is not None:
+            text = f"{self._code_fence}\n{text}"
+        return _Markdown(text, code_theme="friendly")
+
+    def _rendered_height(self, markdown: _Markdown) -> int:
+        """Measure the terminal lines `markdown` occupies at console width."""
+
+        lines = self._console.render_lines(
+            markdown,
+            self._console.options,
+            pad=False,
+        )
+        return len(lines)
+
+    def _settle_overflow(self) -> None:
+        """Settle the active segment up to its last complete line.
+
+        The partial line at the crossing stays buffered so the next segment
+        starts at a line boundary and a split line is never garbled across
+        segments.
+        """
+
+        live = self._live
+        if live is None:
+            return
+        text = "".join(self._buffer)
+        if "\n" not in text or text.endswith("\n"):
+            self.suspend()
+            return
+        prefix, keep = text.rsplit("\n", 1)
+        if _FENCE_PATTERN.match(keep):
+            self.suspend()
+            return
+        fence = _open_code_fence(self._text())
+        live.update(self._markdown_of(prefix))
+        live.stop()
+        self._live = None
+        self._buffer[:] = [keep]
+        self._code_fence = fence
+        self._height_bound = 1 + (_HEIGHT_MARGIN if fence is not None else 0)
+
+
+def _open_code_fence(text: str) -> str | None:
+    """Return the opening fence line if `text` ends inside a fenced code block."""
+
+    opener: str | None = None
+    fence_char = ""
+    fence_length = 0
+    for line in text.splitlines():
+        match = _FENCE_PATTERN.match(line)
+        if match is None:
+            continue
+        marks = match.group(1)
+        info = match.group(2).strip()
+        if opener is None:
+            if marks[0] == "`" and "`" in info:
+                continue
+            opener = line.strip()
+            fence_char = marks[0]
+            fence_length = len(marks)
+        elif marks[0] == fence_char and len(marks) >= fence_length and not info:
+            opener = None
+    return opener
 
 
 def render_prompt(*, stderr: TextIO) -> None:
