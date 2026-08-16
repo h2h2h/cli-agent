@@ -8,6 +8,7 @@ from typing import TextIO
 from cli_agent.config import CliConfig, build_context_policy
 from cli_agent.errors import HostFacingError
 from cli_agent.presentation import (
+    MarkdownStreamRenderer,
     render_command_usage,
     render_diagnostic,
     render_event,
@@ -193,28 +194,46 @@ async def _run_turn(
     stderr: TextIO,
     separate_diagnostics: bool,
 ) -> tuple[bool, bool]:
+    renderer = _create_markdown_renderer(stdout)
     completed = False
     last_text_has_newline = True
 
-    async for event in runtime.run_turn(UserMessage.text(task)):
-        if (
-            separate_diagnostics
-            and not isinstance(event, TextDelta)
-            and not last_text_has_newline
-        ):
-            print(file=stdout, flush=True)
-            last_text_has_newline = True
-        render_event(
-            event,
-            stdout=stdout,
-            stderr=stderr,
-        )
-        if isinstance(event, ModelCompletion):
-            completed = True
-        elif isinstance(event, TextDelta) and event.text:
-            last_text_has_newline = event.text.endswith("\n")
+    try:
+        async for event in runtime.run_turn(UserMessage.text(task)):
+            if (
+                renderer is None
+                and separate_diagnostics
+                and not isinstance(event, TextDelta)
+                and not last_text_has_newline
+            ):
+                print(file=stdout, flush=True)
+                last_text_has_newline = True
+            render_event(
+                event,
+                stdout=stdout,
+                stderr=stderr,
+                renderer=renderer,
+            )
+            if isinstance(event, ModelCompletion):
+                completed = True
+            elif renderer is None and isinstance(event, TextDelta) and event.text:
+                last_text_has_newline = event.text.endswith("\n")
+    finally:
+        if renderer is not None:
+            renderer.finish()
 
-    return completed, not last_text_has_newline
+    return completed, renderer is None and not last_text_has_newline
+
+
+def _create_markdown_renderer(stdout: TextIO) -> MarkdownStreamRenderer | None:
+    """Create the TTY Markdown renderer, falling back to raw output."""
+
+    try:
+        if not stdout.isatty():
+            return None
+        return MarkdownStreamRenderer(stdout)
+    except Exception:
+        return None
 
 
 def _create_tui_session(
