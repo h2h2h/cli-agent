@@ -64,11 +64,13 @@ def test_execution_record_and_snapshot_carry_no_backend_discriminator() -> None:
     for fact in (_ShellExecutionRequest, _ToolExecutionRequest):
         assert "backend" not in {field.name for field in fields(fact)}
 
-    protocol_source = Path(
-        importlib.import_module("cli_agent.runtime._environment.protocol").__file__
-    ).read_text(encoding="utf-8")
-    assert "backend" not in protocol_source
-    assert "sandbox" not in protocol_source
+    snapshot_source = inspect.getsource(
+        importlib.import_module(
+            "cli_agent.runtime._environment.kernel"
+        )._snapshot
+    )
+    assert "backend" not in snapshot_source
+    assert "sandbox" not in snapshot_source
 
 
 def test_runtime_has_no_backend_session_or_parallel_workspace_owner() -> None:

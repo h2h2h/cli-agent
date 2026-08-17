@@ -30,11 +30,6 @@ from cli_agent.runtime._environment.policy import (
     PolicyAction,
     PolicyEvaluation,
 )
-from cli_agent.runtime._environment.protocol import (
-    _SCHEMA_BY_NAME,
-    _protocol_error,
-    _snapshot,
-)
 from cli_agent.runtime._environment.records import ExecutionRecord
 from cli_agent.runtime._environment.router import _CommandRouter
 from cli_agent.runtime._environment.scheduler import (
@@ -49,6 +44,7 @@ from cli_agent.runtime._environment.sources import (
     _SourceRegistry,
     _ToolSource,
 )
+from cli_agent.runtime._syscalls import BUILT_IN_SYSCALL_SCHEMAS
 from cli_agent.runtime._workspace import Workspace
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.host import HostServices, emit_event
@@ -58,6 +54,10 @@ _ALLOW_ONCE_OPTIONS = (
     UserOption(value="allow_once", label="Allow once"),
     UserOption(value="deny", label="Deny"),
 )
+
+_SCHEMA_BY_NAME = {
+    schema.name: schema.input_schema for schema in BUILT_IN_SYSCALL_SCHEMAS
+}
 
 
 class EnvironmentKernel:
@@ -142,17 +142,15 @@ class EnvironmentKernel:
 
     async def _dispatch(self, call: ToolCall) -> ToolResult:
         if self._closed:
-            return _protocol_error(
+            return ToolResult(
                 call.call_id,
-                code="internal",
-                message="environment session is closed",
+                error={"ok": False, "code": "internal", "message": "environment session is closed"},
             )
 
         if call.name not in _SCHEMA_BY_NAME:
-            return _protocol_error(
+            return ToolResult(
                 call.call_id,
-                code="invalid_argument",
-                message=f"unknown syscall: {call.name}",
+                error={"ok": False, "code": "invalid_argument", "message": f"unknown syscall: {call.name}"},
             )
 
         if call.name == "exec":
@@ -204,10 +202,9 @@ class EnvironmentKernel:
                     else:
                         result = await self._dispatch(call)
                 except ModelFacingError as exc:
-                    result = _protocol_error(
+                    result = ToolResult(
                         call.call_id,
-                        code=exc.code,
-                        message=exc.message,
+                        error={"ok": False, "code": exc.code, "message": exc.message},
                     )
                 admitted.append((call, result))
 
@@ -229,18 +226,16 @@ class EnvironmentKernel:
         args = _validate_arguments(call, _SCHEMA_BY_NAME["exec"])
         command = parse_shell_ast(args["command"])
         if command.root is None:
-            return _protocol_error(
+            return ToolResult(
                 call.call_id,
-                code="invalid_argument",
-                message="invalid shell command",
+                error={"ok": False, "code": "invalid_argument", "message": "invalid shell command"},
             )
         try:
             route = self._router.resolve(command)
         except RuntimeError:
-            return _protocol_error(
+            return ToolResult(
                 call.call_id,
-                code="internal",
-                message="execution route is not supported",
+                error={"ok": False, "code": "internal", "message": "execution route is not supported"},
             )
         if self._policy is not None:
             evaluation = await self._evaluate(command, call.call_id)
@@ -254,10 +249,9 @@ class EnvironmentKernel:
             if isinstance(authorization, ToolResult):
                 return authorization
         if self._closed:
-            return _protocol_error(
+            return ToolResult(
                 call.call_id,
-                code="internal",
-                message="environment session is closed",
+                error={"ok": False, "code": "internal", "message": "environment session is closed"},
             )
 
         request = _ExecutionRequest(
@@ -266,10 +260,9 @@ class EnvironmentKernel:
         )
         state = self._manager.admit(request, route)
         if state is None:
-            return _protocol_error(
+            return ToolResult(
                 call.call_id,
-                code="queue_full",
-                message="execution pending queue is full",
+                error={"ok": False, "code": "queue_full", "message": "execution pending queue is full"},
             )
 
         if wait_for_completion and args["wait_ms"] > 0 and not state.is_terminal:
@@ -334,10 +327,9 @@ class EnvironmentKernel:
                 "execution policy raised an exception",
                 detail={"exception": repr(exc)},
             )
-            return _protocol_error(
+            return ToolResult(
                 call_id,
-                code="policy_denied",
-                message="execution policy failed closed",
+                error={"ok": False, "code": "policy_denied", "message": "execution policy failed closed"},
             )
         if not _is_valid_evaluation(evaluation):
             self._emit_diagnostic(
@@ -345,10 +337,9 @@ class EnvironmentKernel:
                 "execution policy returned an invalid evaluation",
                 detail={"evaluation": repr(evaluation)},
             )
-            return _protocol_error(
+            return ToolResult(
                 call_id,
-                code="policy_denied",
-                message="execution policy failed closed",
+                error={"ok": False, "code": "policy_denied", "message": "execution policy failed closed"},
             )
         return evaluation
 
@@ -359,20 +350,18 @@ class EnvironmentKernel:
         command: ShellParseResult,
     ) -> bool | ToolResult:
         if evaluation.action is PolicyAction.DENY:
-            return _protocol_error(
+            return ToolResult(
                 call_id,
-                code="policy_denied",
-                message=evaluation.reason or "execution denied by policy",
+                error={"ok": False, "code": "policy_denied", "message": evaluation.reason or "execution denied by policy"},
             )
         if evaluation.action is PolicyAction.ALLOW:
             return True
 
         interaction = self._user_interaction
         if interaction is None:
-            return _protocol_error(
+            return ToolResult(
                 call_id,
-                code="policy_denied",
-                message="execution requires user interaction but none is configured",
+                error={"ok": False, "code": "policy_denied", "message": "execution requires user interaction but none is configured"},
             )
 
         question = UserQuestion(
@@ -388,10 +377,9 @@ class EnvironmentKernel:
                 answer = await task
             except asyncio.CancelledError:
                 if self._closed:
-                    return _protocol_error(
+                    return ToolResult(
                         call_id,
-                        code="internal",
-                        message="environment session is closed",
+                        error={"ok": False, "code": "internal", "message": "environment session is closed"},
                     )
                 raise
             except Exception as exc:
@@ -400,10 +388,9 @@ class EnvironmentKernel:
                     "execution interaction raised an exception",
                     detail={"exception": repr(exc)},
                 )
-                return _protocol_error(
+                return ToolResult(
                     call_id,
-                    code="policy_denied",
-                    message="execution interaction failed closed",
+                    error={"ok": False, "code": "policy_denied", "message": "execution interaction failed closed"},
                 )
         finally:
             self._interaction_tasks.discard(task)
@@ -414,33 +401,29 @@ class EnvironmentKernel:
                 "execution interaction returned an invalid answer",
                 detail={"answer": repr(answer)},
             )
-            return _protocol_error(
+            return ToolResult(
                 call_id,
-                code="policy_denied",
-                message="execution interaction failed closed",
+                error={"ok": False, "code": "policy_denied", "message": "execution interaction failed closed"},
             )
         if answer.value == "allow_once":
             return True
         if answer.value == "deny":
-            return _protocol_error(
+            return ToolResult(
                 call_id,
-                code="policy_denied",
-                message=evaluation.reason or "execution denied by policy",
+                error={"ok": False, "code": "policy_denied", "message": evaluation.reason or "execution denied by policy"},
             )
-        return _protocol_error(
+        return ToolResult(
             call_id,
-            code="policy_denied",
-            message="execution was not approved by the user",
+            error={"ok": False, "code": "policy_denied", "message": "execution was not approved by the user"},
         )
 
     async def _output(self, call: ToolCall) -> ToolResult:
         args = _validate_arguments(call, _SCHEMA_BY_NAME["output"])
         state = self._executions.get(args["exec_id"])
         if state is None:
-            return _protocol_error(
+            return ToolResult(
                 call.call_id,
-                code="unknown_execution",
-                message="execution not found",
+                error={"ok": False, "code": "unknown_execution", "message": "execution not found"},
             )
         await self._manager.wait_for_output(
             state,
@@ -460,10 +443,9 @@ class EnvironmentKernel:
         args = _validate_arguments(call, _SCHEMA_BY_NAME["kill"])
         state = self._executions.get(args["exec_id"])
         if state is None:
-            return _protocol_error(
+            return ToolResult(
                 call.call_id,
-                code="unknown_execution",
-                message="execution not found",
+                error={"ok": False, "code": "unknown_execution", "message": "execution not found"},
             )
         await self._manager.terminate(state)
         return ToolResult(
@@ -513,6 +495,27 @@ def _is_valid_evaluation(evaluation: object) -> bool:
     return (
         isinstance(evaluation, PolicyEvaluation) and evaluation.action in PolicyAction
     )
+
+
+def _snapshot(
+    state: ExecutionRecord,
+    *,
+    cursor: int,
+    limit: int,
+) -> dict[str, JSONValue]:
+    chunks = list(state.chunks[cursor : cursor + limit])
+    next_cursor = cursor + len(chunks)
+    return {
+        "ok": True,
+        "exec_id": state.exec_id,
+        "status": state.status,
+        "exit_code": state.exit_code,
+        "chunks": chunks,
+        "next_cursor": next_cursor,
+        "is_terminal": state.is_terminal,
+        "truncated": state.truncated,
+        "available_from": 0,
+    }
 
 
 def _ask_prompt(
