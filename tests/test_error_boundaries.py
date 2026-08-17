@@ -4,6 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
+import jsonschema
 import pytest
 from host_fakes import _environment_kernel
 from interaction_fakes import _ScriptedInteraction
@@ -30,6 +31,7 @@ from cli_agent.runtime import (
     ToolResult,
     UserMessage,
 )
+from cli_agent.runtime._environment import kernel as kernel_module
 from cli_agent.runtime.model import ModelContextOverflowSignal
 
 _context_policy = ContextPolicy(
@@ -292,6 +294,131 @@ def test_kernel_boundary_keeps_expected_failures_as_data(
         assert output["status"] == "failed"
         assert output["exit_code"] == 3
         assert received == []
+
+    asyncio.run(scenario())
+
+
+def test_kernel_batch_translates_model_facing_errors_to_tool_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ModelFacingError raised while admitting a call never escapes the Kernel."""
+
+    def explode(call: object, schema: object) -> dict[str, object]:
+        del call, schema
+        raise ModelFacingError(
+            "queue_full",
+            "execution pending queue is full",
+            retryable=True,
+            details={"queue_limit": 1},
+        )
+
+    async def scenario() -> None:
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
+        monkeypatch.setattr(kernel_module, "_validate_arguments", explode)
+        try:
+            results = await kernel.dispatch_batch(
+                (
+                    ToolCall(
+                        call_id="call-1",
+                        name="exec",
+                        arguments={"command": "echo hi"},
+                    ),
+                )
+            )
+        finally:
+            await kernel.close()
+
+        assert results[0].call_id == "call-1"
+        assert results[0].output is None
+        assert results[0].error == {
+            "ok": False,
+            "code": "queue_full",
+            "message": "execution pending queue is full",
+        }
+
+    asyncio.run(scenario())
+
+
+def test_kernel_batch_isolates_one_invalid_call(tmp_path: Path) -> None:
+    """A bad argument in one call does not drop the other calls' results."""
+
+    async def scenario() -> None:
+        kernel = _environment_kernel(_kernel_workspace(tmp_path))
+        try:
+            results = await kernel.dispatch_batch(
+                (
+                    ToolCall(
+                        call_id="call-good",
+                        name="exec",
+                        arguments={"command": "echo ok", "wait_ms": 8_000},
+                    ),
+                    ToolCall(
+                        call_id="call-bad",
+                        name="exec",
+                        arguments={"command": 42},
+                    ),
+                )
+            )
+        finally:
+            await kernel.close()
+
+        good, bad = results
+        assert bad.call_id == "call-bad"
+        assert bad.error == {
+            "ok": False,
+            "code": "invalid_argument",
+            "message": "42 is not of type 'string'",
+        }
+        assert good.error is None
+        output = good.output
+        assert isinstance(output, dict)
+        assert output["status"] == "exited"
+        assert output["exit_code"] == 0
+
+    asyncio.run(scenario())
+
+
+def test_kernel_batch_diagnoses_broken_schema_as_internal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken syscall schema is an internal bug, diagnosed and sanitized."""
+
+    received: list[RuntimeDiagnostic] = []
+
+    def explode(call: object, schema: object) -> dict[str, object]:
+        del call, schema
+        raise jsonschema.SchemaError("syscall schema is broken")
+
+    async def scenario() -> None:
+        kernel = _environment_kernel(
+            _kernel_workspace(tmp_path),
+            events=CallbackEventSink(received.append),
+        )
+        monkeypatch.setattr(kernel_module, "_validate_arguments", explode)
+        try:
+            with pytest.raises(InternalRuntimeError) as raised:
+                await kernel.dispatch_batch(
+                    (
+                        ToolCall(
+                            call_id="call-1",
+                            name="exec",
+                            arguments={"command": "echo hi"},
+                        ),
+                    )
+                )
+        finally:
+            await kernel.close()
+
+        error = raised.value
+        assert error.details == {
+            "operation": "kernel.dispatch",
+            "exception_type": "SchemaError",
+        }
+        assert [diagnostic.kind for diagnostic in received] == [
+            INTERNAL_ERROR_DIAGNOSTIC_KIND
+        ]
 
     asyncio.run(scenario())
 

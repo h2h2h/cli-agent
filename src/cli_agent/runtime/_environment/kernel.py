@@ -7,7 +7,9 @@ from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from uuid import uuid4
 
-from cli_agent.errors import error_boundary
+import jsonschema
+
+from cli_agent.errors import ModelFacingError, error_boundary
 from cli_agent.runtime._capability.command_parser import (
     ShellParseResult,
     parse_shell_ast,
@@ -32,7 +34,6 @@ from cli_agent.runtime._environment.protocol import (
     _SCHEMA_BY_NAME,
     _protocol_error,
     _snapshot,
-    _validate_arguments,
 )
 from cli_agent.runtime._environment.records import ExecutionRecord
 from cli_agent.runtime._environment.router import _CommandRouter
@@ -51,7 +52,7 @@ from cli_agent.runtime._environment.sources import (
 from cli_agent.runtime._workspace import Workspace
 from cli_agent.runtime.diagnostic import RuntimeDiagnostic
 from cli_agent.runtime.host import HostServices, emit_event
-from cli_agent.runtime.model import ToolCall, ToolResult
+from cli_agent.runtime.model import JSONValue, ToolCall, ToolResult
 
 _ALLOW_ONCE_OPTIONS = (
     UserOption(value="allow_once", label="Allow once"),
@@ -139,15 +140,6 @@ class EnvironmentKernel:
         await self._manager.close()
         self._env.clear()
 
-    async def dispatch(self, call: ToolCall) -> ToolResult:
-        """Dispatch one provider-neutral Tool Call in this Kernel."""
-
-        with error_boundary(
-            "kernel.dispatch",
-            sink=self._boundary_diagnostic,
-        ):
-            return await self._dispatch(call)
-
     async def _dispatch(self, call: ToolCall) -> ToolResult:
         if self._closed:
             return _protocol_error(
@@ -192,31 +184,41 @@ class EnvironmentKernel:
         self,
         calls: tuple[ToolCall, ...],
     ) -> tuple[ToolResult, ...]:
-        """Admit model-returned calls in order, then await them concurrently."""
+        """Admit model-returned calls in order, then await them concurrently.
+
+        ``ModelFacingError`` instances raised while admitting one call are
+        translated here into ``ToolResult.error`` payloads, so they never
+        escape this Kernel. The revalidation in ``_await_initial_exec`` is
+        deterministic idempotent and cannot raise a second time.
+        """
 
         with error_boundary(
             "kernel.dispatch",
             sink=self._boundary_diagnostic,
         ):
-            return await self._dispatch_batch(calls)
+            admitted: list[tuple[ToolCall, ToolResult]] = []
+            for call in calls:
+                try:
+                    if call.name == "exec":
+                        result = await self._exec(call, wait_for_completion=False)
+                    else:
+                        result = await self._dispatch(call)
+                except ModelFacingError as exc:
+                    result = _protocol_error(
+                        call.call_id,
+                        code=exc.code,
+                        message=exc.message,
+                    )
+                admitted.append((call, result))
 
-    async def _dispatch_batch(
-        self,
-        calls: tuple[ToolCall, ...],
-    ) -> tuple[ToolResult, ...]:
-        admitted: list[tuple[ToolCall, ToolResult]] = []
-        for call in calls:
-            if call.name == "exec":
-                result = await self._exec(call, wait_for_completion=False)
-            else:
-                result = await self._dispatch(call)
-            admitted.append((call, result))
-
-        return tuple(
-            await asyncio.gather(
-                *(self._await_initial_exec(call, result) for call, result in admitted)
+            return tuple(
+                await asyncio.gather(
+                    *(
+                        self._await_initial_exec(call, result)
+                        for call, result in admitted
+                    )
+                )
             )
-        )
 
     async def _exec(
         self,
@@ -225,8 +227,6 @@ class EnvironmentKernel:
         wait_for_completion: bool = True,
     ) -> ToolResult:
         args = _validate_arguments(call, _SCHEMA_BY_NAME["exec"])
-        if isinstance(args, ToolResult):
-            return args
         command = parse_shell_ast(args["command"])
         if command.root is None:
             return _protocol_error(
@@ -293,8 +293,6 @@ class EnvironmentKernel:
         if call.name != "exec" or result.error is not None:
             return result
         args = _validate_arguments(call, _SCHEMA_BY_NAME["exec"])
-        if isinstance(args, ToolResult):
-            return result
         output = result.output
         if not isinstance(output, dict):
             return result
@@ -437,8 +435,6 @@ class EnvironmentKernel:
 
     async def _output(self, call: ToolCall) -> ToolResult:
         args = _validate_arguments(call, _SCHEMA_BY_NAME["output"])
-        if isinstance(args, ToolResult):
-            return args
         state = self._executions.get(args["exec_id"])
         if state is None:
             return _protocol_error(
@@ -462,8 +458,6 @@ class EnvironmentKernel:
 
     async def _kill(self, call: ToolCall) -> ToolResult:
         args = _validate_arguments(call, _SCHEMA_BY_NAME["kill"])
-        if isinstance(args, ToolResult):
-            return args
         state = self._executions.get(args["exec_id"])
         if state is None:
             return _protocol_error(
@@ -539,3 +533,42 @@ def _is_valid_answer(answer: object, options: tuple[UserOption, ...]) -> bool:
     if answer.value is None:
         return True
     return answer.value in {option.value for option in options}
+
+
+def _validate_arguments(
+    call: ToolCall,
+    schema: dict[str, object],
+) -> dict[str, JSONValue]:
+    """Validate one Tool Call's arguments against its syscall schema.
+
+    Model-recoverable validation failures raise `ModelFacingError`; the
+    ``dispatch_batch`` boundary translates them into ``ToolResult.error``
+    payloads. A broken schema is an internal invariant bug and raises
+    unchanged so ``error_boundary`` diagnoses it as an
+    `InternalRuntimeError`.
+    """
+
+    args = _apply_defaults(call.arguments, schema)
+    try:
+        jsonschema.validate(args, schema)
+    except jsonschema.SchemaError:
+        raise
+    except jsonschema.ValidationError as err:
+        raise ModelFacingError(
+            code="invalid_argument",
+            message=err.message,
+        ) from err
+    return args
+
+
+def _apply_defaults(
+    arguments: dict[str, JSONValue],
+    schema: dict[str, object],
+) -> dict[str, JSONValue]:
+    """Apply default values to missing arguments in a tool call."""
+
+    filled = dict(arguments)
+    for key, prop in schema.get("properties", {}).items():
+        if key not in filled and isinstance(prop, dict) and "default" in prop:
+            filled[key] = prop["default"]
+    return filled

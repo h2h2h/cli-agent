@@ -3,6 +3,24 @@ from pathlib import Path
 import pytest
 
 import cli_agent._adapters.local.tool_runtime as tool_runtime_module
+from cli_agent.runtime import ToolCall, ToolResult
+from cli_agent.runtime._environment import EnvironmentKernel
+
+
+@pytest.fixture(autouse=True)
+def _kernel_single_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Expose a test-only single-call convenience on the real Kernel.
+
+    Production code dispatches through ``EnvironmentKernel.dispatch_batch``
+    exclusively. ``dispatch`` is a test convenience layered on top of that
+    single real boundary; it is installed here so the ~140 test call sites
+    that spell ``await kernel.dispatch(call)`` keep working unchanged.
+    """
+
+    async def dispatch(self: EnvironmentKernel, call: ToolCall) -> ToolResult:
+        return (await self.dispatch_batch((call,)))[0]
+
+    monkeypatch.setattr(EnvironmentKernel, "dispatch", dispatch, raising=False)
 
 
 @pytest.fixture(autouse=True)
