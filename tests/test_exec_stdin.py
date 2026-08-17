@@ -208,7 +208,7 @@ def test_batch_dispatch_carries_stdin_per_call(tmp_path: Path) -> None:
     async def scenario() -> None:
         kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
-            results = await kernel.dispatch_batch(
+            results = await kernel.dispatch(
                 (
                     ToolCall(
                         call_id="batch_a",

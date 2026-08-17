@@ -140,24 +140,69 @@ class EnvironmentKernel:
         await self._manager.close()
         self._env.clear()
 
-    async def _dispatch(self, call: ToolCall) -> ToolResult:
-        if self._closed:
-            return ToolResult(
-                call.call_id,
-                error={"ok": False, "code": "internal", "message": "environment session is closed"},
-            )
+    async def dispatch(
+        self,
+        calls: tuple[ToolCall, ...],
+    ) -> tuple[ToolResult, ...]:
+        """Admit model-returned calls in order, then await them concurrently.
 
-        if call.name not in _SCHEMA_BY_NAME:
-            return ToolResult(
-                call.call_id,
-                error={"ok": False, "code": "invalid_argument", "message": f"unknown syscall: {call.name}"},
-            )
+        ``ModelFacingError`` instances raised while admitting one call are
+        translated here into ``ToolResult.error`` payloads.
+        The revalidation in ``_await_initial_exec`` is
+        deterministic idempotent and cannot raise a second time.
+        """
 
-        if call.name == "exec":
-            return await self._exec(call)
-        if call.name == "output":
-            return await self._output(call)
-        return await self._kill(call)
+        with error_boundary(
+            "kernel.dispatch",
+            sink=self._boundary_diagnostic,
+        ):
+            admitted: list[tuple[ToolCall, ToolResult]] = []
+            for call in calls:
+                try:
+                    if self._closed:
+                        result = ToolResult(
+                            call.call_id,
+                            error={
+                                "ok": False,
+                                "code": "internal",
+                                "message": "environment session is closed",
+                            },
+                        )
+                    elif call.name not in _SCHEMA_BY_NAME:
+                        result = ToolResult(
+                            call.call_id,
+                            error={
+                                "ok": False,
+                                "code": "invalid_argument",
+                                "message": f"unknown syscall: {call.name}",
+                            },
+                        )
+                    else:
+                        if call.name == "exec":
+                            result = await self._exec(call, wait_for_completion=False)
+                        elif call.name == "output":
+                            result = await self._output(call)
+                        else:
+                            result = await self._kill(call)
+                except ModelFacingError as exc:
+                    result = ToolResult(
+                        call.call_id,
+                        error={"ok": False, "code": exc.code, "message": exc.message},
+                    )
+                admitted.append((call, result))
+
+            # Admit every call before waiting for any exec result. ``_exec``
+            # starts runnable executions with ``wait_for_completion=False``;
+            # the second phase only waits for each initial snapshot, in
+            # parallel, according to that call's ``wait_ms``.
+            return tuple(
+                await asyncio.gather(
+                    *(
+                        self._await_initial_exec(call, result)
+                        for call, result in admitted
+                    )
+                )
+            )
 
     async def reconcile_library(self) -> None:
         """Re-check Library source facts before one ordinary model request.
@@ -176,45 +221,6 @@ class EnvironmentKernel:
                 "library.reconcile_failed",
                 "library source reconcile failed",
                 detail={"exception": repr(exc)},
-            )
-
-    async def dispatch_batch(
-        self,
-        calls: tuple[ToolCall, ...],
-    ) -> tuple[ToolResult, ...]:
-        """Admit model-returned calls in order, then await them concurrently.
-
-        ``ModelFacingError`` instances raised while admitting one call are
-        translated here into ``ToolResult.error`` payloads, so they never
-        escape this Kernel. The revalidation in ``_await_initial_exec`` is
-        deterministic idempotent and cannot raise a second time.
-        """
-
-        with error_boundary(
-            "kernel.dispatch",
-            sink=self._boundary_diagnostic,
-        ):
-            admitted: list[tuple[ToolCall, ToolResult]] = []
-            for call in calls:
-                try:
-                    if call.name == "exec":
-                        result = await self._exec(call, wait_for_completion=False)
-                    else:
-                        result = await self._dispatch(call)
-                except ModelFacingError as exc:
-                    result = ToolResult(
-                        call.call_id,
-                        error={"ok": False, "code": exc.code, "message": exc.message},
-                    )
-                admitted.append((call, result))
-
-            return tuple(
-                await asyncio.gather(
-                    *(
-                        self._await_initial_exec(call, result)
-                        for call, result in admitted
-                    )
-                )
             )
 
     async def _exec(
@@ -545,7 +551,7 @@ def _validate_arguments(
     """Validate one Tool Call's arguments against its syscall schema.
 
     Model-recoverable validation failures raise `ModelFacingError`; the
-    ``dispatch_batch`` boundary translates them into ``ToolResult.error``
+    ``dispatch`` boundary translates them into ``ToolResult.error``
     payloads. A broken schema is an internal invariant bug and raises
     unchanged so ``error_boundary`` diagnoses it as an
     `InternalRuntimeError`.

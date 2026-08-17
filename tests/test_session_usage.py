@@ -175,7 +175,7 @@ class _KernelStub:
     async def reconcile_library(self) -> None:
         return None
 
-    async def dispatch_batch(
+    async def dispatch(
         self,
         calls: tuple[ToolCall, ...],
     ) -> tuple[ToolResult, ...]:

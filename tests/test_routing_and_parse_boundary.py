@@ -72,7 +72,7 @@ def test_parse_failure_in_batch_returns_invalid_argument_and_admits_nothing(
     async def scenario() -> None:
         kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
-            results = await kernel.dispatch_batch(
+            results = await kernel.dispatch(
                 (
                     ToolCall(
                         call_id="valid-call",

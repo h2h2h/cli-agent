@@ -190,7 +190,7 @@ class AgentLoop:
                 yield completion
                 return
 
-            results = await self._kernel.dispatch_batch(tool_calls)
+            results = await self._kernel.dispatch(tool_calls)
             self._context.apply(
                 ToolResultMessage(content=results),
                 self._commit(ToolResultMessage(content=results)),

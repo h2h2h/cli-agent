@@ -68,10 +68,7 @@ class _TrackingEnvironmentKernel:
     async def reconcile_library(self) -> None:
         return
 
-    async def dispatch(self, call: ToolCall) -> object:
-        raise AssertionError(f"unexpected Tool Call: {call}")
-
-    async def dispatch_batch(
+    async def dispatch(
         self,
         calls: tuple[ToolCall, ...],
     ) -> tuple[object, ...]:

@@ -1000,7 +1000,7 @@ def test_batch_dispatch_preserves_result_order_when_parallel_commands_finish_out
                 ),
             )
 
-            results = await kernel.dispatch_batch(calls)
+            results = await kernel.dispatch(calls)
 
             assert tuple(result.call_id for result in results) == ("first", "second")
             assert _text(_output(results[0]), "stdout") == "first\n"

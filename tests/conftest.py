@@ -11,16 +11,22 @@ from cli_agent.runtime._environment import EnvironmentKernel
 def _kernel_single_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     """Expose a test-only single-call convenience on the real Kernel.
 
-    Production code dispatches through ``EnvironmentKernel.dispatch_batch``
-    exclusively. ``dispatch`` is a test convenience layered on top of that
-    single real boundary; it is installed here so the ~140 test call sites
-    that spell ``await kernel.dispatch(call)`` keep working unchanged.
+    Production code dispatches batches through ``EnvironmentKernel.dispatch``.
+    The single-call form is installed here as a test convenience so existing
+    test call sites that spell ``await kernel.dispatch(call)`` remain concise.
     """
 
-    async def dispatch(self: EnvironmentKernel, call: ToolCall) -> ToolResult:
-        return (await self.dispatch_batch((call,)))[0]
+    batch_dispatch = EnvironmentKernel.dispatch
 
-    monkeypatch.setattr(EnvironmentKernel, "dispatch", dispatch, raising=False)
+    async def dispatch(
+        self: EnvironmentKernel,
+        calls: tuple[ToolCall, ...] | ToolCall,
+    ) -> tuple[ToolResult, ...] | ToolResult:
+        if isinstance(calls, ToolCall):
+            return (await batch_dispatch(self, (calls,)))[0]
+        return await batch_dispatch(self, calls)
+
+    monkeypatch.setattr(EnvironmentKernel, "dispatch", dispatch)
 
 
 @pytest.fixture(autouse=True)

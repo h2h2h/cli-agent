@@ -421,7 +421,7 @@ class _RecordingKernel:
     async def reconcile_library(self) -> None:
         self.calls.append("reconcile")
 
-    async def dispatch_batch(
+    async def dispatch(
         self,
         calls: tuple[ToolCall, ...],
     ) -> tuple[ToolResult, ...]:

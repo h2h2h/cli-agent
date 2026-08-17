@@ -317,7 +317,7 @@ def test_kernel_batch_translates_model_facing_errors_to_tool_result(
         kernel = _environment_kernel(_kernel_workspace(tmp_path))
         monkeypatch.setattr(kernel_module, "_validate_arguments", explode)
         try:
-            results = await kernel.dispatch_batch(
+            results = await kernel.dispatch(
                 (
                     ToolCall(
                         call_id="call-1",
@@ -346,7 +346,7 @@ def test_kernel_batch_isolates_one_invalid_call(tmp_path: Path) -> None:
     async def scenario() -> None:
         kernel = _environment_kernel(_kernel_workspace(tmp_path))
         try:
-            results = await kernel.dispatch_batch(
+            results = await kernel.dispatch(
                 (
                     ToolCall(
                         call_id="call-good",
@@ -399,7 +399,7 @@ def test_kernel_batch_diagnoses_broken_schema_as_internal(
         monkeypatch.setattr(kernel_module, "_validate_arguments", explode)
         try:
             with pytest.raises(InternalRuntimeError) as raised:
-                await kernel.dispatch_batch(
+                await kernel.dispatch(
                     (
                         ToolCall(
                             call_id="call-1",
